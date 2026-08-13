@@ -25,6 +25,8 @@
   },
   "scripts": {
     "start": "expo start",
+    "dev": "npm run build && npx serve dist -l ${PORT:-8080}",
+    "build": "expo export --platform web",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"
