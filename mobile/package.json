@@ -23,16 +23,18 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "vite": "^7.1.3",
+    "@vitejs/plugin-react": "^5.0.2"
   },
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "build": "expo export --platform web",
+    "start": "vite --host 0.0.0.0",
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web",
-    "serve": "node server.js"
+    "web": "expo start --web"
   },
   "private": true
 }
