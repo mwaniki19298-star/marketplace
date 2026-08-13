@@ -28,3 +28,11 @@ This mobile app now contains a functional navigation shell and working screens b
 Install dependencies with `npx expo install expo-auth-session expo-web-browser`. Add the variables from `.env.example` to `.env`. The Google button now opens Google's real OAuth consent/account screen and sends the returned ID token to Django at `/api/auth/google/`.
 
 For Expo Go on a physical phone, `EXPO_PUBLIC_API_BASE_URL` must point to the Django server using the computer's LAN IP (for example `http://192.168.1.20:8000`), and the phone and computer must be on the same network.
+
+
+## Website commands
+
+- `npm run build` builds the static website into `dist/`.
+- `npm run dev` serves the built website directly with Node.js. It does **not** start the Expo development server.
+- `npm start` also serves the website directly.
+- On Render, use `npm install && npm run build` as the build command and `npm run dev` as the start command.
