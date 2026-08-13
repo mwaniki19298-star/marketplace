@@ -1,14 +1,28 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { fileURLToPath, URL } from 'node:url';
 
 const port = Number(process.env.PORT) || 5173;
+const codegenNativeComponentShim = fileURLToPath(
+  new URL('./src/web/codegenNativeComponent.ts', import.meta.url)
+);
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      'react-native': 'react-native-web',
-    },
+    alias: [
+      {
+        find: /^react-native\/Libraries\/Utilities\/codegenNativeComponent$/,
+        replacement: codegenNativeComponentShim,
+      },
+      {
+        find: /^react-native$/,
+        replacement: 'react-native-web',
+      },
+    ],
+  },
+  optimizeDeps: {
+    exclude: ['react-native-safe-area-context'],
   },
   define: {
     'process.env.EXPO_PUBLIC_API_BASE_URL': JSON.stringify(process.env.EXPO_PUBLIC_API_BASE_URL || ''),
