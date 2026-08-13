@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ listing.title }} · {{ listing.store.name }} | Marketplace</title>
+  <meta name="description" content="{{ listing.description|striptags|truncatechars:160 }}">
+  <link rel="canonical" href="{{ canonical_url }}">
+  <meta property="og:type" content="product">
+  <meta property="og:title" content="{{ listing.title }}">
+  <meta property="og:description" content="{{ price }} · {{ listing.store.name }}{% if listing.location %} · {{ listing.location }}{% endif %}">
+  <meta property="og:url" content="{{ canonical_url }}">
+  {% if image_url %}<meta property="og:image" content="{{ image_url }}">{% endif %}
+  <meta property="og:site_name" content="Marketplace">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ listing.title }}">
+  <meta name="twitter:description" content="{{ price }} · {{ listing.store.name }}">
+  {% if image_url %}<meta name="twitter:image" content="{{ image_url }}">{% endif %}
+  <style>
+    :root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111827;background:#f5f7fb}
+    *{box-sizing:border-box}body{margin:0}.wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    .card{width:min(720px,100%);background:#fff;border:1px solid #e5e7eb;border-radius:24px;overflow:hidden;box-shadow:0 16px 45px rgba(15,23,42,.09)}
+    .photo{width:100%;aspect-ratio:16/10;object-fit:cover;background:#eef2f7;display:block}.body{padding:24px}.brand{font-weight:800;font-size:14px;color:#2563eb;margin-bottom:14px}.store{color:#6b7280;font-size:14px;margin-bottom:8px}.title{font-size:30px;line-height:1.15;margin:0 0 12px}.price{font-size:28px;font-weight:800;margin-bottom:16px}.description{color:#4b5563;line-height:1.6;white-space:pre-line}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px}.btn{display:inline-flex;align-items:center;justify-content:center;padding:13px 18px;border-radius:12px;text-decoration:none;font-weight:700}.primary{background:#2563eb;color:white}.secondary{background:#eef2ff;color:#1d4ed8}.muted{margin-top:18px;color:#6b7280;font-size:13px}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <article class="card">
+      {% if image_url %}<img class="photo" src="{{ image_url }}" alt="{{ listing.title }}">{% endif %}
+      <section class="body">
+        <div class="brand">Marketplace</div>
+        <div class="store">{{ listing.store.name }}{% if listing.location %} · {{ listing.location }}{% endif %}</div>
+        <h1 class="title">{{ listing.title }}</h1>
+        {% if price %}<div class="price">{{ price }}</div>{% endif %}
+        <div class="description">{{ listing.description|truncatechars:1000 }}</div>
+        <div class="actions">
+          <a class="btn primary" href="{{ app_link }}">Open in Marketplace App</a>
+          {% if android_store_url %}<a class="btn secondary" href="{{ android_store_url }}">Get Android App</a>{% endif %}
+          {% if ios_store_url %}<a class="btn secondary" href="{{ ios_store_url }}">Get iPhone App</a>{% endif %}
+        </div>
+        <div class="muted">If Marketplace is installed, this link opens the item directly in the app. Otherwise you can view the item here.</div>
+      </section>
+    </article>
+  </main>
+</body>
+</html>
