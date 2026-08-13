@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "mobile",
+    "slug": "mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Marketplace to access your photos so you can add listing images.",
+          "cameraPermission": "Allow Marketplace to use your camera so you can take listing photos."
+        }
+      ]
+    ],
+    "scheme": "marketplace"
+  }
+}
