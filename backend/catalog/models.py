@@ -78,6 +78,8 @@ class ListingImage(Timestamped):
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name="images")
     image = models.URLField(max_length=1200)
     public_id = models.CharField(max_length=512, blank=True)
+    # Seed-only image storage. Normal/mobile uploads continue to use the URL + Cloudinary public_id.
+    seed_image_blob = models.BinaryField(null=True, blank=True, editable=False)
     alt_text = models.CharField(max_length=200, blank=True)
     sort_order = models.PositiveIntegerField(default=0)
     class Meta: ordering = ("sort_order", "id")

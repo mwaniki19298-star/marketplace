@@ -8,9 +8,9 @@ Defaults:
   10 products per store (300 products total)
   2-6 ListingImage rows per product
 
-The project stores ListingImage.image as a URLField, so this script copies one
-local sample image into Django MEDIA_ROOT and stores its /media/... URL in the
-database. No Cloudinary API calls are made.
+Seed images are stored as SQLite BLOBs in ListingImage.seed_image_blob.
+Normal/mobile uploads are NOT changed and continue to use Cloudinary URLs.
+No Cloudinary API calls are made by this seed function.
 
 Run from the Django backend directory:
   python seed_marketplace_local.py
@@ -22,7 +22,6 @@ Optional:
 import argparse
 import os
 import random
-import shutil
 import sys
 from pathlib import Path
 
@@ -35,6 +34,7 @@ import django
 django.setup()
 
 from django.conf import settings
+from django.db import connection
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils.text import slugify
@@ -100,26 +100,35 @@ def unique_slug(model, base):
     return slug
 
 
-def sample_image_url():
-    """
-    Copy the bundled sample image into MEDIA_ROOT and return the URL stored
-    in ListingImage.image.
-    """
-    source = BACKEND_DIR / "seed_assets" / "sample-product.jpg"
-    if not source.exists():
-        raise FileNotFoundError(
-            f"Missing sample image: {source}. Keep seed_assets/sample-product.jpg "
-            "next to this script."
-        )
+def load_photo_pool():
+    """Load generated product-specific JPEGs that will be stored as SQLite BLOBs."""
+    source_dir = BACKEND_DIR / "seed_assets" / "products"
+    if not source_dir.exists():
+        raise FileNotFoundError(f"Missing seed photo directory: {source_dir}")
 
-    relative = Path("seed") / "products" / "sample-product.jpg"
-    destination = Path(settings.MEDIA_ROOT) / relative
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    pool = {}
+    # Index the directory by a normalized product name so filenames such as
+    # cotton_t-shirt_1.jpg and cotton_t_shirt_1.jpg are both accepted.
+    indexed = {}
+    for path in sorted(source_dir.glob("*.jpg")):
+        stem = path.stem
+        if "_" not in stem:
+            continue
+        product_key = stem.rsplit("_", 1)[0]
+        normalized = product_key.replace("-", "_").lower()
+        indexed.setdefault(normalized, []).append(path)
 
-    if not destination.exists():
-        shutil.copy2(source, destination)
-
-    return f"{settings.MEDIA_URL.rstrip('/')}/{relative.as_posix()}"
+    for title_base, _, _ in PRODUCTS[:10]:
+        key = slugify(title_base).replace("-", "_").lower()
+        files = indexed.get(key, [])
+        if len(files) < 2:
+            raise FileNotFoundError(
+                f"Need at least 2 generated photos for {title_base}; "
+                f"found {len(files)} in {source_dir}. "
+                f"Expected filenames like {key}_1.jpg ..."
+            )
+        pool[title_base] = [f.read_bytes() for f in files[:6]]
+    return pool
 
 
 def make_users(count):
@@ -157,7 +166,7 @@ def make_categories():
 
 def seed(users, products_per_store, min_images, max_images):
     categories = make_categories()
-    image_url = sample_image_url()
+    photo_pool = load_photo_pool()
 
     stores_created = 0
     products_created = 0
@@ -216,21 +225,24 @@ def seed(users, products_per_store, min_images, max_images):
 
             products_created += int(created)
 
-            # Give every product 2-6 image rows using the same local sample photo.
-            # This matches the current ListingImage URLField and avoids Cloudinary.
+            # Give every product 2-6 product-specific image rows. The JPEG bytes are stored in SQLite.
             if created or not listing.images.exists():
                 ListingImage.objects.filter(listing=listing).delete()
 
-                count = random.randint(min_images, max_images)
+                count = random.randint(min_images, min(max_images, 6))
+                variants = photo_pool[title_base]
+                chosen = random.sample(variants, k=min(count, len(variants)))
                 ListingImage.objects.bulk_create([
                     ListingImage(
                         listing=listing,
-                        image=image_url,
-                        public_id="",
-                        alt_text=f"{title} sample product photo {n + 1}",
+                        # Seed marker only. The real image bytes are in seed_image_blob.
+                        image=f"/seed-db/{listing.pk}/{n + 1}.jpg",
+                        public_id="seed-local",
+                        seed_image_blob=blob,
+                        alt_text=f"{title} product photo {n + 1}",
                         sort_order=n,
                     )
-                    for n in range(count)
+                    for n, blob in enumerate(chosen)
                 ])
 
                 images_created += count
@@ -260,12 +272,21 @@ def main():
         parser.error("--min-images must be >= 2")
     if args.max_images < args.min_images:
         parser.error("--max-images must be >= --min-images")
+    if args.max_images > 6:
+        parser.error("--max-images must be <= 6")
+
+    if connection.vendor != "sqlite":
+        parser.error(
+            "This seed is intentionally SQLite-only because seed photos are stored as BLOBs in db.sqlite3. "
+            f"Current database vendor: {connection.vendor}."
+        )
 
     print(
         f"Target: {args.users} users, {args.users} stores, "
         f"{args.users * args.products_per_store} products, "
         f"{args.min_images}-{args.max_images} images/product."
     )
+    print("Image mode: SQLite seed BLOBs only (no Cloudinary upload).")
 
     if args.dry_run:
         print("Dry run: no database or file changes made.")
@@ -288,7 +309,7 @@ def main():
     print(f"Password for generated users: {PASSWORD}")
     print("Emails: seed.user001@marketplace.local through "
           f"seed.user{args.users:03d}@marketplace.local")
-    print("Images are local /media/seed/products/sample-product.jpg; no Cloudinary uploads were made.")
+    print("Seed photos are stored as SQLite BLOBs in ListingImage.seed_image_blob; no Cloudinary uploads were made.")
 
 
 if __name__ == "__main__":

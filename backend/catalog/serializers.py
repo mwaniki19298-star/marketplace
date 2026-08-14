@@ -1,4 +1,5 @@
 from rest_framework import serializers
+import base64
 from django.utils.text import slugify
 from .models import Category, Listing, ListingImage, ListingLike, SavedItem, Store, StoreFollow
 
@@ -22,6 +23,16 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 class ListingImageSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
+    def get_image(self, obj):
+        # Seed-only rows keep the actual JPEG bytes inside SQLite.
+        # Production/user uploads remain normal HTTPS Cloudinary URLs.
+        if obj.seed_image_blob:
+            encoded = base64.b64encode(bytes(obj.seed_image_blob)).decode("ascii")
+            return f"data:image/jpeg;base64,{encoded}"
+        return obj.image
+
     class Meta:
         model = ListingImage
         fields = ["id", "image", "public_id", "alt_text", "sort_order"]
