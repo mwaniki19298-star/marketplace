@@ -366,7 +366,7 @@ let categoryTiles: Array<[string, string, number]> = [];
 
 declare global { var __MARKETPLACE_AUTH__: AuthPayload | null | undefined; }
 
-type Screen = "home" | "browse" | "create" | "publishSuccess" | "saved" | "profile" | "product" | "orders" | "notifications" | "messages" | "settings" | "store" | "login";
+type Screen = "home" | "browse" | "create" | "publishSuccess" | "saved" | "profile" | "product" | "orders" | "notifications" | "messages" | "settings" | "settingsPreferences" | "securityPrivacy" | "notificationPreferences" | "helpSupport" | "faq" | "reportProblem" | "safetyTips" | "terms" | "privacyPolicy" | "store" | "login";
 type RouteEntry = { screen: Screen; selectedId: string | null };
 
 export default function App() {
@@ -391,6 +391,8 @@ function MarketplaceApp() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<ApiUser | null>(null);
   const [auth, setAuth] = useState<AuthPayload | null>(null);
+  const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
+  const [autoGoogleLogin, setAutoGoogleLogin] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState<string | null>(null);
   const likingIds = useRef<Set<string>>(new Set());
@@ -712,6 +714,15 @@ function MarketplaceApp() {
       notifications: "Notifications",
       messages: "Messages",
       settings: "Settings",
+      settingsPreferences: "Settings & Preferences",
+      securityPrivacy: "Security & Privacy",
+      notificationPreferences: "Notification Preferences",
+      helpSupport: "Help & Support",
+      faq: "Frequently Asked Questions",
+      reportProblem: "Report a Problem",
+      safetyTips: "Safety Tips",
+      terms: "Terms of Service",
+      privacyPolicy: "Privacy Policy",
       store: "Store",
     };
     return titles[screen];
@@ -748,7 +759,7 @@ function MarketplaceApp() {
             <MenuItem label="Home" icon={<HomeIcon size={18} color={theme.text} />} onPress={() => go("home")} theme={theme} />
             <MenuItem label="Orders" icon={<ShoppingBag size={18} color={theme.text} />} onPress={() => go("orders")} theme={theme} />
             <MenuItem label="Messages" icon={<MessageCircle size={18} color={theme.text} />} onPress={() => go("messages")} theme={theme} />
-            <MenuItem label="Settings" icon={<Settings size={18} color={theme.text} />} onPress={() => go("settings")} theme={theme} />
+            <MenuItem label="Settings" icon={<Settings size={18} color={theme.text} />} onPress={() => go("settingsPreferences")} theme={theme} />
           </View>
         )}
 
@@ -784,15 +795,24 @@ function MarketplaceApp() {
         {screen === "saved" && (
           <SavedScreen theme={theme} savedIds={savedIds} onOpenProduct={openProduct} toggleSaved={toggleSaved} />
         )}
-        {screen === "login" && <LoginScreen theme={theme} onBack={goBack} onAuthenticated={async (payload) => { setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); go("create"); }} />}
+        {screen === "login" && <LoginScreen theme={theme} onBack={goBack} initialMode={loginMode} autoGoogle={autoGoogleLogin} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); go("profile"); }} />}
         {screen === "create" && <CreateScreen theme={theme} auth={auth} onDone={async () => { await refreshMarketplaceData(auth); go("publishSuccess"); }} />}
         {screen === "publishSuccess" && <PublishSuccessScreen theme={theme} onBrowse={() => go("browse")} onHome={() => go("home")} />}
-        {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settings")} onStore={() => go("store")} onMessages={() => go("messages")} savedCount={savedIds.length} />}
+        {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onStore={() => go("store")} onMessages={() => go("messages")} savedCount={savedIds.length} />}
         {screen === "product" && selected && <ProductScreen theme={theme} listing={selected} saved={savedIds.includes(selected.id)} onToggleSaved={() => toggleSaved(selected.id)} onContactSeller={() => openConversationForListing(selected)} auth={auth} />}
         {screen === "orders" && <OrdersScreen theme={theme} auth={auth} currentUser={currentUser} />}
         {screen === "notifications" && <NotificationsScreen theme={theme} auth={auth} />}
         {screen === "messages" && <MessagesScreen theme={theme} auth={auth} currentUser={currentUser} />}
         {screen === "settings" && <SettingsScreen theme={theme} dark={dark} setDark={setDark} />}
+        {screen === "settingsPreferences" && <SettingsPreferencesScreen theme={theme} dark={dark} setDark={setDark} />}
+        {screen === "securityPrivacy" && <SecurityPrivacyScreen theme={theme} auth={auth} onSignOut={async () => { await AsyncStorage.removeItem(AUTH_STORAGE_KEY); globalThis.__MARKETPLACE_AUTH__ = null; setAuth(null); setCurrentUser(null); setIsLoggedIn(false); setSavedIds([]); setLikedIds([]); go("profile"); }} />}
+        {screen === "notificationPreferences" && <NotificationPreferencesScreen theme={theme} />}
+        {screen === "helpSupport" && <HelpSupportScreen theme={theme} onFAQ={() => go("faq")} onSafety={() => go("safetyTips")} onReport={() => go("reportProblem")} onTerms={() => go("terms")} onPrivacy={() => go("privacyPolicy")} />}
+        {screen === "faq" && <FAQScreen theme={theme} />}
+        {screen === "reportProblem" && <ReportProblemScreen theme={theme} auth={auth} />}
+        {screen === "safetyTips" && <SafetyTipsScreen theme={theme} />}
+        {screen === "terms" && <LegalInfoScreen theme={theme} kind="terms" />}
+        {screen === "privacyPolicy" && <LegalInfoScreen theme={theme} kind="privacy" />}
         {screen === "store" && <StoreScreen theme={theme} auth={auth} onOpenProduct={openProduct} onMarketplaceChanged={() => void refreshMarketplaceData(auth)} onUserUpdated={(user) => { setCurrentUser(user); setAuth((prev) => prev ? { ...prev, user } : prev); }} />}
 
         {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
@@ -863,7 +883,7 @@ function passwordQuality(password: string) {
   return { checks, score, label, color, eligible: checks.every(c => c.ok) };
 }
 
-function LoginScreen({ theme, onBack, onAuthenticated }: { theme: Theme; onBack: () => boolean; onAuthenticated: (payload: AuthPayload) => void }) {
+function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", autoGoogle = false }: { theme: Theme; onBack: () => boolean; onAuthenticated: (payload: AuthPayload) => void; initialMode?: "login" | "signup"; autoGoogle?: boolean }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -931,6 +951,8 @@ function LoginScreen({ theme, onBack, onAuthenticated }: { theme: Theme; onBack:
     finishGoogleLogin();
   }, [googleResponse, onAuthenticated]);
 
+  useEffect(() => { setMode(initialMode); }, [initialMode]);
+
   const startGoogleLogin = async () => {
     setGoogleError(null);
     setGoogleToast(null);
@@ -952,6 +974,12 @@ function LoginScreen({ theme, onBack, onAuthenticated }: { theme: Theme; onBack:
       setGoogleToast("Could not open Google sign-in.");
     }
   };
+
+  useEffect(() => {
+    if (!autoGoogle || mode !== "login") return;
+    const timer = setTimeout(() => { void startGoogleLogin(); }, 120);
+    return () => clearTimeout(timer);
+  }, [autoGoogle, mode, googleRequest, clientId]);
 
   const submit = async () => {
     if (loginSubmitting) return;
@@ -1433,6 +1461,11 @@ function SavedScreen({ theme, savedIds, onOpenProduct, toggleSaved }: { theme: T
   return <ScreenScroll theme={theme}>{saved.length === 0 ? <EmptyState theme={theme} title="Build your shortlist" text="Save products you love and keep them ready for later. Your favourites will appear here." icon="bookmark" /> : <><View style={styles.pageIntro}><Text style={[styles.pageTitle,{color:theme.text}]}>Saved items</Text><Text style={[styles.subtle,{color:theme.muted}]}>Your personal shortlist, ready whenever you are.</Text></View>{saved.map((l) => <ListingCard key={l.id} listing={l} theme={theme} saved onToggleSaved={() => toggleSaved(l.id)} onPress={() => onOpenProduct(l)} />)}</>}</ScreenScroll>;
 }
 
+function openReportAlert(type: "listing" | "user", subject: string) {
+  const reasons = ["Scam/fraud", "Fake listing", "Prohibited item", "Harassment", "Spam", "Misleading information", "Other"];
+  Alert.alert(`Report ${type}`, `Choose a reason for reporting ${subject}.`, reasons.map((reason) => ({ text: reason, onPress: () => Alert.alert("Confirm report", `Report ${subject} for: ${reason}?`, [{ text: "Cancel", style: "cancel" }, { text: "Confirm", style: "destructive", onPress: () => Alert.alert("Report ready", "The current backend does not expose a reporting endpoint, so nothing was sent to the server. The reporting operation is isolated and ready for a real endpoint later.") }]) })));
+}
+
 function ProductScreen({ theme, listing, saved, onToggleSaved, onContactSeller, auth }: { theme: Theme; listing: Listing; saved: boolean; onToggleSaved: () => void; onContactSeller: () => void; auth: AuthPayload | null }) {
   const { width } = useWindowDimensions();
   const [activeImage, setActiveImage] = useState(0);
@@ -1529,6 +1562,14 @@ function ProductScreen({ theme, listing, saved, onToggleSaved, onContactSeller, 
           </Pressable>
           <Pressable onPress={() => { if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before requesting a purchase."); return; } setPurchaseError(""); setPurchaseOpen(true); }} style={[styles.secondaryButton, { backgroundColor: theme.card, borderColor: theme.border, flex: 1 }]}>
             <ShoppingBag size={18} color={theme.text} /><Text style={[styles.secondaryButtonText, { color: theme.text }]}>Request purchase</Text>
+          </Pressable>
+        </View>
+        <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+          <Pressable onPress={() => openReportAlert("listing", listing.title)} style={[styles.reportInlineButton,{borderColor:theme.border,backgroundColor:theme.card}]}>
+            <AlertCircle size={16} color={theme.text} /><Text style={[styles.reportInlineText,{color:theme.text}]}>Report listing</Text>
+          </Pressable>
+          <Pressable onPress={() => openReportAlert("user", listing.store)} style={[styles.reportInlineButton,{borderColor:theme.border,backgroundColor:theme.card}]}>
+            <User size={16} color={theme.text} /><Text style={[styles.reportInlineText,{color:theme.text}]}>Report seller</Text>
           </Pressable>
         </View>
       </View>
@@ -1939,7 +1980,7 @@ function MetaVerifiedBadge({ size = 18 }: { size?: number }) {
   );
 }
 
-function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onStore, onMessages, savedCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onStore: () => void; onMessages: () => void; savedCount?: number }) {
+function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onSecurity, onNotificationPreferences, onHelp, onSignIn, onSignUp, onGoogle, onStore, onMessages, savedCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onSecurity: () => void; onNotificationPreferences: () => void; onHelp: () => void; onSignIn: () => void; onSignUp: () => void; onGoogle: () => void; onStore: () => void; onMessages: () => void; savedCount?: number }) {
   const insets = useSafeAreaInsets();
   const [profileMode, setProfileMode] = useState<"buyer" | "seller">("buyer");
   const [editing, setEditing] = useState(false);
@@ -1960,7 +2001,17 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
     return () => { active = false; };
   }, [isLoggedIn]);
 
-  if (!isLoggedIn) return <ScreenScroll theme={theme}><EmptyState theme={theme} title="Sign in to access your profile" text="Your orders, saved items, store and settings appear here after sign in." /></ScreenScroll>;
+  if (!isLoggedIn) return <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
+    <View style={[styles.profileAuthCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <View style={[styles.profileAuthIcon, { backgroundColor: theme.isDark ? "rgba(96,165,250,.12)" : "#EFF6FF" }]}><User size={30} color={theme.accent} /></View>
+      <Text style={[styles.profileAuthTitle, { color: theme.text }]}>Welcome to Marketplace</Text>
+      <Text style={[styles.profileAuthText, { color: theme.muted }]}>Sign in to manage your profile, listings, orders, messages and preferences.</Text>
+      <Pressable onPress={onGoogle} style={[styles.profileAuthButton, { backgroundColor: theme.card, borderColor: theme.border }]}><Text style={[styles.profileAuthButtonText, { color: theme.text }]}>Continue with Google</Text></Pressable>
+      <Pressable onPress={onSignIn} style={[styles.profileAuthButton, { backgroundColor: BUTTON_BLUE, borderColor: BUTTON_BLUE }]}><Text style={[styles.profileAuthButtonText, { color: "#fff" }]}>Sign In</Text></Pressable>
+      <Pressable onPress={onSignUp} style={[styles.profileAuthButton, { backgroundColor: theme.card, borderColor: theme.border }]}><Text style={[styles.profileAuthButtonText, { color: theme.text }]}>Create Account</Text></Pressable>
+      <Pressable onPress={onSignIn} style={{ padding: 10 }}><Text style={{ color: theme.accent, fontSize: 12, fontWeight: "800" }}>Forgot Password?</Text></Pressable>
+    </View>
+  </ScreenScroll>;
 
   const buyerActions = [
     { icon: <ShoppingBag size={18} color={theme.accent} />, title: "My orders", text: "Track purchases & delivery", onPress: onOrders },
@@ -2032,9 +2083,9 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
 
       <View style={styles.profileSectionHeader}><View><Text style={[styles.profileSectionTitle,{color:theme.text}]}>Account</Text><Text style={[styles.profileSectionSub,{color:theme.muted}]}>Preferences, privacy and support.</Text></View></View>
       <ProfileRow theme={theme} icon={<Settings size={19} color={theme.text}/>} title="Settings & preferences" onPress={onSettings}/>
-      <ProfileRow theme={theme} icon={<LockKeyhole size={19} color={theme.text}/>} title="Security & privacy" onPress={() => Alert.alert("Security & privacy", "Password, session and privacy controls will appear here.")} />
-      <ProfileRow theme={theme} icon={<Bell size={19} color={theme.text}/>} title="Notifications" onPress={() => Alert.alert("Notifications", "Notification preferences will appear here.")} />
-      <ProfileRow theme={theme} icon={<MessageCircle size={19} color={theme.text}/>} title="Help & support" onPress={() => Alert.alert("Help & support", "Support options will appear here.")} />
+      <ProfileRow theme={theme} icon={<LockKeyhole size={19} color={theme.text}/>} title="Security & privacy" onPress={onSecurity} />
+      <ProfileRow theme={theme} icon={<Bell size={19} color={theme.text}/>} title="Notifications" onPress={onNotificationPreferences} />
+      <ProfileRow theme={theme} icon={<MessageCircle size={19} color={theme.text}/>} title="Help & support" onPress={onHelp} />
       {storeLoading && <Text style={[styles.profileLoading,{color:theme.muted}]}>Loading store profile…</Text>}
     </ScreenScroll>
 
@@ -2412,6 +2463,69 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
     })}
   </ScreenScroll>;
 }
+function PreferenceSwitch({ theme, title, description, value, onValueChange }: { theme: Theme; title: string; description?: string; value: boolean; onValueChange: (value: boolean) => void }) {
+  return <View style={[styles.preferenceRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
+    <View style={{ flex: 1, paddingRight: 12 }}><Text style={[styles.preferenceTitle, { color: theme.text }]}>{title}</Text>{description && <Text style={[styles.preferenceDescription, { color: theme.muted }]}>{description}</Text>}</View>
+    <Switch value={value} onValueChange={onValueChange} thumbColor={value ? "#fff" : "#f4f3f4"} trackColor={{ false: "#D5D1DB", true: theme.accent }} />
+  </View>;
+}
+
+function SettingsPreferencesScreen({ theme, dark, setDark }: { theme: Theme; dark: boolean; setDark: (v:boolean)=>void }) {
+  const [prefs, setPrefs] = useState<any>({ language: "English", region: "Kenya", currency: "KES", fulfillment: "Both", recommendations: true, recentlyViewed: true, recommendedListings: true, autoplay: true, highQuality: true, dataSaver: false, confirmDelete: true, confirmSignOut: true });
+  useEffect(() => { AsyncStorage.getItem("marketplace_settings").then(raw => { if (raw) setPrefs((p:any) => ({ ...p, ...JSON.parse(raw) })); }).catch(() => {}); }, []);
+  const update = (patch: any) => { const next = { ...prefs, ...patch }; setPrefs(next); void AsyncStorage.setItem("marketplace_settings", JSON.stringify(next)); };
+  return <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
+    <SettingsSection theme={theme} title="Appearance"><SettingRow theme={theme} icon={<Moon size={19} color={theme.text}/>} title="Theme" trailing={<View style={{ flexDirection: "row", gap: 5 }}><ChoiceChip theme={theme} label="System" selected={!dark && prefs.theme !== "light"} onPress={() => { setDark(false); update({ theme: "system" }); }} /><ChoiceChip theme={theme} label="Light" selected={!dark && prefs.theme === "light"} onPress={() => { setDark(false); update({ theme: "light" }); }} /><ChoiceChip theme={theme} label="Dark" selected={dark} onPress={() => { setDark(true); update({ theme: "dark" }); }} /></View>} /></SettingsSection>
+    <SettingsSection theme={theme} title="Language"><SettingRow theme={theme} icon={<Compass size={19} color={theme.text}/>} title="App language" trailing={<Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.language}</Text>} /></SettingsSection>
+    <SettingsSection theme={theme} title="Region & Currency"><SettingRow theme={theme} icon={<MapPin size={19} color={theme.text}/>} title="Country / Region" trailing={<Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.region}</Text>} /><SettingRow theme={theme} icon={<Tag size={19} color={theme.text}/>} title="Currency" trailing={<Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.currency}</Text>} /></SettingsSection>
+    <SettingsSection theme={theme} title="Marketplace Preferences"><ChoiceRow theme={theme} title="Preferred fulfillment" options={["Pickup","Delivery","Both"]} value={prefs.fulfillment} onChange={(v)=>update({fulfillment:v})} /><PreferenceSwitch theme={theme} title="Personalized recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})} /><PreferenceSwitch theme={theme} title="Recently viewed items" value={prefs.recentlyViewed} onValueChange={(v)=>update({recentlyViewed:v})} /><PreferenceSwitch theme={theme} title="Show recommended listings" value={prefs.recommendedListings} onValueChange={(v)=>update({recommendedListings:v})} /></SettingsSection>
+    <SettingsSection theme={theme} title="Media & Data"><PreferenceSwitch theme={theme} title="Autoplay listing videos" value={prefs.autoplay} onValueChange={(v)=>update({autoplay:v})} /><PreferenceSwitch theme={theme} title="Load high-quality images" value={prefs.highQuality} onValueChange={(v)=>update({highQuality:v})} /><PreferenceSwitch theme={theme} title="Data saver mode" value={prefs.dataSaver} onValueChange={(v)=>update({dataSaver:v})} /><Pressable onPress={() => Alert.alert("Clear cached data", "No separate app cache is currently exposed by the existing storage system.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><RotateCcw size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Clear cached data</Text></Pressable></SettingsSection>
+    <SettingsSection theme={theme} title="App Behavior"><PreferenceSwitch theme={theme} title="Confirm before deleting a listing" value={prefs.confirmDelete} onValueChange={(v)=>update({confirmDelete:v})} /><PreferenceSwitch theme={theme} title="Confirm before signing out" value={prefs.confirmSignOut} onValueChange={(v)=>update({confirmSignOut:v})} /><Pressable onPress={() => Alert.alert("Reset app preferences", "Reset all locally stored Marketplace preferences?", [{text:"Cancel",style:"cancel"},{text:"Reset",style:"destructive",onPress:async()=>{await AsyncStorage.removeItem("marketplace_settings");setPrefs({ language:"English",region:"Kenya",currency:"KES",fulfillment:"Both",recommendations:true,recentlyViewed:true,recommendedListings:true,autoplay:true,highQuality:true,dataSaver:false,confirmDelete:true,confirmSignOut:true });setDark(false);}}])} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><RotateCcw size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Reset app preferences</Text></Pressable></SettingsSection>
+  </ScreenScroll>;
+}
+
+function SecurityPrivacyScreen({ theme, auth, onSignOut }: { theme: Theme; auth: AuthPayload | null; onSignOut: () => void }) {
+  const [prefs, setPrefs] = useState<any>({ profileVisibility: true, contact: true, activity: true, recommendations: true, sharing: false });
+  useEffect(() => { AsyncStorage.getItem("marketplace_privacy").then(raw => { if(raw) setPrefs((p:any)=>({...p,...JSON.parse(raw)})); }).catch(()=>{}); }, []);
+  const update=(patch:any)=>{const next={...prefs,...patch};setPrefs(next);void AsyncStorage.setItem("marketplace_privacy",JSON.stringify(next));};
+  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}>
+    <SettingsSection theme={theme} title="Account Security"><PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.text}/>} title="Change password" description="Use the existing password recovery flow." onPress={() => Alert.alert("Change password", "Password change requires backend support. You can use Forgot Password from the login screen while the account endpoint is unavailable.")} /><PreferenceActionRow theme={theme} icon={<RotateCcw size={18} color={theme.text}/>} title="Forgot / reset password" description="Start the existing recovery flow." onPress={() => Alert.alert("Password recovery", "Sign out and use Forgot Password from the existing login screen.")} /><PreferenceActionRow theme={theme} icon={<Check size={18} color={theme.text}/>} title="Google account connection" description={"Google authentication is configured through the existing OAuth flow."} /><PreferenceActionRow theme={theme} icon={<LogOut size={18} color={theme.text}/>} title="Sign out of this device" onPress={onSignOut} /><PreferenceActionRow theme={theme} icon={<Users size={18} color={theme.text}/>} title="Sign out of all devices" description="No backend endpoint is exposed for this operation." onPress={() => Alert.alert("Unavailable", "Sign out of all devices is not available because the current backend does not expose that endpoint.")} /></SettingsSection>
+    <SettingsSection theme={theme} title="Privacy"><PreferenceSwitch theme={theme} title="Profile visibility" value={prefs.profileVisibility} onValueChange={(v)=>update({profileVisibility:v})} /><PreferenceSwitch theme={theme} title="Who can contact me" value={prefs.contact} onValueChange={(v)=>update({contact:v})} /><PreferenceSwitch theme={theme} title="Show online / activity status" value={prefs.activity} onValueChange={(v)=>update({activity:v})} /><PreferenceSwitch theme={theme} title="Personalized recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})} /><PreferenceSwitch theme={theme} title="Data sharing / preferences" value={prefs.sharing} onValueChange={(v)=>update({sharing:v})} /></SettingsSection>
+    <SettingsSection theme={theme} title="Account Management"><PreferenceActionRow theme={theme} icon={<Share2 size={18} color={theme.text}/>} title="Download / export account data" description="Backend export endpoint is not currently available." onPress={() => Alert.alert("Unavailable", "Account data export is not currently supported by the backend." )} /><PreferenceActionRow theme={theme} icon={<Trash2 size={18} color="#D33D3D"/>} title="Delete account" description="This is permanent and destructive." destructive onPress={() => Alert.alert("Delete account", "Deleting your account is permanent. No deletion endpoint is currently available, so nothing will be changed.", [{text:"Cancel",style:"cancel"},{text:"I understand",style:"destructive"}])} /></SettingsSection>
+  </ScreenScroll>;
+}
+
+function NotificationPreferencesScreen({ theme }: { theme: Theme }) {
+  const defaults={allow:true,sound:true,vibration:true,messages:true,purchases:true,orders:true,listings:true,saved:true,seller:true,security:true,account:true,promotions:false,recommendations:true,offers:false,quiet:false};
+  const [prefs,setPrefs]=useState<any>(defaults);
+  useEffect(()=>{AsyncStorage.getItem("marketplace_notification_preferences").then(raw=>{if(raw)setPrefs((p:any)=>({...p,...JSON.parse(raw)}));}).catch(()=>{});},[]);
+  const update=(patch:any)=>{const next={...prefs,...patch};setPrefs(next);void AsyncStorage.setItem("marketplace_notification_preferences",JSON.stringify(next));};
+  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><SettingsSection theme={theme} title="Global"><PreferenceSwitch theme={theme} title="Allow notifications" value={prefs.allow} onValueChange={(v)=>update({allow:v})}/><PreferenceSwitch theme={theme} title="Notification sound" value={prefs.sound} onValueChange={(v)=>update({sound:v})}/><PreferenceSwitch theme={theme} title="Notification vibration" value={prefs.vibration} onValueChange={(v)=>update({vibration:v})}/></SettingsSection><SettingsSection theme={theme} title="Marketplace Activity"><PreferenceSwitch theme={theme} title="New messages" value={prefs.messages} onValueChange={(v)=>update({messages:v})}/><PreferenceSwitch theme={theme} title="Purchase requests" value={prefs.purchases} onValueChange={(v)=>update({purchases:v})}/><PreferenceSwitch theme={theme} title="Order updates" value={prefs.orders} onValueChange={(v)=>update({orders:v})}/><PreferenceSwitch theme={theme} title="Listing activity" value={prefs.listings} onValueChange={(v)=>update({listings:v})}/><PreferenceSwitch theme={theme} title="Saved listing updates" value={prefs.saved} onValueChange={(v)=>update({saved:v})}/><PreferenceSwitch theme={theme} title="Seller activity" value={prefs.seller} onValueChange={(v)=>update({seller:v})}/></SettingsSection><SettingsSection theme={theme} title="Security"><PreferenceSwitch theme={theme} title="Login / security alerts" value={prefs.security} onValueChange={(v)=>update({security:v})}/><PreferenceSwitch theme={theme} title="Account changes" value={prefs.account} onValueChange={(v)=>update({account:v})}/></SettingsSection><SettingsSection theme={theme} title="Marketing"><PreferenceSwitch theme={theme} title="Promotions" value={prefs.promotions} onValueChange={(v)=>update({promotions:v})}/><PreferenceSwitch theme={theme} title="Marketplace recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})}/><PreferenceSwitch theme={theme} title="Special offers" value={prefs.offers} onValueChange={(v)=>update({offers:v})}/></SettingsSection><SettingsSection theme={theme} title="Quiet Hours"><PreferenceSwitch theme={theme} title="Enable quiet hours" value={prefs.quiet} onValueChange={(v)=>update({quiet:v})}/><Text style={[styles.preferenceDescription,{color:theme.muted,padding:14}]}>Start and end time controls can be connected to the Android notification scheduler when one is available; no second notification system is introduced here.</Text></SettingsSection><Pressable onPress={()=>Alert.alert("Mark all as read","This action is supported by the existing notifications feed when authenticated.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><Check size={18} color={theme.accent}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Mark all notifications as read</Text></Pressable><Pressable onPress={()=>Alert.alert("Notification history","History clearing is only available if the backend/feed exposes that operation.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><Trash2 size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Clear notification history</Text></Pressable></ScreenScroll>;
+}
+
+function HelpSupportScreen({ theme, onFAQ, onSafety, onReport, onTerms, onPrivacy }: { theme: Theme; onFAQ:()=>void; onSafety:()=>void; onReport:()=>void; onTerms:()=>void; onPrivacy:()=>void }) {
+  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><SettingsSection theme={theme} title="Help Center"><PreferenceActionRow theme={theme} icon={<MessageCircle size={18} color={theme.text}/>} title="Frequently Asked Questions" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<ShoppingBag size={18} color={theme.text}/>} title="Buying on Marketplace" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<Store size={18} color={theme.text}/>} title="Selling on Marketplace" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<Tag size={18} color={theme.text}/>} title="Making / editing a listing" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<ShoppingBag size={18} color={theme.text}/>} title="Managing orders" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<MessageCircle size={18} color={theme.text}/>} title="Messages" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<User size={18} color={theme.text}/>} title="Account & login help" onPress={onFAQ}/></SettingsSection><SettingsSection theme={theme} title="Safety"><PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.text}/>} title="Marketplace safety tips" onPress={onSafety}/><PreferenceActionRow theme={theme} icon={<AlertCircle size={18} color={theme.text}/>} title="Avoiding scams" onPress={onSafety}/><PreferenceActionRow theme={theme} icon={<Check size={18} color={theme.text}/>} title="Safe payments & meetups" onPress={onSafety}/><PreferenceActionRow theme={theme} icon={<AlertCircle size={18} color={theme.text}/>} title="Report suspicious users / listings" onPress={onReport}/></SettingsSection><SettingsSection theme={theme} title="Reporting"><PreferenceActionRow theme={theme} icon={<AlertCircle size={18} color={theme.text}/>} title="Report a listing" onPress={onReport}/><PreferenceActionRow theme={theme} icon={<User size={18} color={theme.text}/>} title="Report a user" onPress={onReport}/><PreferenceActionRow theme={theme} icon={<AlertCircle size={18} color={theme.text}/>} title="Report a problem" onPress={onReport}/></SettingsSection><SettingsSection theme={theme} title="Support"><PreferenceActionRow theme={theme} icon={<MessageCircle size={18} color={theme.text}/>} title="Contact Support" description="No dedicated support endpoint or contact address is configured in the current app." onPress={()=>Alert.alert("Contact Support","A support contact method has not been configured in the existing project.")}/></SettingsSection><SettingsSection theme={theme} title="Legal"><PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.text}/>} title="Terms of Service" onPress={onTerms}/><PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.text}/>} title="Privacy Policy" onPress={onPrivacy}/><PreferenceActionRow theme={theme} icon={<Check size={18} color={theme.text}/>} title="Community / Safety Guidelines" onPress={onSafety}/></SettingsSection><SettingsSection theme={theme} title="App Information"><Text style={[styles.appInfoText,{color:theme.muted}]}>Marketplace mobile application</Text><Text style={[styles.appInfoText,{color:theme.muted}]}>Version: 1.0.0</Text><Text style={[styles.appInfoText,{color:theme.muted}]}>Expo SDK 54 compatible project</Text></SettingsSection></ScreenScroll>;
+}
+
+const FAQ_DATA = [
+  ["BUYING", ["How do I buy an item?","How do I contact a seller?","How do I save a listing?","How do I report a seller?"]],
+  ["SELLING", ["How do I create a listing?","How do I edit a listing?","How do I remove a listing?","How do I respond to buyers?"]],
+  ["ACCOUNT", ["How do I change my password?","How do I sign out?","How do I delete my account?"]],
+  ["SAFETY", ["How do I avoid scams?","What should I do if a seller asks for unusual payment?","How do I report suspicious activity?"]],
+] as const;
+function FAQScreen({ theme }: { theme: Theme }) { const [open,setOpen]=useState<string|null>(null); const answers:any={"How do I buy an item?":"Open a listing, review the seller and order details, then use the purchase flow available for that listing.","How do I contact a seller?":"Open a listing and use the existing contact/messages action.","How do I save a listing?":"Use the save/bookmark action on a listing while signed in.","How do I report a seller?":"Use Report a Problem or the reporting flow from the relevant listing/user interface.","How do I create a listing?":"Use Sell from the bottom navigation while signed in.","How do I edit a listing?":"Open your Seller workspace and choose the listing you want to edit.","How do I remove a listing?":"Use the existing listing management controls. Destructive actions should be confirmed first.","How do I respond to buyers?":"Open Messages and reply to the buyer conversation.","How do I change my password?":"Use Forgot Password from the existing login flow. Direct password-change support depends on a backend endpoint.","How do I sign out?":"Open Security & Privacy and choose Sign out of this device.","How do I delete my account?":"The UI provides a destructive confirmation, but the current backend must expose a deletion endpoint before any deletion can occur.","How do I avoid scams?":"Keep conversations in Marketplace, verify listings and sellers, and avoid unusual payment requests.","What should I do if a seller asks for unusual payment?":"Do not send payment until the request is verified; report the listing or user if it appears suspicious.","How do I report suspicious activity?":"Use Report a Problem or Report Listing / Report User with a required reason and optional details."}; return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}>{FAQ_DATA.map(([cat,items])=><SettingsSection key={cat} theme={theme} title={cat}>{items.map(q=><Pressable key={q} onPress={()=>setOpen(open===q?null:q)} style={[styles.faqRow,{borderBottomColor:theme.border}]}><View style={{flex:1}}><Text style={[styles.faqQuestion,{color:theme.text}]}>{q}</Text>{open===q&&<Text style={[styles.faqAnswer,{color:theme.muted}]}>{answers[q]}</Text>}</View>{open===q?<ChevronUp size={18} color={theme.muted}/>:<ChevronDown size={18} color={theme.muted}/>}</Pressable>)}</SettingsSection>)}</ScreenScroll>; }
+
+function ReportProblemScreen({ theme, auth }: { theme: Theme; auth: AuthPayload | null }) { const [category,setCategory]=useState("Login problem"); const [description,setDescription]=useState(""); const [listingId,setListingId]=useState(""); const [reportId,setReportId]=useState(""); const categories=["Login problem","Payment problem","Listing problem","Messaging problem","App crash","Performance problem","Security concern","Other"]; const submit=()=>{if(!category||description.trim().length<10){Alert.alert("Check the form","Choose a category and enter at least 10 characters describing the problem.");return;} Alert.alert("Report ready","The current backend does not expose a support-report endpoint, so nothing was sent to the server. Your details can be connected to a real endpoint later.");}; return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><SettingsSection theme={theme} title="Problem category"><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:8}}>{categories.map(c=><ChoiceChip key={c} theme={theme} label={c} selected={category===c} onPress={()=>setCategory(c)}/>)}</ScrollView></SettingsSection><SettingsSection theme={theme} title="Details"><TextInput value={description} onChangeText={setDescription} placeholder="Describe what happened..." placeholderTextColor={theme.muted} multiline style={[styles.reportInput,{color:theme.text,backgroundColor:theme.card,borderColor:theme.border}]}/><TextInput value={listingId} onChangeText={setListingId} placeholder="Optional listing ID" placeholderTextColor={theme.muted} style={[styles.reportInputSingle,{color:theme.text,backgroundColor:theme.card,borderColor:theme.border}]}/><TextInput value={reportId} onChangeText={setReportId} placeholder="Optional user / report ID" placeholderTextColor={theme.muted} style={[styles.reportInputSingle,{color:theme.text,backgroundColor:theme.card,borderColor:theme.border}]}/></SettingsSection><Pressable onPress={submit} style={[styles.authPrimary,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.authPrimaryText}>Submit Report</Text><Send size={17} color="#fff"/></Pressable></ScreenScroll>; }
+
+function SafetyTipsScreen({ theme }: { theme: Theme }) { const tips=["Keep conversations in Marketplace whenever possible.","Verify the listing, seller identity and item details before paying.","Avoid unusual payment requests, rushed transfers or requests for credentials.","For meetups, use a public place and let someone you trust know where you are.","Report suspicious listings, users, harassment, scams or prohibited items."]; return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><View style={[styles.safetyHero,{backgroundColor:theme.card,borderColor:theme.border}]}><LockKeyhole size={28} color={theme.accent}/><Text style={[styles.profileAuthTitle,{color:theme.text}]}>Marketplace Safety</Text><Text style={[styles.profileAuthText,{color:theme.muted}]}>Use these practical safeguards when buying, selling or meeting another marketplace member.</Text></View>{tips.map((tip,i)=><View key={tip} style={[styles.safetyTip,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.safetyNumber,{backgroundColor:theme.accent}]}><Text style={{color:"#fff",fontWeight:"900"}}>{i+1}</Text></View><Text style={[styles.preferenceDescription,{color:theme.text,flex:1}]}>{tip}</Text></View>)}</ScreenScroll>; }
+
+function LegalInfoScreen({ theme, kind }: { theme: Theme; kind: "terms" | "privacy" }) { const privacy=kind==="privacy"; return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><View style={[styles.legalCard,{backgroundColor:theme.card,borderColor:theme.border}]}><Text style={[styles.legalTitle,{color:theme.text}]}>{privacy?"Privacy Policy":"Terms of Service"}</Text><Text style={[styles.legalText,{color:theme.muted}]}>{privacy?"This screen provides the in-app privacy information currently supported by the project. Marketplace authentication and account data are used to provide the app's marketplace features. Preferences stored locally remain on the device unless an existing backend operation sends them.":"Use of Marketplace is subject to the rules and safeguards presented in the app. Users are responsible for accurate listings, lawful transactions and respectful communication. Existing backend capabilities determine which account and marketplace operations can be performed."}</Text><Text style={[styles.legalHeading,{color:theme.text}]}>Important</Text><Text style={[styles.legalText,{color:theme.muted}]}>No external legal URL was found in the current project, so this screen does not invent one. Replace or expand this content when the production legal documents are configured.</Text></View></ScreenScroll>; }
+
+function SettingsSection({ theme, title, children }: { theme:Theme; title:string; children:React.ReactNode }) { return <View style={{marginBottom:14}}><Text style={[styles.settingsSectionTitle,{color:theme.text}]}>{title}</Text>{children}</View>; }
+function ChoiceChip({ theme, label, selected, onPress }: { theme:Theme; label:string; selected:boolean; onPress:()=>void }) { return <Pressable onPress={onPress} style={[styles.choiceChip,{backgroundColor:selected?BUTTON_BLUE:theme.card,borderColor:selected?BUTTON_BLUE:theme.border}]}><Text style={{fontSize:10,fontWeight:"800",color:selected?"#fff":theme.text}}>{label}</Text></Pressable>; }
+function ChoiceRow({ theme, title, options, value, onChange }: {theme:Theme;title:string;options:string[];value:string;onChange:(v:string)=>void}) { return <View style={[styles.preferenceBlock,{backgroundColor:theme.card,borderColor:theme.border}]}><Text style={[styles.preferenceTitle,{color:theme.text}]}>{title}</Text><View style={{flexDirection:"row",flexWrap:"wrap",gap:7,marginTop:9}}>{options.map(o=><ChoiceChip key={o} theme={theme} label={o} selected={value===o} onPress={()=>onChange(o)}/>)}</View></View>; }
+function PreferenceActionRow({ theme, icon, title, description, onPress, destructive=false }: {theme:Theme;icon:React.ReactNode;title:string;description?:string;onPress:()=>void;destructive?:boolean}) { return <Pressable onPress={onPress} style={[styles.preferenceActionRow,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.preferenceActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}>{icon}</View><View style={{flex:1}}><Text style={[styles.preferenceTitle,{color:destructive?"#D33D3D":theme.text}]}>{title}</Text>{description&&<Text style={[styles.preferenceDescription,{color:theme.muted}]}>{description}</Text>}</View><ChevronRight size={18} color={theme.muted}/></Pressable>; }
+
 function SettingsScreen({ theme, dark, setDark }: { theme: Theme; dark: boolean; setDark: (v:boolean)=>void }) { return <ScreenScroll theme={theme}><SettingRow theme={theme} icon={<Moon size={19} color={theme.text}/>} title="Dark mode" trailing={<Switch value={dark} onValueChange={setDark} thumbColor={dark?"#fff":"#f4f3f4"} trackColor={{false:"#D5D1DB",true:theme.accent}}/>}/><SettingRow theme={theme} icon={<Bell size={19} color={theme.text}/>} title="Notifications" trailing={<Check size={18} color={theme.accent}/>} /><SettingRow theme={theme} icon={<Users size={19} color={theme.text}/>} title="Privacy" trailing={<ChevronRight size={18} color={theme.muted}/>} /></ScreenScroll>; }
 function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserUpdated }: { theme: Theme; auth: AuthPayload | null; onOpenProduct: (listing: Listing) => void; onMarketplaceChanged?: () => void; onUserUpdated?: (user: ApiUser) => void }) {
   const [store, setStore] = useState<ProfileStore | null>(null);

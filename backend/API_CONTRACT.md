@@ -68,3 +68,36 @@ Reviews should only be submitted after a completed order.
 
 ## Health
 - `GET /api/health/`
+
+## Account, Preferences & Support APIs
+
+All endpoints below require the existing `Authorization: Bearer <access-token>` header unless marked public.
+
+### Preferences
+- `GET /api/auth/preferences/`
+- `PATCH /api/auth/preferences/` with `{ "settings": { ... } }`
+- `DELETE /api/auth/preferences/` resets preferences to defaults.
+
+### Notification preferences
+- `GET /api/auth/notification-preferences/`
+- `PATCH /api/auth/notification-preferences/` with `{ "settings": { ... } }`
+- `DELETE /api/auth/notification-preferences/` resets preferences to defaults.
+
+### Password & account security
+- `POST /api/auth/change-password/` with `current_password`, `new_password`, `new_password_confirm`.
+- `POST /api/auth/password-reset/` with `email` (public; response does not reveal whether the account exists).
+- `POST /api/auth/password-reset/confirm/` with `uid`, `token`, `new_password`, `new_password_confirm` (public).
+- `POST /api/auth/sign-out-all/` revokes all outstanding refresh tokens for the authenticated user.
+
+### Account management
+- `GET /api/auth/export-data/` returns the authenticated user's account data as JSON.
+- `POST /api/auth/delete-account/` with `confirmation: "DELETE"` and optional password verification.
+
+### Reports & support
+`POST /api/reports/` now supports both general problem reports and targeted marketplace reports. A general problem report may use `category`, `reason` (optional; defaults to category), and `description` without a listing/user target. Targeted reports can include `listing`, `reported_user`, `store`, or `order` and require a reason.
+
+### Notification history
+- `POST /api/notifications/mark_all_read/` marks all notifications read.
+- `DELETE /api/notifications/clear_history/` permanently clears the authenticated user's notification history.
+
+Backend-dependent operations are implemented as real endpoints; the API never returns a fake success for an unavailable operation.

@@ -2,6 +2,7 @@ from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.base_user import BaseUserManager
 from django.db import models
 
+
 class User(AbstractUser):
     username = None
     email = models.EmailField(unique=True)
@@ -16,6 +17,7 @@ class User(AbstractUser):
     REQUIRED_FIELDS = []
 
     objects: BaseUserManager = None
+
     def save(self, *args, **kwargs):
         if self.full_name and not self.first_name:
             parts = self.full_name.strip().split(" ", 1)
@@ -44,14 +46,30 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
-
         if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True.")
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True.")
-
         return self.create_user(email, password, **extra_fields)
 
-# attach the custom manager
-User.add_to_class('objects', UserManager())
- 
+
+User.add_to_class("objects", UserManager())
+
+
+class UserPreferences(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="preferences")
+    # Kept as JSON so new mobile settings can be added without a migration for every toggle.
+    settings = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Preferences for {self.user.email}"
+
+
+class NotificationPreferences(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="notification_preferences")
+    settings = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Notification preferences for {self.user.email}"
