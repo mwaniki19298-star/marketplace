@@ -1,5 +1,6 @@
 module.exports = ({ config }) => {
   const domain = (process.env.EXPO_PUBLIC_WEB_DOMAIN || process.env.MARKETPLACE_WEB_DOMAIN || '').trim();
+  const apiBaseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL || 'https://emilio2026.pythonanywhere.com').trim().replace(/\/$/, '');
   const packageName = process.env.EXPO_PUBLIC_ANDROID_PACKAGE || 'com.marketplace.mobile';
   const bundleIdentifier = process.env.EXPO_PUBLIC_IOS_BUNDLE_ID || 'com.marketplace.mobile';
 
@@ -60,6 +61,11 @@ module.exports = ({ config }) => {
     extra: {
       ...(config.extra || {}),
       marketplaceWebDomain: domain,
+      apiBaseUrl,
+      eas: {
+        ...(config.extra?.eas || {}),
+        projectId: '74068dfe-41f1-4547-8c6d-a8702ed12a25',
+      },
     },
   };
 };

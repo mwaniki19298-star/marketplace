@@ -66,8 +66,17 @@ class MessageViewSet(viewsets.ModelViewSet):
         conversation = serializer.validated_data["conversation"]
         if self.request.user not in (conversation.buyer, conversation.seller):
             raise PermissionDenied("You are not a member of this conversation.")
-        serializer.save(sender=self.request.user)
+        message = serializer.save(sender=self.request.user)
         Conversation.objects.filter(pk=conversation.pk).update(updated_at=timezone.now())
+        recipient = conversation.seller if conversation.buyer_id == self.request.user.id else conversation.buyer
+        from notifications.models import Notification
+        Notification.objects.create(
+            user=recipient,
+            kind=Notification.Kind.MESSAGE,
+            title=f"New message from {self.request.user.full_name}",
+            body=message.body[:180],
+            data={"conversation_id": conversation.id, "message_id": message.id},
+        )
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()

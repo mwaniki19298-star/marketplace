@@ -7,8 +7,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-change-me")
-DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
-raw_allowed_hosts = os.getenv("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
+DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
+raw_allowed_hosts = os.getenv("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,emilio2026.pythonanywhere.com")
 
 if raw_allowed_hosts.strip() == "*":
     ALLOWED_HOSTS = ["*"]
@@ -103,7 +103,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-CORS_ALLOWED_ORIGINS = [x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8081").split(",") if x.strip()]
+CORS_ALLOWED_ORIGINS = [x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8081,https://marketplace.co.ke,https://www.marketplace.co.ke").split(",") if x.strip()]
 CORS_ALLOW_CREDENTIALS = True
 
 REST_FRAMEWORK = {

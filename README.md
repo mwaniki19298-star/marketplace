@@ -10,9 +10,9 @@ This repo is being built in the phases the product brief laid out, so each
 piece gets real attention instead of a shallow pass across everything at
 once.
 
-- [x] **Design system + UI shell** — `frontend/` (this phase). Tokens,
+- [x] **Design system + UI shell** — `mobile/` (this phase). Tokens,
       primitives, responsive shell, Home / Browse / Product detail on mock
-      data. See `frontend/STYLE_GUIDE.md`.
+      data. Includes both web and mobile app. See `mobile/README.md`.
 - [ ] **Backend foundation** — Django/DRF project, Postgres schema, JWT +
       Google OAuth, Phase 1 API (auth, products, stores, categories).
 - [ ] **Seller flow** — store creation, listing management, purchase
@@ -23,7 +23,7 @@ once.
 ## Repo layout
 
 ```
-frontend/   React + TypeScript + Vite + Tailwind
+mobile/     React + TypeScript + Vite + Tailwind + React Native Web (web and mobile)
 backend/    Django + DRF + PostgreSQL (next phase)
 ```
 

@@ -1,6 +1,56 @@
-# Marketplace Mobile App
+# Marketplace Mobile & Web
 
-This mobile app now contains a functional navigation shell and working screens beyond Browse.
+This mobile app now contains a functional navigation shell and working screens beyond Browse. It also includes a responsive web version.
+
+## Run locally (Web)
+
+```bash
+cd mobile
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Open http://localhost:5173. Resize the window (or use dev tools device mode) to see the shell adapt — sidebar and top-bar search below 768px collapse into the mobile bottom nav.
+
+## Connect to backend (local development)
+
+Follow these steps to run the Django backend and have the mobile app proxy API calls to it during development.
+
+- **Backend (Windows PowerShell)**:
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env
+python manage.py migrate
+python manage.py runserver 8000
+```
+
+- **Backend (macOS / Linux / Git Bash)**:
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python manage.py migrate
+python manage.py runserver 8000
+```
+
+- **Mobile/Web (same machine)**:
+
+```bash
+cd mobile
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Visit http://localhost:5173 in the browser. The Vite dev server proxies requests under `/api` to the backend using `VITE_API_PROXY_TARGET`, so frontend code can call the API with the base path `/api`.
 
 ## Screens
 
@@ -33,6 +83,6 @@ For Expo Go on a physical phone, `EXPO_PUBLIC_API_BASE_URL` must point to the Dj
 ## Website commands
 
 - `npm run build` builds the static website into `dist/`.
-- `npm run dev` serves the built website directly with Node.js. It does **not** start the Expo development server.
-- `npm start` also serves the website directly.
+- `npm run dev` serves the website with the Vite development server. It starts a local development server and supports hot module replacement.
+- `npm start` is an alias for `npm run dev`.
 - On Render, use `npm install && npm run build` as the build command and `npm run dev` as the start command.

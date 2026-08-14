@@ -7,6 +7,12 @@
     <title>Marketplace</title>
   </head>
   <body>
+    <script>
+      window.global = window;
+      window.process = window.process || { env: {} };
+      window.process.env = window.process.env || {};
+      window.process.env.EXPO_OS = "web";
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
