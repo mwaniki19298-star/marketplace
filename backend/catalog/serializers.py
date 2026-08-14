@@ -24,7 +24,7 @@ class CategorySerializer(serializers.ModelSerializer):
 class ListingImageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ListingImage
-        fields = ["id", "image", "alt_text", "sort_order"]
+        fields = ["id", "image", "public_id", "alt_text", "sort_order"]
 
 class StoreSerializer(serializers.ModelSerializer):
     logo = serializers.SerializerMethodField()
@@ -84,6 +84,12 @@ class ListingWriteSerializer(serializers.ModelSerializer):
         required=False,
         allow_empty=True,
     )
+    image_public_ids = serializers.ListField(
+        child=serializers.CharField(max_length=512, allow_blank=True),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+    )
     category_name = serializers.CharField(write_only=True, required=False, allow_blank=False)
     category = serializers.PrimaryKeyRelatedField(
         queryset=Category.objects.filter(is_active=True),
@@ -96,6 +102,11 @@ class ListingWriteSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_featured"]
 
     def validate(self, attrs):
+        image_urls = attrs.get("image_urls")
+        if image_urls is not None:
+            for url in image_urls:
+                if not url.startswith("https://res.cloudinary.com/"):
+                    raise serializers.ValidationError({"image_urls": "Listing images must use HTTPS Cloudinary URLs."})
         is_on_offer = attrs.get("is_on_offer", getattr(self.instance, "is_on_offer", False))
         offer_price = attrs.get("offer_price", getattr(self.instance, "offer_price", None))
         price = attrs.get("price", getattr(self.instance, "price", None))
@@ -122,18 +133,26 @@ class ListingWriteSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         image_urls = validated_data.pop("image_urls", [])
+        image_public_ids = validated_data.pop("image_public_ids", [])
+        if image_public_ids and len(image_public_ids) != len(image_urls):
+            raise serializers.ValidationError({"image_public_ids": "Provide one public_id for each image URL."})
         self._resolve_category(validated_data)
         listing = super().create(validated_data)
         for index, url in enumerate(image_urls[:8]):
             ListingImage.objects.create(
                 listing=listing,
                 image=url,
+                public_id=image_public_ids[index] if index < len(image_public_ids) else "",
                 sort_order=index,
             )
         return listing
 
     def update(self, instance, validated_data):
         image_urls = validated_data.pop("image_urls", None)
+        image_public_ids = validated_data.pop("image_public_ids", None)
+        if image_urls is not None:
+            if image_public_ids is not None and len(image_public_ids) != len(image_urls):
+                raise serializers.ValidationError({"image_public_ids": "Provide one public_id for each image URL."})
         if "category_name" in validated_data or "category" in validated_data:
             self._resolve_category(validated_data)
         listing = super().update(instance, validated_data)
@@ -143,6 +162,7 @@ class ListingWriteSerializer(serializers.ModelSerializer):
                 ListingImage.objects.create(
                     listing=listing,
                     image=url,
+                    public_id=(image_public_ids[index] if image_public_ids is not None and index < len(image_public_ids) else ""),
                     sort_order=index,
                 )
         return listing

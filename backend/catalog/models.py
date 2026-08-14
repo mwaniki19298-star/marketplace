@@ -77,6 +77,7 @@ class Listing(Timestamped):
 class ListingImage(Timestamped):
     listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name="images")
     image = models.URLField(max_length=1200)
+    public_id = models.CharField(max_length=512, blank=True)
     alt_text = models.CharField(max_length=200, blank=True)
     sort_order = models.PositiveIntegerField(default=0)
     class Meta: ordering = ("sort_order", "id")

@@ -101,3 +101,27 @@ All endpoints below require the existing `Authorization: Bearer <access-token>` 
 - `DELETE /api/notifications/clear_history/` permanently clears the authenticated user's notification history.
 
 Backend-dependent operations are implemented as real endpoints; the API never returns a fake success for an unavailable operation.
+
+## Cloudinary image upload
+
+`POST /api/media/cloudinary/sign/` requires `Authorization: Bearer <access_token>`.
+
+Request JSON:
+```json
+{"type":"listing"}
+```
+
+Response contains `cloud_name`, `api_key`, `timestamp`, `signature`, `folder`, `allowed_formats`, `max_file_size`, and `resource_type`. The Cloudinary API secret is never returned.
+
+The mobile client then performs a signed multipart upload directly to Cloudinary. The signed fields must be echoed unchanged. Cloudinary returns `secure_url` and `public_id`.
+
+Listing create/update accepts:
+```json
+{
+  "image_urls": ["https://res.cloudinary.com/..."],
+  "image_public_ids": ["marketplace/listings/user_123/..."]
+}
+```
+`image_public_ids` is optional for backwards compatibility, but when supplied it must contain one ID per URL. Listing image records persist both values.
+
+Accepted image formats: JPEG/JPG, PNG, WEBP. Application-side maximum: 10 MiB by default (`CLOUDINARY_MAX_IMAGE_BYTES`).

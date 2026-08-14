@@ -178,7 +178,7 @@ class CloudinarySignatureView(APIView):
             upload_type = str(request.data.get("type", "listing")).strip().lower()
             allowed_types = {"listing", "avatar", "store_logo", "store_cover"}
             if upload_type not in allowed_types:
-                upload_type = "listing"
+                return Response({"detail": "Unsupported upload type."}, status=status.HTTP_400_BAD_REQUEST)
 
             folders = {
                 "listing": f"marketplace/listings/user_{request.user.id}",
@@ -187,7 +187,12 @@ class CloudinarySignatureView(APIView):
                 "store_cover": f"marketplace/stores/user_{request.user.id}/cover",
             }
             folder = folders[upload_type]
-            params = {"folder": folder, "timestamp": timestamp}
+            allowed_formats = "jpg,jpeg,png,webp"
+            params = {
+                "folder": folder,
+                "timestamp": timestamp,
+                "allowed_formats": allowed_formats,
+            }
             signature = api_sign_request(params, api_secret)
 
             return Response({
@@ -196,6 +201,8 @@ class CloudinarySignatureView(APIView):
                 "timestamp": timestamp,
                 "signature": signature,
                 "folder": folder,
+                "allowed_formats": allowed_formats,
+                "max_file_size": getattr(settings, "CLOUDINARY_MAX_IMAGE_BYTES", 10 * 1024 * 1024),
                 "resource_type": "image",
             })
         except Exception as exc:

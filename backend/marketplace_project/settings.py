@@ -149,6 +149,7 @@ IOS_APP_STORE_URL = os.getenv("IOS_APP_STORE_URL", "").strip()
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+CLOUDINARY_MAX_IMAGE_BYTES = int(os.getenv("CLOUDINARY_MAX_IMAGE_BYTES", str(10 * 1024 * 1024)))
 
 if not all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
     cloudinary_url = os.getenv("CLOUDINARY_URL", "").strip()
