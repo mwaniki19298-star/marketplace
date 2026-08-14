@@ -13,7 +13,9 @@
         "EXPO_PUBLIC_API_BASE_URL": "https://emilio2026.pythonanywhere.com",
         "EXPO_PUBLIC_WEB_BASE_URL": "https://marketplace.co.ke",
         "EXPO_PUBLIC_WEB_DOMAIN": "marketplace.co.ke",
-        "EXPO_PUBLIC_ANDROID_PACKAGE": "com.marketplace.mobile"
+        "EXPO_PUBLIC_ANDROID_PACKAGE": "com.marketplace.mobile",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u78-6vbd188aln1b5bhqmefg.apps.googleusercontent.com"
       }
     },
     "production": {
@@ -25,7 +27,9 @@
         "EXPO_PUBLIC_API_BASE_URL": "https://emilio2026.pythonanywhere.com",
         "EXPO_PUBLIC_WEB_BASE_URL": "https://marketplace.co.ke",
         "EXPO_PUBLIC_WEB_DOMAIN": "marketplace.co.ke",
-        "EXPO_PUBLIC_ANDROID_PACKAGE": "com.marketplace.mobile"
+        "EXPO_PUBLIC_ANDROID_PACKAGE": "com.marketplace.mobile",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u78-6vbd188aln1b5bhqmefg.apps.googleusercontent.com"
       }
     }
   }
