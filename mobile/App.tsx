@@ -305,7 +305,17 @@ async function apiRequest(path: string, options: RequestInit = {}, auth?: AuthPa
 
 type CloudinaryUploadResult = { secure_url: string; public_id: string };
 
-async function uploadAssetToCloudinary(asset: ImagePicker.ImagePickerAsset, auth: AuthPayload, type: "listing" | "avatar" | "store_logo" | "store_cover" = "listing"): Promise<CloudinaryUploadResult> {
+/**
+ * Upload images directly from the Expo app to Cloudinary using an UNSIGNED
+ * upload preset. The Django API is only used after the upload to save the
+ * returned secure_url/public_id on the listing. No Cloudinary secret or
+ * signing request is sent through the backend.
+ */
+async function uploadAssetToCloudinary(
+  asset: ImagePicker.ImagePickerAsset,
+  _auth: AuthPayload | null,
+  type: "listing" | "avatar" | "store_logo" | "store_cover" = "listing",
+): Promise<CloudinaryUploadResult> {
   const allowedMimeTypes = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
   if (asset.mimeType && !allowedMimeTypes.has(asset.mimeType.toLowerCase())) {
     throw new ApiRequestError("Unsupported image format. Use JPEG, PNG, or WEBP.", 400, false);
@@ -313,34 +323,52 @@ async function uploadAssetToCloudinary(asset: ImagePicker.ImagePickerAsset, auth
   if (typeof asset.fileSize === "number" && asset.fileSize > 10 * 1024 * 1024) {
     throw new ApiRequestError("Image exceeds the maximum allowed size of 10 MB.", 400, false);
   }
-  const signed = await apiRequest("/api/media/cloudinary/sign/", { method: "POST", body: JSON.stringify({ type }) }, auth);
+
+  const cloudName = String(process.env.EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME || "").trim();
+  const uploadPreset = String(
+    type === "listing"
+      ? process.env.EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET
+      : process.env.EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "",
+  ).trim();
+
+  if (!cloudName || !uploadPreset) {
+    throw new ApiRequestError(
+      "Image upload is not configured. Add EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME and EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET to the mobile environment.",
+      503,
+      false,
+    );
+  }
+
   const form = new FormData();
   form.append("file", {
     uri: asset.uri,
-    name: asset.fileName || `listing-${Date.now()}.jpg`,
+    name: asset.fileName || `${type}-${Date.now()}.jpg`,
     type: asset.mimeType || "image/jpeg",
   } as any);
-  form.append("api_key", signed.api_key);
-  form.append("timestamp", String(signed.timestamp));
-  form.append("signature", signed.signature);
-  form.append("folder", signed.folder);
-  form.append("allowed_formats", signed.allowed_formats);
+  form.append("upload_preset", uploadPreset);
 
   let response: Response;
   try {
-    response = await fetch(`https://api.cloudinary.com/v1_1/${signed.cloud_name}/image/upload`, {
+    response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
       method: "POST",
       body: form,
     });
   } catch {
-    throw new ApiRequestError("We couldn't upload the listing photos. Check your connection and try again.", null, true);
+    throw new ApiRequestError("We couldn't upload the image. Check your internet connection and try again.", null, true);
   }
+
   const text = await response.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+
   if (!response.ok || !data?.secure_url) {
-    throw new ApiRequestError(data?.error?.message || "Cloudinary could not upload the listing photo.", response.status, false);
+    throw new ApiRequestError(
+      data?.error?.message || "Cloudinary could not upload the image.",
+      response.status,
+      false,
+    );
   }
+
   return { secure_url: data.secure_url, public_id: data.public_id || "" };
 }
 

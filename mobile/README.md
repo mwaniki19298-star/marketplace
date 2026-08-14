@@ -86,3 +86,19 @@ For Expo Go on a physical phone, `EXPO_PUBLIC_API_BASE_URL` must point to the Dj
 - `npm run dev` serves the website with the Vite development server. It starts a local development server and supports hot module replacement.
 - `npm start` is an alias for `npm run dev`.
 - On Render, use `npm install && npm run build` as the build command and `npm run dev` as the start command.
+
+
+## Direct Cloudinary image uploads
+
+Listing images are uploaded directly from the Expo/Android app to Cloudinary using an **unsigned upload preset**. The Django API is not in the image-byte upload path; it only receives the resulting Cloudinary `secure_url` and `public_id` when the listing is created.
+
+Configure these mobile build-time variables:
+
+```text
+EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME=...
+EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET=...
+```
+
+The Cloudinary upload preset must be **unsigned** and restricted to the Marketplace image requirements. Never put `CLOUDINARY_API_SECRET` or any other Cloudinary secret in the mobile app.
+
+The backend `/api/media/cloudinary/sign/` endpoint is retained for backward compatibility with older clients, but the current mobile client does not call it.
