@@ -1,9 +1,16 @@
 from rest_framework import viewsets
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from .models import Recommendation, Review
 from .serializers import RecommendationSerializer, ReviewSerializer
+class ListingReviewsView(APIView):
+    permission_classes = [AllowAny]
+    def get(self, request, listing_id):
+        qs = Review.objects.select_related("reviewer", "listing").filter(listing_id=listing_id).order_by("-created_at")
+        return Response(ReviewSerializer(qs, many=True).data)
+
 class ReviewViewSet(viewsets.ModelViewSet):
     serializer_class = ReviewSerializer
     permission_classes = [IsAuthenticated]

@@ -1,7 +1,7 @@
 from rest_framework import serializers
 import base64
 from django.utils.text import slugify
-from .models import Category, Listing, ListingImage, ListingLike, SavedItem, Store, StoreFollow
+from .models import Category, Listing, ListingImage, ListingLike, SavedItem, Store, StoreFollow, StoreEmailVerification
 
 def media_url(request, value):
     if not value:
@@ -47,9 +47,18 @@ class StoreSerializer(serializers.ModelSerializer):
     def get_cover(self, obj):
         return media_url(self.context.get("request"), obj.cover)
 
+    email_verified = serializers.SerializerMethodField()
+
+    def get_email_verified(self, obj):
+        try:
+            verification = obj.email_verification
+        except StoreEmailVerification.DoesNotExist:
+            verification = None
+        return bool(verification and verification.verified_at)
+
     class Meta:
         model = Store
-        fields = ["id", "owner", "owner_name", "name", "slug", "logo", "cover", "description", "location", "phone", "verification", "is_active", "created_at"]
+        fields = ["id", "owner", "owner_name", "name", "slug", "logo", "cover", "description", "location", "phone", "verification", "is_active", "email_verified", "created_at"]
         read_only_fields = ["owner"]
 
 class StoreProfileUpdateSerializer(serializers.ModelSerializer):
@@ -81,6 +90,9 @@ class ListingSerializer(serializers.ModelSerializer):
 
     def get_liked_by_user(self, obj):
         request = self.context.get("request")
+        cached = getattr(obj, "_liked_by_user", None)
+        if cached is not None:
+            return bool(cached)
         return bool(request and request.user.is_authenticated and ListingLike.objects.filter(listing=obj, user=request.user).exists())
 
     class Meta:

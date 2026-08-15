@@ -32,6 +32,19 @@ class Store(Timestamped):
     is_active = models.BooleanField(default=True)
     def __str__(self): return self.name
 
+class StoreEmailVerification(Timestamped):
+    store = models.OneToOneField(Store, on_delete=models.CASCADE, related_name="email_verification")
+    code_hash = models.CharField(max_length=128, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    @property
+    def is_verified(self):
+        return bool(self.verified_at)
+
+
 class Listing(Timestamped):
     class Kind(models.TextChoices):
         PRODUCT = "product", "Product"
@@ -90,6 +103,16 @@ class SavedItem(Timestamped):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["user", "listing"], name="unique_saved_item")]
 
+class CartItem(Timestamped):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="cart_items")
+    listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name="cart_items")
+    quantity = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["user", "listing"], name="unique_cart_item")]
+        indexes = [models.Index(fields=["user", "created_at"]), models.Index(fields=["listing", "created_at"])]
+
+
 class StoreFollow(Timestamped):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="store_follows")
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name="followers")
@@ -104,3 +127,35 @@ class ListingLike(Timestamped):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["user", "listing"], name="unique_listing_like")]
         indexes = [models.Index(fields=["listing", "created_at"])]
+
+
+class MarketplaceEvent(Timestamped):
+    class EventType(models.TextChoices):
+        VIEW = "view", "View"
+        LIKE = "like", "Like"
+        UNLIKE = "unlike", "Unlike"
+        SAVE = "save", "Save"
+        UNSAVE = "unsave", "Unsave"
+        SHARE = "share", "Share"
+        SEARCH = "search", "Search"
+        CLICK = "click", "Click"
+        CART_ADD = "cart_add", "Cart add"
+        PURCHASE = "purchase", "Purchase"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="marketplace_events")
+    event = models.CharField(max_length=20, choices=EventType.choices)
+    listing = models.ForeignKey(Listing, on_delete=models.CASCADE, null=True, blank=True, related_name="marketplace_events")
+    category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True, related_name="marketplace_events")
+    store = models.ForeignKey(Store, on_delete=models.SET_NULL, null=True, blank=True, related_name="marketplace_events")
+    query = models.CharField(max_length=200, blank=True)
+    value = models.FloatField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "event", "created_at"]),
+            models.Index(fields=["user", "listing", "created_at"]),
+            models.Index(fields=["user", "category", "created_at"]),
+            models.Index(fields=["user", "store", "created_at"]),
+            models.Index(fields=["event", "created_at"]),
+        ]

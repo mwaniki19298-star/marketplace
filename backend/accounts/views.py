@@ -6,7 +6,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, MultiPartParser, JSONParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import User
@@ -89,9 +89,19 @@ class GoogleAuthView(APIView):
         if changed: user.save(update_fields=changed)
         return Response({"user": UserSerializer(user, context={"request": request}).data, **token_pair(user)})
 
+class PublicUserView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, user_id):
+        user = get_object_or_404(User, pk=user_id, is_active=True)
+        return Response(UserSerializer(user, context={"request": request}).data)
+
+
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    # Accept both multipart/form-data (mobile image/profile updates) and JSON
+    # for backwards compatibility with existing clients.
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
         return Response(UserSerializer(request.user, context={"request": request}).data)

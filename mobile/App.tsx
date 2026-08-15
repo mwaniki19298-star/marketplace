@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Bookmark,
   Check,
+  ChevronLeft,
   ChevronRight,
   Compass,
   Heart,
@@ -33,6 +34,7 @@ import {
   Settings,
   Share2,
   ShoppingBag,
+  ShoppingCart,
   Sparkles,
   Store,
   Sun,
@@ -42,8 +44,10 @@ import {
   Paperclip,
   X,
   Phone,
+  Flag,
+  CheckCircle2,
 } from "lucide-react-native";
-import { ActivityIndicator, Alert, AppState, FlatList, Image, KeyboardAvoidingView, Linking, Share, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, FlatList, Image, KeyboardAvoidingView, Linking, Share, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, Modal, useWindowDimensions, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import * as WebBrowser from "expo-web-browser";
 import { makeRedirectUri, ResponseType, useAuthRequest } from "expo-auth-session";
@@ -53,7 +57,7 @@ import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import * as IntentLauncher from "expo-intent-launcher";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing } from "react-native";
 import { BackHandler } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -61,7 +65,321 @@ import { apiUrl, API_BASE_URL } from "./src/apiConfig";
 
 const BUTTON_BLUE = "#2563EB";
 
+const FEED_SESSION_KEY = "marketplace_feed_session";
+const FEED_PREFS_KEY = "marketplace_feed_preferences";
+
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function seededRandom(seed: number) {
+  let x = seed || 1;
+  return () => {
+    x += 0x6D2B79F5;
+    let t = x;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function getFeedScore(item: any, preferredCategories: Record<string, number>, random: () => number) {
+  const category = String(item?.category?.name ?? item?.category ?? "").toLowerCase();
+  const views = Number(item?.viewsCount ?? item?.views_count ?? item?.views ?? 0);
+  const created = item?.createdAt ?? item?.created_at ?? "";
+  const ageDays = created ? Math.max(0, (Date.now() - new Date(created).getTime()) / 86400000) : 999;
+  const categoryAffinity = preferredCategories[category] || 0;
+  const freshness = Math.max(0, 1 - ageDays / 30);
+  const popularity = Math.log1p(Math.max(0, views)) / 10;
+
+  // Mostly personalized/discovery, with controlled randomness so a new
+  // session does not look identical to the previous one.
+  return categoryAffinity * 4 + freshness * 2 + popularity * 1.5 + random() * 3;
+}
+
+
+function updateFeedPreference(
+  setter: React.Dispatch<React.SetStateAction<Record<string, number>>>,
+  category: string,
+  weight = 1
+) {
+  const key = String(category || "").trim().toLowerCase();
+  if (!key) return;
+  setter((current) => ({ ...current, [key]: (current[key] || 0) + weight }));
+}
+
+function shuffledMarketplaceItems(items: any[], preferredCategories: Record<string, number>, sessionSeed: number) {
+  const random = seededRandom(sessionSeed);
+  return [...items]
+    .map((item, index) => ({
+      item,
+      index,
+      score: getFeedScore(item, preferredCategories, random),
+    }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(({ item }) => item);
+}
+
 const filters = ["All", "Products", "Services", "New", "Used", "Nearby"];
+
+const PHONE_COUNTRIES: Array<{ code: string; name: string; dial: string }> = [
+  { code: "AF", name: "Afghanistan", dial: "+93" },
+  { code: "AL", name: "Albania", dial: "+355" },
+  { code: "DZ", name: "Algeria", dial: "+213" },
+  { code: "AD", name: "Andorra", dial: "+376" },
+  { code: "AO", name: "Angola", dial: "+244" },
+  { code: "AG", name: "Antigua & Barbuda", dial: "+1-268" },
+  { code: "AR", name: "Argentina", dial: "+54" },
+  { code: "AM", name: "Armenia", dial: "+374" },
+  { code: "AU", name: "Australia", dial: "+61" },
+  { code: "AT", name: "Austria", dial: "+43" },
+  { code: "AZ", name: "Azerbaijan", dial: "+994" },
+  { code: "BS", name: "Bahamas", dial: "+1-242" },
+  { code: "BH", name: "Bahrain", dial: "+973" },
+  { code: "BD", name: "Bangladesh", dial: "+880" },
+  { code: "BB", name: "Barbados", dial: "+1-246" },
+  { code: "BY", name: "Belarus", dial: "+375" },
+  { code: "BE", name: "Belgium", dial: "+32" },
+  { code: "BZ", name: "Belize", dial: "+501" },
+  { code: "BJ", name: "Benin", dial: "+229" },
+  { code: "BT", name: "Bhutan", dial: "+975" },
+  { code: "BO", name: "Bolivia", dial: "+591" },
+  { code: "BA", name: "Bosnia & Herzegovina", dial: "+387" },
+  { code: "BW", name: "Botswana", dial: "+267" },
+  { code: "BR", name: "Brazil", dial: "+55" },
+  { code: "BN", name: "Brunei", dial: "+673" },
+  { code: "BG", name: "Bulgaria", dial: "+359" },
+  { code: "BF", name: "Burkina Faso", dial: "+226" },
+  { code: "BI", name: "Burundi", dial: "+257" },
+  { code: "CV", name: "Cabo Verde", dial: "+238" },
+  { code: "KH", name: "Cambodia", dial: "+855" },
+  { code: "CM", name: "Cameroon", dial: "+237" },
+  { code: "CA", name: "Canada", dial: "+1" },
+  { code: "CF", name: "Central African Republic", dial: "+236" },
+  { code: "TD", name: "Chad", dial: "+235" },
+  { code: "CL", name: "Chile", dial: "+56" },
+  { code: "CN", name: "China", dial: "+86" },
+  { code: "CO", name: "Colombia", dial: "+57" },
+  { code: "KM", name: "Comoros", dial: "+269" },
+  { code: "CG", name: "Congo (Republic)", dial: "+242" },
+  { code: "CD", name: "Congo (DRC)", dial: "+243" },
+  { code: "CR", name: "Costa Rica", dial: "+506" },
+  { code: "CI", name: "Côte d’Ivoire", dial: "+225" },
+  { code: "HR", name: "Croatia", dial: "+385" },
+  { code: "CU", name: "Cuba", dial: "+53" },
+  { code: "CY", name: "Cyprus", dial: "+357" },
+  { code: "CZ", name: "Czechia", dial: "+420" },
+  { code: "DK", name: "Denmark", dial: "+45" },
+  { code: "DJ", name: "Djibouti", dial: "+253" },
+  { code: "DM", name: "Dominica", dial: "+1-767" },
+  { code: "DO", name: "Dominican Republic", dial: "+1-809" },
+  { code: "EC", name: "Ecuador", dial: "+593" },
+  { code: "EG", name: "Egypt", dial: "+20" },
+  { code: "SV", name: "El Salvador", dial: "+503" },
+  { code: "GQ", name: "Equatorial Guinea", dial: "+240" },
+  { code: "ER", name: "Eritrea", dial: "+291" },
+  { code: "EE", name: "Estonia", dial: "+372" },
+  { code: "SZ", name: "Eswatini", dial: "+268" },
+  { code: "ET", name: "Ethiopia", dial: "+251" },
+  { code: "FJ", name: "Fiji", dial: "+679" },
+  { code: "FI", name: "Finland", dial: "+358" },
+  { code: "FR", name: "France", dial: "+33" },
+  { code: "GA", name: "Gabon", dial: "+241" },
+  { code: "GM", name: "Gambia", dial: "+220" },
+  { code: "GE", name: "Georgia", dial: "+995" },
+  { code: "DE", name: "Germany", dial: "+49" },
+  { code: "GH", name: "Ghana", dial: "+233" },
+  { code: "GR", name: "Greece", dial: "+30" },
+  { code: "GD", name: "Grenada", dial: "+1-473" },
+  { code: "GT", name: "Guatemala", dial: "+502" },
+  { code: "GN", name: "Guinea", dial: "+224" },
+  { code: "GW", name: "Guinea-Bissau", dial: "+245" },
+  { code: "GY", name: "Guyana", dial: "+592" },
+  { code: "HT", name: "Haiti", dial: "+509" },
+  { code: "HN", name: "Honduras", dial: "+504" },
+  { code: "HU", name: "Hungary", dial: "+36" },
+  { code: "IS", name: "Iceland", dial: "+354" },
+  { code: "IN", name: "India", dial: "+91" },
+  { code: "ID", name: "Indonesia", dial: "+62" },
+  { code: "IR", name: "Iran", dial: "+98" },
+  { code: "IQ", name: "Iraq", dial: "+964" },
+  { code: "IE", name: "Ireland", dial: "+353" },
+  { code: "IL", name: "Israel", dial: "+972" },
+  { code: "IT", name: "Italy", dial: "+39" },
+  { code: "JM", name: "Jamaica", dial: "+1-876" },
+  { code: "JP", name: "Japan", dial: "+81" },
+  { code: "JO", name: "Jordan", dial: "+962" },
+  { code: "KZ", name: "Kazakhstan", dial: "+7" },
+  { code: "KE", name: "Kenya", dial: "+254" },
+  { code: "KI", name: "Kiribati", dial: "+686" },
+  { code: "KW", name: "Kuwait", dial: "+965" },
+  { code: "KG", name: "Kyrgyzstan", dial: "+996" },
+  { code: "LA", name: "Laos", dial: "+856" },
+  { code: "LV", name: "Latvia", dial: "+371" },
+  { code: "LB", name: "Lebanon", dial: "+961" },
+  { code: "LS", name: "Lesotho", dial: "+266" },
+  { code: "LR", name: "Liberia", dial: "+231" },
+  { code: "LY", name: "Libya", dial: "+218" },
+  { code: "LI", name: "Liechtenstein", dial: "+423" },
+  { code: "LT", name: "Lithuania", dial: "+370" },
+  { code: "LU", name: "Luxembourg", dial: "+352" },
+  { code: "MG", name: "Madagascar", dial: "+261" },
+  { code: "MW", name: "Malawi", dial: "+265" },
+  { code: "MY", name: "Malaysia", dial: "+60" },
+  { code: "MV", name: "Maldives", dial: "+960" },
+  { code: "ML", name: "Mali", dial: "+223" },
+  { code: "MT", name: "Malta", dial: "+356" },
+  { code: "MH", name: "Marshall Islands", dial: "+692" },
+  { code: "MR", name: "Mauritania", dial: "+222" },
+  { code: "MU", name: "Mauritius", dial: "+230" },
+  { code: "MX", name: "Mexico", dial: "+52" },
+  { code: "FM", name: "Micronesia", dial: "+691" },
+  { code: "MD", name: "Moldova", dial: "+373" },
+  { code: "MC", name: "Monaco", dial: "+377" },
+  { code: "MN", name: "Mongolia", dial: "+976" },
+  { code: "ME", name: "Montenegro", dial: "+382" },
+  { code: "MA", name: "Morocco", dial: "+212" },
+  { code: "MZ", name: "Mozambique", dial: "+258" },
+  { code: "MM", name: "Myanmar", dial: "+95" },
+  { code: "NA", name: "Namibia", dial: "+264" },
+  { code: "NR", name: "Nauru", dial: "+674" },
+  { code: "NP", name: "Nepal", dial: "+977" },
+  { code: "NL", name: "Netherlands", dial: "+31" },
+  { code: "NZ", name: "New Zealand", dial: "+64" },
+  { code: "NI", name: "Nicaragua", dial: "+505" },
+  { code: "NE", name: "Niger", dial: "+227" },
+  { code: "NG", name: "Nigeria", dial: "+234" },
+  { code: "KP", name: "North Korea", dial: "+850" },
+  { code: "MK", name: "North Macedonia", dial: "+389" },
+  { code: "NO", name: "Norway", dial: "+47" },
+  { code: "OM", name: "Oman", dial: "+968" },
+  { code: "PK", name: "Pakistan", dial: "+92" },
+  { code: "PW", name: "Palau", dial: "+680" },
+  { code: "PS", name: "Palestine", dial: "+970" },
+  { code: "PA", name: "Panama", dial: "+507" },
+  { code: "PG", name: "Papua New Guinea", dial: "+675" },
+  { code: "PY", name: "Paraguay", dial: "+595" },
+  { code: "PE", name: "Peru", dial: "+51" },
+  { code: "PH", name: "Philippines", dial: "+63" },
+  { code: "PL", name: "Poland", dial: "+48" },
+  { code: "PT", name: "Portugal", dial: "+351" },
+  { code: "QA", name: "Qatar", dial: "+974" },
+  { code: "RO", name: "Romania", dial: "+40" },
+  { code: "RU", name: "Russia", dial: "+7" },
+  { code: "RW", name: "Rwanda", dial: "+250" },
+  { code: "KN", name: "Saint Kitts & Nevis", dial: "+1-869" },
+  { code: "LC", name: "Saint Lucia", dial: "+1-758" },
+  { code: "VC", name: "Saint Vincent & Grenadines", dial: "+1-784" },
+  { code: "WS", name: "Samoa", dial: "+685" },
+  { code: "SM", name: "San Marino", dial: "+378" },
+  { code: "ST", name: "São Tomé & Príncipe", dial: "+239" },
+  { code: "SA", name: "Saudi Arabia", dial: "+966" },
+  { code: "SN", name: "Senegal", dial: "+221" },
+  { code: "RS", name: "Serbia", dial: "+381" },
+  { code: "SC", name: "Seychelles", dial: "+248" },
+  { code: "SL", name: "Sierra Leone", dial: "+232" },
+  { code: "SG", name: "Singapore", dial: "+65" },
+  { code: "SK", name: "Slovakia", dial: "+421" },
+  { code: "SI", name: "Slovenia", dial: "+386" },
+  { code: "SB", name: "Solomon Islands", dial: "+677" },
+  { code: "SO", name: "Somalia", dial: "+252" },
+  { code: "ZA", name: "South Africa", dial: "+27" },
+  { code: "KR", name: "South Korea", dial: "+82" },
+  { code: "SS", name: "South Sudan", dial: "+211" },
+  { code: "ES", name: "Spain", dial: "+34" },
+  { code: "LK", name: "Sri Lanka", dial: "+94" },
+  { code: "SD", name: "Sudan", dial: "+249" },
+  { code: "SR", name: "Suriname", dial: "+597" },
+  { code: "SE", name: "Sweden", dial: "+46" },
+  { code: "CH", name: "Switzerland", dial: "+41" },
+  { code: "SY", name: "Syria", dial: "+963" },
+  { code: "TW", name: "Taiwan", dial: "+886" },
+  { code: "TJ", name: "Tajikistan", dial: "+992" },
+  { code: "TZ", name: "Tanzania", dial: "+255" },
+  { code: "TH", name: "Thailand", dial: "+66" },
+  { code: "TL", name: "Timor-Leste", dial: "+670" },
+  { code: "TG", name: "Togo", dial: "+228" },
+  { code: "TO", name: "Tonga", dial: "+676" },
+  { code: "TT", name: "Trinidad & Tobago", dial: "+1-868" },
+  { code: "TN", name: "Tunisia", dial: "+216" },
+  { code: "TR", name: "Türkiye", dial: "+90" },
+  { code: "TM", name: "Turkmenistan", dial: "+993" },
+  { code: "TV", name: "Tuvalu", dial: "+688" },
+  { code: "UG", name: "Uganda", dial: "+256" },
+  { code: "UA", name: "Ukraine", dial: "+380" },
+  { code: "AE", name: "United Arab Emirates", dial: "+971" },
+  { code: "GB", name: "United Kingdom", dial: "+44" },
+  { code: "US", name: "United States", dial: "+1" },
+  { code: "UY", name: "Uruguay", dial: "+598" },
+  { code: "UZ", name: "Uzbekistan", dial: "+998" },
+  { code: "VU", name: "Vanuatu", dial: "+678" },
+  { code: "VA", name: "Vatican City", dial: "+379" },
+  { code: "VE", name: "Venezuela", dial: "+58" },
+  { code: "VN", name: "Vietnam", dial: "+84" },
+  { code: "YE", name: "Yemen", dial: "+967" },
+  { code: "ZM", name: "Zambia", dial: "+260" },
+  { code: "ZW", name: "Zimbabwe", dial: "+263" },
+  { code: "XK", name: "Kosovo", dial: "+383" },
+];
+function countryFlag(code: string) { return code.toUpperCase().replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0))); }
+const PHONE_PLACEHOLDERS: Record<string, string> = {
+  AF:"70 123 4567", AL:"67 123 4567", DZ:"551 23 45 67", AD:"312 345", AO:"923 456 789",
+  AG:"268 464 1234", AR:"11 2345 6789", AM:"91 234567", AU:"412 345 678", AT:"664 123456",
+  AZ:"50 123 45 67", BS:"242 359 1234", BH:"3612 3456", BD:"1712 345678", BB:"246 250 1234",
+  BY:"29 123 45 67", BE:"470 12 34 56", BZ:"622 1234", BJ:"90 12 34 56", BT:"17 123 456",
+  BO:"712 34567", BA:"61 123 456", BW:"71 234 567", BR:"11 91234 5678", BN:"712 3456",
+  BG:"88 123 4567", BF:"70 12 34 56", BI:"79 12 34 56", CV:"991 23 45", KH:"12 345 678",
+  CM:"6 71 23 45 67", CA:"416 555 0123", CF:"70 12 34 56", TD:"63 12 34 56", CL:"9 1234 5678",
+  CN:"138 0013 8000", CO:"300 123 4567", KM:"321 23 45", CG:"06 123 4567", CD:"81 234 5678",
+  CR:"8888 8888", CI:"05 12 34 56 78", HR:"91 234 5678", CU:"5 123 4567", CY:"96 123456",
+  CZ:"601 123 456", DK:"20 12 34 56", DJ:"77 12 34 56", DM:"767 225 1234", DO:"809 234 5678",
+  EC:"99 123 4567", EG:"10 1234 5678", SV:"7012 3456", GQ:"222 123 456", ER:"7 123 456",
+  EE:"5123 4567", SZ:"7612 3456", ET:"91 234 5678", FJ:"701 2345", FI:"40 123 4567",
+  FR:"6 12 34 56 78", GA:"06 12 34 56", GM:"301 2345", GE:"555 12 34 56", DE:"151 23456789",
+  GH:"24 123 4567", GR:"691 234 5678", GD:"473 415 1234", GT:"5123 4567", GN:"621 12 34 56",
+  GW:"955 1234", GY:"612 3456", HT:"34 12 3456", HN:"9123 4567", HU:"30 123 4567",
+  IS:"611 1234", IN:"98765 43210", ID:"812 3456 7890", IR:"912 123 4567", IQ:"750 123 4567",
+  IE:"85 123 4567", IL:"50 123 4567", IT:"312 345 6789", JM:"876 555 0123", JP:"90 1234 5678",
+  JO:"79 123 4567", KZ:"701 123 45 67", KE:"712 345 678", KI:"720 12345", KW:"500 12345",
+  KG:"700 123 456", LA:"20 23 45 67 89", LV:"21 234 567", LB:"71 123 456", LS:"5012 3456",
+  LR:"77 123 456", LY:"91 234 5678", LI:"660 123 456", LT:"612 34567", LU:"621 123 456",
+  MG:"32 12 345 67", MW:"881 234 567", MY:"12 345 6789", MV:"771 2345", ML:"76 12 34 56",
+  MT:"9912 3456", MH:"625 1234", MR:"22 12 34 56", MU:"5251 2345", MX:"55 1234 5678",
+  FM:"350 1234", MD:"601 23456", MC:"6 12 34 56 78", MN:"8812 3456", ME:"67 123 456",
+  MA:"612 345 678", MZ:"82 123 4567", MM:"9 123 456789", NA:"81 123 4567", NR:"555 1234",
+  NP:"984 1234567", NL:"6 12345678", NZ:"21 123 456", NI:"8888 1234", NE:"90 12 34 56",
+  NG:"803 123 4567", MK:"70 123 456", NO:"412 34 567", OM:"9123 4567", PK:"300 1234567",
+  PW:"488 1234", PA:"6123 4567", PG:"7012 3456", PY:"981 234567", PE:"987 654 321",
+  PH:"917 123 4567", PL:"512 345 678", PT:"912 345 678", QA:"3312 3456", RO:"712 345 678",
+  RU:"912 345 67 89", RW:"788 123 456", KN:"869 765 1234", LC:"758 284 1234", VC:"784 430 1234",
+  WS:"771 2345", SM:"6666 1234", ST:"981 2345", SA:"50 123 4567", SN:"77 123 45 67",
+  RS:"60 123 4567", SC:"2 510 123", SL:"76 123456", SG:"8123 4567", SK:"912 345 678",
+  SI:"31 234 567", SB:"74 12345", SO:"61 1234567", ZA:"71 123 4567", KR:"10 1234 5678",
+  SS:"977 123 456", ES:"612 345 678", LK:"71 234 5678", SD:"91 234 5678", SR:"741 2345",
+  SE:"70 123 45 67", CH:"79 123 45 67", SY:"944 123 456", TW:"912 345 678", TJ:"90 123 4567",
+  TZ:"712 345 678", TH:"81 234 5678", TL:"772 12345", TG:"90 12 34 56", TO:"771 2345",
+  TT:"868 291 1234", TN:"20 123 456", TR:"532 123 4567", TM:"65 123456", TV:"901 2345",
+  UG:"712 345 678", UA:"50 123 4567", AE:"50 123 4567", GB:"7123 456789", US:"202 555 0123",
+  UY:"94 123 456", UZ:"90 123 45 67", VU:"591 2345", VA:"312 345 6789", VE:"412 123 4567",
+  VN:"912 345 678", YE:"712 345 678", ZM:"955 123456", ZW:"771 234 567", XK:"43 123 456"
+};
+function phonePlaceholder(countryCode: string) {
+  return PHONE_PLACEHOLDERS[countryCode] || "123 456 789";
+}
+function phoneLocalMaxDigits(countryCode: string) {
+  const placeholder = phonePlaceholder(countryCode);
+  const digits = placeholder.replace(/\D/g, "");
+  return Math.max(1, digits.length);
+}
+function findPhoneCountry(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+  return [...PHONE_COUNTRIES].sort((a,b) => b.dial.replace(/\D/g,"").length - a.dial.replace(/\D/g,"").length).find((c) => digits.startsWith(c.dial.replace(/\D/g,""))) || PHONE_COUNTRIES.find((c) => c.code === "KE")!;
+}
 
 type Listing = {
   id: string;
@@ -92,8 +410,12 @@ type Listing = {
   liked?: boolean;
 };
 
+type CartItem = {
+  id: number; listing: number; listing_detail?: any; quantity: number; line_total?: number; created_at: string; updated_at: string;
+};
+
 type ApiUser = { id: number; email: string; full_name: string; avatar?: string | null; avatar_url?: string | null; is_community_verified?: boolean };
-type ProfileStore = { id: number; name: string; logo?: string | null; cover?: string | null; description?: string; location?: string; phone?: string; verification?: string; is_active?: boolean };
+type ProfileStore = { id: number; name: string; logo?: string | null; cover?: string | null; description?: string; location?: string; phone?: string; verification?: string; email_verified?: boolean; is_active?: boolean };
 type AuthPayload = { access: string; refresh: string; user: ApiUser };
 type MessageItem = { id: number; conversation: number; sender: number; sender_name?: string; sender_avatar?: string | null; body: string; is_read?: boolean; created_at: string };
 type ConversationItem = {
@@ -279,6 +601,7 @@ async function apiRequest(path: string, options: RequestInit = {}, auth?: AuthPa
 
   let activeAuth = auth;
   let response = await perform(activeAuth);
+  if (__DEV__) console.log(`[API] ${options.method || "GET"} ${apiUrl(path)} -> ${response.status}`);
 
   // Keep active sessions alive: transparently refresh an expired access token once.
   if (response.status === 401 && activeAuth?.refresh) {
@@ -305,6 +628,15 @@ async function apiRequest(path: string, options: RequestInit = {}, auth?: AuthPa
 
 type CloudinaryUploadResult = { secure_url: string; public_id: string };
 
+function optimizedImageUrl(uri: string | undefined | null, width = 600): string | undefined {
+  if (!uri) return undefined;
+  // Ask Cloudinary for a device-sized, compressed WebP/AVIF image instead of
+  // downloading the original upload. Non-Cloudinary URLs are left untouched.
+  if (!uri.includes("res.cloudinary.com") || !uri.includes("/image/upload/")) return uri;
+  return uri.replace("/image/upload/", `/image/upload/f_auto,q_auto,w_${width},c_limit/`);
+}
+
+
 /**
  * Upload images directly from the Expo app to Cloudinary using an UNSIGNED
  * upload preset. The Django API is only used after the upload to save the
@@ -316,9 +648,13 @@ async function uploadAssetToCloudinary(
   _auth: AuthPayload | null,
   type: "listing" | "avatar" | "store_logo" | "store_cover" = "listing",
 ): Promise<CloudinaryUploadResult> {
-  const allowedMimeTypes = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
-  if (asset.mimeType && !allowedMimeTypes.has(asset.mimeType.toLowerCase())) {
-    throw new ApiRequestError("Unsupported image format. Use JPEG, PNG, or WEBP.", 400, false);
+  // Profile/store images must use the exact same upload pipeline as listing images.
+  // Expo can report platform-specific image MIME types (for example image/heic or
+  // image/heif) even when the selected image is otherwise a valid image. Do not
+  // reject those client-side; Cloudinary validates the actual upload format.
+  const mimeType = String(asset.mimeType || "").toLowerCase();
+  if (mimeType && !mimeType.startsWith("image/")) {
+    throw new ApiRequestError("Please choose an image file.", 400, false);
   }
   if (typeof asset.fileSize === "number" && asset.fileSize > 10 * 1024 * 1024) {
     throw new ApiRequestError("Image exceeds the maximum allowed size of 10 MB.", 400, false);
@@ -340,10 +676,20 @@ async function uploadAssetToCloudinary(
   }
 
   const form = new FormData();
+  const uriExtension = asset.uri.split("?")[0].split("#")[0].split(".").pop()?.toLowerCase();
+  const extension = uriExtension && /^[a-z0-9]+$/.test(uriExtension) ? uriExtension : "jpg";
+  const fallbackMime = extension === "png" ? "image/png"
+    : extension === "webp" ? "image/webp"
+    : extension === "gif" ? "image/gif"
+    : extension === "heic" ? "image/heic"
+    : extension === "heif" ? "image/heif"
+    : "image/jpeg";
+  const uploadMime = mimeType || fallbackMime;
+  const uploadName = asset.fileName || `${type}-${Date.now()}.${extension}`;
   form.append("file", {
     uri: asset.uri,
-    name: asset.fileName || `${type}-${Date.now()}.jpg`,
-    type: asset.mimeType || "image/jpeg",
+    name: uploadName,
+    type: uploadMime,
   } as any);
   form.append("upload_preset", uploadPreset);
 
@@ -380,18 +726,31 @@ function apiResults<T = any>(data: any): T[] {
   return [];
 }
 
+function safeDisplayText(value: any, fallback = "") {
+  if (value == null) return fallback;
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.map((v) => safeDisplayText(v)).filter(Boolean).join(", ");
+  if (typeof value === "object") return safeDisplayText(value.name ?? value.title ?? value.label ?? value.value, fallback);
+  return fallback;
+}
+
+function DisplayText({ value, fallback = "", style, numberOfLines }: { value: any; fallback?: string; style?: any; numberOfLines?: number }) {
+  return <Text style={style} numberOfLines={numberOfLines}>{safeDisplayText(value, fallback)}</Text>;
+}
+
 function mapApiListing(item: any): Listing {
   const firstImage = item?.images?.[0]?.image || "";
   const regularPrice = item?.price == null ? null : Number(item.price);
   const displayPrice = item?.is_on_offer && item?.offer_price != null ? Number(item.offer_price) : regularPrice;
   const price = displayPrice == null ? "Price on request" : `${item.currency || "KES"} ${displayPrice.toLocaleString("en-KE")}`;
   return {
-    id: String(item.id), title: item.title || "Untitled listing", price,
-    location: item.location || item.store?.location || "", image: firstImage,
-    store: item.store?.name || "Marketplace seller", storeId: String(item.store?.id || ""), sellerId: item.store?.owner ? String(item.store.owner) : undefined,
+    id: String(item.id), title: safeDisplayText(item.title, "Untitled listing"), price,
+    location: safeDisplayText(item.location || item.store?.location), image: safeDisplayText(firstImage),
+    store: safeDisplayText(item.store?.name, "Marketplace seller"), storeId: String(item.store?.id || ""), sellerId: item.store?.owner ? String(item.store.owner) : undefined,
     storeLogo: item.store?.logo || null,
-    type: item.kind === "service" ? "Service" : "Product", category: item.category_name || "Uncategorized",
-    categoryId: item.category, rating: "0.0", reviews: 0, description: item.description || "",
+    type: item.kind === "service" ? "Service" : "Product", category: safeDisplayText(item.category_name, "Uncategorized"),
+    categoryId: typeof item.category === "object" ? item.category?.id : item.category, rating: safeDisplayText(item.rating, "0.0"), reviews: Number(item.reviews || item.review_count || 0), description: safeDisplayText(item.description),
     currency: item.currency || "KES", negotiable: !!item.negotiable, condition: item.condition || "na",
     stock: item.stock || 0, isFeatured: !!item.is_featured,
     isOnOffer: !!item.is_on_offer, originalPrice: item.original_price == null ? null : Number(item.original_price),
@@ -402,12 +761,50 @@ function mapApiListing(item: any): Listing {
 let listings: Listing[] = [];
 let categoryTiles: Array<[string, string, number]> = [];
 
-declare global { var __MARKETPLACE_AUTH__: AuthPayload | null | undefined; }
+declare global { var __MARKETPLACE_AUTH__: AuthPayload | null | undefined; var __MARKETPLACE_NAVIGATE_STORE__: ((listing: Listing) => void) | undefined; var __MARKETPLACE_NAVIGATE_SELLER__: ((listing: Listing) => void) | undefined; }
 
-type Screen = "home" | "browse" | "create" | "publishSuccess" | "saved" | "profile" | "product" | "orders" | "notifications" | "messages" | "settings" | "settingsPreferences" | "securityPrivacy" | "notificationPreferences" | "helpSupport" | "faq" | "reportProblem" | "safetyTips" | "terms" | "privacyPolicy" | "store" | "login";
+type Screen = "home" | "browse" | "create" | "publishSuccess" | "cart" | "profile" | "product" | "orders" | "notifications" | "messages" | "settings" | "settingsPreferences" | "securityPrivacy" | "notificationPreferences" | "helpSupport" | "faq" | "reportProblem" | "safetyTips" | "terms" | "privacyPolicy" | "store" | "publicStore" | "sellerProfile" | "login";
 type RouteEntry = { screen: Screen; selectedId: string | null };
 
-export default function App() {
+async function fetchMarketplaceFeed(auth: AuthPayload | null, seed: number, page = 1, pageSize = 60, filters: { search?: string; category?: string; store?: string } = {}) {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), seed: String(seed) });
+  if (filters.search?.trim()) params.set("search", filters.search.trim());
+  if (filters.category) params.set("category", filters.category);
+  if (filters.store) params.set("store", filters.store);
+  return apiRequest(`/api/marketplace/feed/?${params.toString()}`, { method: "GET" }, auth);
+}
+
+async function trackMarketplaceEvents(auth: AuthPayload | null, events: Array<Record<string, unknown>>) {
+  if (!auth?.access || !events.length) return;
+  try { await apiRequest("/api/marketplace/events/", { method: "POST", body: JSON.stringify({ events }) }, auth); } catch { /* analytics must never block shopping */ }
+}
+
+async function loadMarketplaceFeedPage(
+  auth: AuthPayload | null,
+  seed: number,
+  page: number,
+  setListings: React.Dispatch<React.SetStateAction<any[]>>,
+  append: boolean,
+  setLoading: React.Dispatch<React.SetStateAction<boolean>>,
+  setHasMore: React.Dispatch<React.SetStateAction<boolean>>,
+) {
+  setLoading(true);
+  try {
+    const response = await fetchMarketplaceFeed(auth, seed, page, 60);
+    const results = Array.isArray(response?.results) ? response.results : [];
+    setListings((current) => {
+      const existing = new Set(current.map((x: any) => String(x.id)));
+      const incoming = results.filter((x: any) => !existing.has(String(x.id)));
+      return append ? [...current, ...incoming] : incoming;
+    });
+    setHasMore(Boolean(response?.next));
+  } finally {
+    setLoading(false);
+  }
+}
+
+function App() {
+
   return (
     <SafeAreaProvider>
       <MarketplaceApp />
@@ -419,9 +816,12 @@ function MarketplaceApp() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [screen, setScreen] = useState<Screen>("home");
+  const [feedSessionSeed] = useState(() => Date.now() ^ Math.floor(Math.random() * 0x7fffffff));
+  const [feedPreferences, setFeedPreferences] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState<Listing | null>(null);
   const navigationStack = useRef<RouteEntry[]>([]);
-  const [savedIds, setSavedIds] = useState<string[]>([]);
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const cartIds = useMemo(() => cartItems.map((x) => String(x.listing)), [cartItems]);
   const [likedIds, setLikedIds] = useState<string[]>([]);
   const [dark, setDark] = useState(false);
   const [search, setSearch] = useState("");
@@ -429,11 +829,58 @@ function MarketplaceApp() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<ApiUser | null>(null);
   const [auth, setAuth] = useState<AuthPayload | null>(null);
-  const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedPage, setFeedPage] = useState(1);
+  const [feedHasMore, setFeedHasMore] = useState(true);
+  const [, setListingsVersion] = useState(0);
+  const setListings = (next: Listing[] | ((current: Listing[]) => Listing[])) => {
+    listings = typeof next === "function" ? next(listings) : next;
+    setListingsVersion((v) => v + 1);
+  };
+
+  const loadFeed = useCallback(async (page = 1, append = false) => {
+    if (feedLoading && append) return;
+    setFeedLoading(true);
+    try {
+      const response = await fetchMarketplaceFeed(auth, feedSessionSeed, page, 60);
+      const results = Array.isArray(response?.results) ? response.results.map(mapApiListing) : [];
+      setListings((current) => {
+        if (!append) return results;
+        const existing = new Set(current.map((x) => String(x.id)));
+        return [...current, ...results.filter((x) => !existing.has(String(x.id)))];
+      });
+      setFeedPage(page);
+      setFeedHasMore(Boolean(response?.next));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setFeedLoading(false);
+    }
+  }, [auth, feedSessionSeed, feedLoading]);
+
+  useEffect(() => { void loadFeed(1, false); }, [auth, feedSessionSeed]);
+
+  const loadMoreFeed = useCallback(() => {
+    if (!feedHasMore || feedLoading) return;
+    void loadFeed(feedPage + 1, true);
+  }, [feedHasMore, feedLoading, feedPage, loadFeed]);
+
+  useEffect(() => {
+    const q = search.trim();
+    if (!q || !auth?.access) return;
+    const timer = setTimeout(() => { void trackMarketplaceEvents(auth, [{ event: "search", query: q }]); }, 600);
+    return () => clearTimeout(timer);
+  }, [search, auth]);
+
+const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
   const [autoGoogleLogin, setAutoGoogleLogin] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState<string | null>(null);
   const likingIds = useRef<Set<string>>(new Set());
+  const cartingIds = useRef<Set<string>>(new Set());
 
   const theme = dark ? darkTheme : lightTheme;
   const isCompact = width < 380;
@@ -449,16 +896,16 @@ function MarketplaceApp() {
       categoryTiles = apiResults(categoryData).map((c: any) => [c.name, c.icon || "•", Number(c.id)]);
       if (authState?.access) {
         try {
-          const savedData = await apiRequest("/api/listings/saved/", {}, authState);
-          setSavedIds(Array.isArray(savedData) ? savedData.map((x: any) => String(x.id)) : []);
-        } catch { setSavedIds([]); }
+          const cartData = await apiRequest("/api/cart/", {}, authState);
+          setCartItems(apiResults<CartItem>(cartData));
+        } catch { setCartItems([]); }
         setLikedIds(listingData ? apiResults(listingData).filter((x: any) => x.liked_by_user).map((x: any) => String(x.id)) : []);
-      } else { setSavedIds([]); setLikedIds([]); }
+      } else { setCartItems([]); setLikedIds([]); }
       setDataError(null);
     } catch (error) {
       listings = [];
       categoryTiles = [];
-      setSavedIds([]);
+      setCartItems([]);
       setLikedIds([]);
       setDataError(error instanceof Error ? error.message : "Unable to load Marketplace data.");
     } finally { setDataLoading(false); }
@@ -484,6 +931,26 @@ function MarketplaceApp() {
     bootstrap();
   }, []);
 
+
+  useEffect(() => {
+    let active = true;
+    const loadUnreadNotifications = async () => {
+      if (!auth?.access) {
+        if (active) setUnreadNotificationCount(0);
+        return;
+      }
+      try {
+        const data = await apiRequest("/api/notifications/", {}, auth);
+        const items = apiResults<NotificationItem>(data);
+        if (active) setUnreadNotificationCount(items.filter((item) => !item.is_read).length);
+      } catch {
+        // Notification badge must never block the marketplace UI.
+      }
+    };
+    void loadUnreadNotifications();
+    const interval = setInterval(loadUnreadNotifications, 30000);
+    return () => { active = false; clearInterval(interval); };
+  }, [auth?.access]);
 
   // Refresh the short-lived access token while the user is actively using the app.
   // The refresh token remains persisted, so reopening the app also restores the session.
@@ -549,9 +1016,14 @@ function MarketplaceApp() {
     else go("login");
   };
 
-  const openProduct = (listing: Listing) => navigateTo("product", listing);
+  const openProduct = (listing: Listing) => {
+    void trackMarketplaceEvents(auth, [{ event: "click", product_id: Number(listing.id) }]);
+    navigateTo("product", listing);
+  };
   const openProductRef = useRef(openProduct);
   openProductRef.current = openProduct;
+  globalThis.__MARKETPLACE_NAVIGATE_STORE__ = (listing: Listing) => navigateTo("publicStore", listing);
+  globalThis.__MARKETPLACE_NAVIGATE_SELLER__ = (listing: Listing) => navigateTo("sellerProfile", listing);
 
   // Shared listing links are HTTPS App Links / Universal Links in production,
   // with marketplace:// kept as a fallback for development. A shared link must
@@ -584,29 +1056,55 @@ function MarketplaceApp() {
 
   const openConversationForListing = async (listing: Listing) => {
     if (!auth?.access) { go("login"); return; }
-    if (!listing.sellerId) { go("messages"); return; }
+
+    // Navigation is immediate. The conversation request runs in the background
+    // so a slow network/API cannot make the chat button feel frozen.
+    go("messages");
+    if (!listing.sellerId) return;
+
     try {
       await apiRequest("/api/conversations/", {
         method: "POST",
-        body: JSON.stringify({ seller: Number(listing.sellerId), store: listing.storeId ? Number(listing.storeId) : null }),
+        body: JSON.stringify({
+          seller: Number(listing.sellerId),
+          store: listing.storeId ? Number(listing.storeId) : null
+        }),
       }, auth);
-      go("messages");
     } catch (error) {
-      Alert.alert("Couldn't start chat", error instanceof Error ? error.message : "Please try again.");
+      // The Messages screen can still be used; surface the failure without
+      // blocking navigation.
+      console.warn("Couldn't start conversation:", error);
     }
   };
 
-  const toggleSaved = async (id: string) => {
+  const addToCart = async (id: string, quantity = 1) => {
     if (!auth?.access) { go("login"); return; }
+    if (cartingIds.current.has(id)) return;
+    const listing = listings.find((x) => String(x.id) === String(id));
+    if (!listing) return;
+    if ((listing.stock ?? 0) <= 0) { Alert.alert("Out of stock", "This product is currently out of stock."); return; }
+    cartingIds.current.add(id);
     try {
-      const alreadySaved = savedIds.includes(id);
-      await apiRequest(`/api/listings/${id}/save_item/`, { method: alreadySaved ? "DELETE" : "POST" }, auth);
-      setSavedIds((current) => alreadySaved ? current.filter((x) => x !== id) : [...current, id]);
-    } catch (error) {
-      setDataError(error instanceof Error ? error.message : "Unable to update saved items.");
-    }
+      const item = await apiRequest("/api/cart/", { method: "POST", body: JSON.stringify({ listing: Number(id), quantity }) }, auth) as CartItem;
+      setCartItems((current) => { const i=current.findIndex(x=>String(x.listing)===String(item.listing)); if(i<0)return [...current,item]; const next=[...current]; next[i]=item; return next; });
+      Alert.alert("Added to cart", `${listing.title} has been added to your cart.`);
+    } catch (error) { Alert.alert("Couldn't add to cart", error instanceof Error ? error.message : "Unable to add this product to your cart."); }
+    finally { cartingIds.current.delete(id); }
   };
 
+  const removeFromCart = async (cartId: number) => {
+    if (!auth?.access) return;
+    const previous = cartItems; setCartItems(items => items.filter(x=>x.id!==cartId));
+    try { await apiRequest(`/api/cart/${cartId}/`, {method:"DELETE"}, auth); }
+    catch(error) { setCartItems(previous); Alert.alert("Couldn't remove item", error instanceof Error ? error.message : "Please try again."); }
+  };
+
+  const updateCartQuantity = async (cartId: number, quantity: number) => {
+    if (quantity < 1) return removeFromCart(cartId);
+    const previous = cartItems; setCartItems(items=>items.map(x=>x.id===cartId?{...x,quantity}:x));
+    try { const updated=await apiRequest(`/api/cart/${cartId}/`,{method:"PATCH",body:JSON.stringify({quantity})},auth) as CartItem; setCartItems(items=>items.map(x=>x.id===cartId?updated:x)); }
+    catch(error) { setCartItems(previous); Alert.alert("Couldn't update cart", error instanceof Error ? error.message : "Please try again."); }
+  };
 
   const toggleLike = async (id: string) => {
     if (!auth?.access) { go("login"); return; }
@@ -615,6 +1113,28 @@ function MarketplaceApp() {
     likingIds.current.add(id);
 
     const alreadyLiked = likedIds.includes(id);
+    const currentListing = listings.find((listing) => listing.id === id);
+    const previousCount = Math.max(0, Number(currentListing?.likesCount ?? 0));
+    const optimisticLiked = !alreadyLiked;
+    const optimisticCount = Math.max(0, previousCount + (optimisticLiked ? 1 : -1));
+
+    // Optimistic UI: heart/count change immediately, then the server confirms it.
+    setLikedIds((current) =>
+      optimisticLiked
+        ? (current.includes(id) ? current : [...current, id])
+        : current.filter((x) => x !== id)
+    );
+    listings = listings.map((listing) =>
+      listing.id === id
+        ? { ...listing, likesCount: optimisticCount, liked: optimisticLiked }
+        : listing
+    );
+    setSelected((current) =>
+      current?.id === id
+        ? { ...current, likesCount: optimisticCount, liked: optimisticLiked }
+        : current
+    );
+
     try {
       const result = await apiRequest(
         `/api/listings/${id}/like/`,
@@ -631,7 +1151,25 @@ function MarketplaceApp() {
       listings = listings.map((listing) =>
         listing.id === id ? { ...listing, likesCount, liked } : listing
       );
+      setSelected((current) =>
+        current?.id === id ? { ...current, likesCount, liked } : current
+      );
     } catch (error) {
+      setLikedIds((current) =>
+        alreadyLiked
+          ? (current.includes(id) ? current : [...current, id])
+          : current.filter((x) => x !== id)
+      );
+      listings = listings.map((listing) =>
+        listing.id === id
+          ? { ...listing, likesCount: previousCount, liked: alreadyLiked }
+          : listing
+      );
+      setSelected((current) =>
+        current?.id === id
+          ? { ...current, likesCount: previousCount, liked: alreadyLiked }
+          : current
+      );
       Alert.alert("Couldn't update like", error instanceof Error ? error.message : "Please try again.");
     } finally {
       likingIds.current.delete(id);
@@ -639,6 +1177,7 @@ function MarketplaceApp() {
   };
 
   const shareToWhatsApp = async (listing: Listing) => {
+    void trackMarketplaceEvents(auth, [{ event: "share", product_id: Number(listing.id) }]);
     try {
       const configuredWebBase = (process.env.EXPO_PUBLIC_WEB_BASE_URL || '').trim().replace(/\/$/, '');
       const url = configuredWebBase
@@ -653,15 +1192,6 @@ function MarketplaceApp() {
       const message = `Check out ${listing.title} from ${listing.store}: ${listing.price}\n\n${url}`;
       const whatsappUrl = `whatsapp://send?text=${encodeURIComponent(message)}`;
 
-      const supported = await Linking.canOpenURL(whatsappUrl);
-      if (!supported) {
-        Alert.alert(
-          "WhatsApp isn't installed",
-          "Please install WhatsApp to use the WhatsApp button."
-        );
-        return;
-      }
-
       await Linking.openURL(whatsappUrl);
     } catch (error) {
       Alert.alert(
@@ -672,6 +1202,7 @@ function MarketplaceApp() {
   };
 
   const shareListing = async (listing: Listing) => {
+    void trackMarketplaceEvents(auth, [{ event: "share", product_id: Number(listing.id) }]);
     try {
       const configuredWebBase = (process.env.EXPO_PUBLIC_WEB_BASE_URL || '').trim().replace(/\/$/, '');
       const url = configuredWebBase
@@ -745,9 +1276,9 @@ function MarketplaceApp() {
       login: "Welcome",
       create: "Sell Something",
       publishSuccess: "Published",
-      saved: "Saved Items",
+      cart: "Cart",
       profile: "Profile",
-      product: selected?.store ?? "Listing",
+      product: "Product details",
       orders: "My Orders",
       notifications: "Notifications",
       messages: "Messages",
@@ -771,7 +1302,7 @@ function MarketplaceApp() {
       <StatusBar style={dark ? "light" : "dark"} backgroundColor={theme.background} translucent={false} />
 
       <View style={[styles.shell, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}> 
-        {screen !== "login" && (
+        {screen !== "login" && screen !== "messages" && (
         <View style={styles.topBar}>
           {screen !== "home" && screen !== "browse" ? (
             <Pressable onPress={goBack} style={styles.topIcon}>
@@ -786,13 +1317,19 @@ function MarketplaceApp() {
           <View style={styles.headerActions}>
             <Pressable onPress={() => go("notifications")} style={styles.topIcon}>
               <Bell size={20} color={theme.text} />
-              <View style={styles.dot} />
+              {unreadNotificationCount > 0 && (
+                <View style={styles.notificationBadge}>
+                  <Text style={styles.notificationBadgeText}>
+                    {unreadNotificationCount > 99 ? "99+" : String(unreadNotificationCount)}
+                  </Text>
+                </View>
+              )}
             </Pressable>
           </View>
         </View>
         )}
 
-        {menuOpen && screen !== "login" && (
+        {menuOpen && screen !== "login" && screen !== "messages" && (
           <View style={[styles.menu, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <MenuItem label="Home" icon={<HomeIcon size={18} color={theme.text} />} onPress={() => go("home")} theme={theme} />
             <MenuItem label="Orders" icon={<ShoppingBag size={18} color={theme.text} />} onPress={() => go("orders")} theme={theme} />
@@ -811,7 +1348,7 @@ function MarketplaceApp() {
           </View>
         )}
         {screen === "home" && (
-          <HomeScreen theme={theme} isLoggedIn={isLoggedIn} currentUser={currentUser} dataLoading={dataLoading} dataError={dataError} onBrowse={() => go("browse")} onCreate={openSell} onOpenProduct={openProduct} />
+          <HomeScreen theme={theme} isLoggedIn={isLoggedIn} currentUser={currentUser} dataLoading={dataLoading} dataError={dataError} onBrowse={() => go("browse")} onCreate={openSell} onOpenProduct={openProduct} onLoadMore={loadMoreFeed} feedLoading={feedLoading} feedHasMore={feedHasMore} />
         )}
         {screen === "browse" && (
           <BrowseScreen
@@ -820,30 +1357,33 @@ function MarketplaceApp() {
             dataError={dataError}
             search={search}
             setSearch={setSearch}
-            savedIds={savedIds}
-            toggleSaved={toggleSaved}
+            cartIds={cartIds}
+            addToCart={addToCart}
             likedIds={likedIds}
             toggleLike={toggleLike}
             onOpenProduct={openProduct}
             onContactSeller={openConversationForListing}
             shareListing={shareListing}
             shareToWhatsApp={shareToWhatsApp}
+            onLoadMore={loadMoreFeed}
+            feedLoading={feedLoading}
+            feedHasMore={feedHasMore}
           />
         )}
-        {screen === "saved" && (
-          <SavedScreen theme={theme} savedIds={savedIds} onOpenProduct={openProduct} toggleSaved={toggleSaved} />
+        {screen === "cart" && (
+          <CartScreen theme={theme} auth={auth} cartItems={cartItems} onOpenProduct={openProduct} onRemove={removeFromCart} onQuantityChange={updateCartQuantity} onRefresh={async () => { try { setCartItems(apiResults<CartItem>(await apiRequest("/api/cart/", {}, auth))); } catch {} }} />
         )}
         {screen === "login" && <LoginScreen theme={theme} onBack={goBack} initialMode={loginMode} autoGoogle={autoGoogleLogin} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); go("profile"); }} />}
         {screen === "create" && <CreateScreen theme={theme} auth={auth} onDone={async () => { await refreshMarketplaceData(auth); go("publishSuccess"); }} />}
         {screen === "publishSuccess" && <PublishSuccessScreen theme={theme} onBrowse={() => go("browse")} onHome={() => go("home")} />}
-        {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onStore={() => go("store")} onMessages={() => go("messages")} savedCount={savedIds.length} />}
-        {screen === "product" && selected && <ProductScreen theme={theme} listing={selected} saved={savedIds.includes(selected.id)} onToggleSaved={() => toggleSaved(selected.id)} onContactSeller={() => openConversationForListing(selected)} auth={auth} />}
+        {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onStore={() => go("store")} onMessages={() => go("messages")} onCart={() => go("cart")} cartCount={cartItems.length} />}
+        {screen === "product" && selected && <ProductScreen theme={theme} listing={selected} inCart={cartIds.includes(selected.id)} liked={likedIds.includes(selected.id)} onAddToCart={() => addToCart(selected.id)} onToggleLike={() => toggleLike(selected.id)} onContactSeller={() => openConversationForListing(selected)} onOpenProduct={(item) => { setSelected(item); go("product"); }} onBack={goBack} auth={auth} />}
         {screen === "orders" && <OrdersScreen theme={theme} auth={auth} currentUser={currentUser} />}
         {screen === "notifications" && <NotificationsScreen theme={theme} auth={auth} />}
         {screen === "messages" && <MessagesScreen theme={theme} auth={auth} currentUser={currentUser} />}
         {screen === "settings" && <SettingsScreen theme={theme} dark={dark} setDark={setDark} />}
         {screen === "settingsPreferences" && <SettingsPreferencesScreen theme={theme} dark={dark} setDark={setDark} />}
-        {screen === "securityPrivacy" && <SecurityPrivacyScreen theme={theme} auth={auth} onSignOut={async () => { await AsyncStorage.removeItem(AUTH_STORAGE_KEY); globalThis.__MARKETPLACE_AUTH__ = null; setAuth(null); setCurrentUser(null); setIsLoggedIn(false); setSavedIds([]); setLikedIds([]); go("profile"); }} />}
+        {screen === "securityPrivacy" && <SecurityPrivacyScreen theme={theme} auth={auth} onSignOut={async () => { await AsyncStorage.removeItem(AUTH_STORAGE_KEY); globalThis.__MARKETPLACE_AUTH__ = null; setAuth(null); setCurrentUser(null); setIsLoggedIn(false); setCartItems([]); setLikedIds([]); go("profile"); }} />}
         {screen === "notificationPreferences" && <NotificationPreferencesScreen theme={theme} />}
         {screen === "helpSupport" && <HelpSupportScreen theme={theme} onFAQ={() => go("faq")} onSafety={() => go("safetyTips")} onReport={() => go("reportProblem")} onTerms={() => go("terms")} onPrivacy={() => go("privacyPolicy")} />}
         {screen === "faq" && <FAQScreen theme={theme} />}
@@ -852,13 +1392,15 @@ function MarketplaceApp() {
         {screen === "terms" && <LegalInfoScreen theme={theme} kind="terms" />}
         {screen === "privacyPolicy" && <LegalInfoScreen theme={theme} kind="privacy" />}
         {screen === "store" && <StoreScreen theme={theme} auth={auth} onOpenProduct={openProduct} onMarketplaceChanged={() => void refreshMarketplaceData(auth)} onUserUpdated={(user) => { setCurrentUser(user); setAuth((prev) => prev ? { ...prev, user } : prev); }} />}
+        {screen === "publicStore" && selected && <PublicStoreScreen theme={theme} auth={auth} listing={selected} onOpenProduct={openProduct} />}
+        {screen === "sellerProfile" && selected && <SellerProfileScreen theme={theme} auth={auth} listing={selected} onOpenStore={() => go("publicStore")} />}
 
-        {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
+        {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && screen !== "messages" && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
           {[
             [HomeIcon, "Home", "home" as Screen],
             [Compass, "Browse", "browse" as Screen],
             [Plus, "Sell", "create" as Screen],
-            [Bookmark, "Saved", "saved" as Screen],
+            [ShoppingCart, "Cart", "cart" as Screen],
             [User, "Profile", "profile" as Screen],
           ].map(([Icon, label, target]) => {
             const active = screen === target || (target === "browse" && screen === "product");
@@ -1332,71 +1874,216 @@ function MenuItem({ label, icon, onPress, theme }: { label: string; icon: React.
 }
 
 function ScreenScroll({ children, theme, contentStyle }: { children: React.ReactNode; theme: Theme; contentStyle?: any }) {
-  return <ScrollView contentContainerStyle={[styles.scrollContent, contentStyle]} showsVerticalScrollIndicator={false}>{children}</ScrollView>;
+  return (
+    <ScrollView
+      contentContainerStyle={[styles.scrollContent, contentStyle]}
+      showsVerticalScrollIndicator={false}
+      removeClippedSubviews={Platform.OS === "android"}
+      scrollEventThrottle={16}
+    >
+      {children}
+    </ScrollView>
+  );
 }
 
-function HomeScreen({ theme, isLoggedIn, currentUser, dataLoading, dataError, onBrowse, onCreate, onOpenProduct }: { theme: Theme; isLoggedIn: boolean; currentUser: ApiUser | null; dataLoading: boolean; dataError: string | null; onBrowse: () => void; onCreate: () => void; onOpenProduct: (l: Listing) => void }) {
-  return (
-    <ScreenScroll theme={theme}>
-      {isLoggedIn && (
-        <>
-          <Text style={[styles.welcome, { color: theme.text }]}>Welcome back, {currentUser?.full_name || "there"}! 👋</Text>
-          <Text style={[styles.subtle, { color: theme.muted }]}>Find great products and support people in your community.</Text>
-        </>
-      )}
+function HomeScreen({ theme, dataLoading, dataError, onOpenProduct, onLoadMore, feedLoading, feedHasMore }: { theme: Theme; isLoggedIn: boolean; currentUser: ApiUser | null; dataLoading: boolean; dataError: string | null; onBrowse: () => void; onCreate: () => void; onOpenProduct: (l: Listing) => void; onLoadMore: () => void; feedLoading: boolean; feedHasMore: boolean }) {
+  const homeProducts = useMemo(() => listings, [listings.length, listings]);
 
-      <View style={[styles.hero, { backgroundColor: darken(theme.accent, theme.isDark ? 0.12 : 0.92) }]}>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.heroTitle, { color: theme.text }]}>Discover local talent.</Text>
-          <Text style={[styles.heroSub, { color: theme.muted }]}>Shop products, book services and find stores you can trust.</Text>
-          <Pressable onPress={onBrowse} style={[styles.primaryButton, { backgroundColor: BUTTON_BLUE }]}><Text style={styles.primaryButtonText}>Browse now</Text></Pressable>
+  const renderProduct = useCallback(
+    ({ item }: { item: Listing }) => (
+      <HomeProductTile listing={item} theme={theme} onPress={() => onOpenProduct(item)} />
+    ),
+    [theme, onOpenProduct]
+  );
+
+  const keyExtractor = useCallback((item: Listing) => String(item.id), []);
+
+  if (dataLoading) {
+    return (
+      <ScreenScroll theme={theme}>
+        <View style={styles.homeShopHeader}>
+          <View>
+<Text style={[styles.homeShopSub, { color: theme.muted }]}>Shop</Text>
+          </View>
+          <View style={[styles.homeShopIcon, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <ShoppingBag size={20} color={theme.text} />
+          </View>
         </View>
-        <View style={styles.heroIcon}><ShoppingBag size={40} color={theme.accent} /></View>
-      </View>
+        <View style={styles.homeProductGrid}>
+          {[1, 2, 3, 4, 5, 6].map((id) => (
+            <View key={id} style={[styles.homeProductSkeleton, { backgroundColor: theme.card, borderColor: theme.border }]} />
+          ))}
+        </View>
+      </ScreenScroll>
+    );
+  }
 
-      <SectionHeader title="Top categories" theme={theme} action="View all" onPress={onBrowse} />
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-        {categoryTiles.map(([name, emoji]) => (
-          <Pressable key={name} onPress={onBrowse} style={[styles.categoryTile, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <Text style={styles.categoryEmoji}>{emoji}</Text><Text style={[styles.categoryText, { color: theme.text }]}>{name}</Text>
-          </Pressable>
-        ))}
-      </ScrollView>
-
-      <Pressable onPress={onCreate} style={[styles.sellBanner, { backgroundColor: theme.card, borderColor: theme.border }]}>
-        <Store size={28} color={theme.accent} />
-        <View style={{ flex: 1 }}><Text style={[styles.sellBannerTitle, { color: theme.text }]}>Have something to sell?</Text><Text style={[styles.subtle, { color: theme.muted }]}>Create your store and reach your community.</Text></View>
-        <ChevronRight size={20} color={theme.muted} />
-      </Pressable>
-
-      <SectionHeader title="Featured" theme={theme} action="View all" onPress={onBrowse} />
-      {dataLoading ? [1,2,3].map((id) => <View key={id} style={[styles.compactCard,{backgroundColor:theme.card,borderColor:theme.border,marginTop:8,height:82}]} />) : listings.slice(0,6).map((listing) => (
-        <CompactListing key={listing.id} listing={listing} theme={theme} onPress={() => onOpenProduct(listing)} />
-      ))}
-      {!dataLoading && listings.length === 0 && <EmptyState theme={theme} title="The marketplace is warming up" text={dataError ? "We could not load marketplace listings right now. Check your connection and try again." : "Fresh products and services will appear here as sellers publish them."} actionLabel="Explore categories" onAction={onBrowse} icon="sparkles" />}
-    </ScreenScroll>
-  );
-}
-
-function BrowseScreen({ theme, search, setSearch, savedIds, toggleSaved, likedIds, toggleLike, onOpenProduct, onContactSeller, shareListing, shareToWhatsApp, dataLoading, dataError }: { theme: Theme; search: string; setSearch: (v: string) => void; savedIds: string[]; toggleSaved: (id: string) => void; likedIds: string[]; toggleLike: (id: string) => void; onOpenProduct: (l: Listing) => void; onContactSeller: (l: Listing) => void; shareListing: (l: Listing) => void; shareToWhatsApp: (l: Listing) => void; dataLoading: boolean; dataError: string | null }) {
-  const filtered = listings.filter((listing) => !search.trim() || `${listing.title} ${listing.store} ${listing.category}`.toLowerCase().includes(search.toLowerCase()));
   return (
-    <ScreenScroll theme={theme}>
-      <View style={[styles.searchBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
-        <Search size={18} color={theme.muted} /><TextInput value={search} onChangeText={setSearch} placeholder="Search products, services and stores..." placeholderTextColor={theme.muted} style={[styles.searchInput, { color: theme.text }]} />
-      </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-        {filters.map((filter, index) => <Pressable key={filter} style={[styles.filterChip, { borderColor: theme.border, backgroundColor: theme.card }, index === 0 && { backgroundColor: theme.accent, borderColor: theme.accent }]}><Text style={[styles.filterText, { color: index === 0 ? "#fff" : theme.text }]}>{filter}</Text></Pressable>)}
-      </ScrollView>
-      <Text style={[styles.pageTitle, { color: theme.text }]}>Browse</Text>
-      <Text style={[styles.subtle, { color: theme.muted }]}>{filtered.length} listings near you</Text>
-      {dataLoading ? [1,2,3].map((id) => <View key={id} style={[styles.card,{backgroundColor:theme.card,borderColor:theme.border,height:420,marginTop:8}]} />) : filtered.map((listing) => <ListingCard key={listing.id} listing={listing} theme={theme} saved={savedIds.includes(listing.id)} liked={likedIds.includes(listing.id)} onToggleSaved={() => toggleSaved(listing.id)} onToggleLike={() => toggleLike(listing.id)} onChat={() => onContactSeller(listing)} onShare={() => shareListing(listing)} onWhatsAppShare={() => shareToWhatsApp(listing)} onPress={() => onOpenProduct(listing)} />)}
-      {!dataLoading && filtered.length === 0 && <EmptyState theme={theme} title="Nothing matched that search" text={dataError ? "Marketplace data could not be loaded. Try again in a moment." : "Try another keyword, category or nearby search to discover more."} actionLabel="Clear search" onAction={() => setSearch("")} icon="search" />}
-    </ScreenScroll>
+    <FlatList
+      data={homeProducts}
+      keyExtractor={keyExtractor}
+      renderItem={renderProduct}
+      numColumns={2}
+      columnWrapperStyle={styles.homeProductGrid}
+      contentContainerStyle={styles.homeFlatListContent}
+      ListHeaderComponent={
+        <View style={styles.homeShopHeader}>
+          <View>
+<Text style={[styles.homeShopSub, { color: theme.muted }]}>Shop</Text>
+          </View>
+          <View style={[styles.homeShopIcon, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <ShoppingBag size={20} color={theme.text} />
+          </View>
+        </View>
+      }
+      ListEmptyComponent={
+        <EmptyState
+          theme={theme}
+          title="No products yet"
+          text={dataError ? "Check your connection and try again." : "Products will appear here as sellers publish them."}
+          icon="sparkles"
+        />
+      }
+      showsVerticalScrollIndicator={false}
+      removeClippedSubviews={Platform.OS === "android"}
+      initialNumToRender={4}
+      maxToRenderPerBatch={4}
+      updateCellsBatchingPeriod={16}
+      windowSize={5}
+      onEndReached={feedHasMore && !feedLoading ? onLoadMore : undefined}
+      onEndReachedThreshold={0.7}
+      ListFooterComponent={feedLoading ? <ActivityIndicator style={{ marginVertical: 20 }} /> : null}
+    />
   );
 }
 
-function ListingCard({ listing, theme, saved, liked, onToggleSaved, onToggleLike, onChat, onShare, onWhatsAppShare, onPress }: { listing: Listing; theme: Theme; saved: boolean; liked?: boolean; onToggleSaved: () => void; onToggleLike?: () => void; onChat?: () => void; onShare?: () => void; onWhatsAppShare?: () => void; onPress: () => void }) {
+const HomeProductTile = memo(function HomeProductTile({ listing, theme, onPress }: { listing: Listing; theme: Theme; onPress: () => void }) {
+  const image = listing.images?.[0] || listing.image;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.homeProductTile,
+        { backgroundColor: theme.card, borderColor: theme.border, opacity: pressed ? 0.9 : 1 },
+      ]}
+    >
+      <View style={styles.homeProductImageWrap}>
+        {image ? (
+          <Image source={{ uri: optimizedImageUrl(image, 500) }} style={styles.homeProductImage} resizeMode="cover" fadeDuration={0} />
+        ) : (
+          <View style={[styles.homeProductImage, styles.productGalleryPlaceholder, { backgroundColor: theme.isDark ? "#111827" : "#F3F4F6" }]}>
+            <ImageIcon size={28} color={theme.muted} />
+          </View>
+        )}
+        {listing.isOnOffer && (
+          <View style={styles.homeOfferBadge}>
+            <Text style={styles.homeOfferText}>OFFER</Text>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.homeProductInfo}>
+        <Text numberOfLines={1} style={[styles.homeProductTitle, { color: theme.text }]}>
+          {listing.title}
+        </Text>
+        <Text numberOfLines={1} style={[styles.homeProductStore, { color: theme.muted }]}>
+          {listing.store}
+        </Text>
+        <Text style={[styles.homeProductPrice, { color: theme.text }]}>
+          {listing.price}
+        </Text>
+      </View>
+    </Pressable>
+  );
+});
+
+function BrowseScreen({ theme, search, setSearch, cartIds, addToCart, likedIds, toggleLike, onOpenProduct, onContactSeller, shareListing, shareToWhatsApp, dataLoading, dataError, onLoadMore, feedLoading, feedHasMore }: { theme: Theme; search: string; setSearch: (v: string) => void; cartIds: string[]; addToCart: (id: string, quantity?: number) => void; likedIds: string[]; toggleLike: (id: string) => void; onOpenProduct: (l: Listing) => void; onContactSeller: (l: Listing) => void; shareListing: (l: Listing) => void; shareToWhatsApp: (l: Listing) => void; dataLoading: boolean; dataError: string | null; onLoadMore: () => void; feedLoading: boolean; feedHasMore: boolean }) {
+  const filtered = useMemo(
+    () => listings.filter((listing) => !search.trim() || `${listing.title} ${listing.store} ${listing.category}`.toLowerCase().includes(search.toLowerCase())),
+    [search, listings.length, listings]
+  );
+
+  const renderItem = useCallback(
+    ({ item }: { item: Listing }) => (
+      <ListingCard
+        listing={item}
+        theme={theme}
+        inCart={cartIds.includes(item.id)}
+        liked={likedIds.includes(item.id)}
+        onAddToCart={() => addToCart(item.id)}
+        onToggleLike={() => toggleLike(item.id)}
+        onChat={() => onContactSeller(item)}
+        onShare={() => shareListing(item)}
+        onWhatsAppShare={() => shareToWhatsApp(item)}
+        onPress={() => onOpenProduct(item)}
+      />
+    ),
+    [theme, cartIds, likedIds, addToCart, toggleLike, onContactSeller, shareListing, shareToWhatsApp, onOpenProduct]
+  );
+
+  const keyExtractor = useCallback((item: Listing) => String(item.id), []);
+
+  const listHeader = useMemo(
+    () => (
+      <>
+        <View style={[styles.searchBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <Search size={18} color={theme.muted} />
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search products, services and stores..."
+            placeholderTextColor={theme.muted}
+            style={[styles.searchInput, { color: theme.text }]}
+          />
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+          {filters.map((filter, index) => (
+            <Pressable key={filter} style={[styles.filterChip, { borderColor: theme.border, backgroundColor: theme.card }, index === 0 && { backgroundColor: theme.accent, borderColor: theme.accent }]}>
+              <Text style={[styles.filterText, { color: index === 0 ? "#fff" : theme.text }]}>{filter}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+<Text style={[styles.subtle, { color: theme.muted }]}>{filtered.length} listings near you</Text>
+      </>
+    ),
+    [theme, search, setSearch, filtered.length]
+  );
+
+  return (
+    <FlatList
+      data={dataLoading ? [] : filtered}
+      keyExtractor={keyExtractor}
+      renderItem={renderItem}
+      ListHeaderComponent={listHeader}
+      ListEmptyComponent={
+        dataLoading
+          ? <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border, height: 420, marginTop: 8 }]} />
+          : <EmptyState
+              theme={theme}
+              title="Nothing matched that search"
+              text={dataError ? "Marketplace data could not be loaded. Try again in a moment." : "Try another keyword, category or nearby search to discover more."}
+              actionLabel="Clear search"
+              onAction={() => setSearch("")}
+              icon="search"
+            />
+      }
+      contentContainerStyle={styles.scrollContent}
+      showsVerticalScrollIndicator={false}
+      removeClippedSubviews={Platform.OS === "android"}
+      initialNumToRender={2}
+      maxToRenderPerBatch={3}
+      updateCellsBatchingPeriod={24}
+      windowSize={3}
+      onEndReached={feedHasMore && !feedLoading ? onLoadMore : undefined}
+      onEndReachedThreshold={0.7}
+      ListFooterComponent={feedLoading ? <ActivityIndicator style={{ marginVertical: 20 }} /> : null}
+      getItemLayout={undefined}
+    />
+  );
+}
+
+function ListingCard({ listing, theme, inCart, liked, onAddToCart, onToggleLike, onChat, onShare, onWhatsAppShare, onPress }: { listing: Listing; theme: Theme; inCart: boolean; liked?: boolean; onAddToCart: () => void; onToggleLike?: () => void; onChat?: () => void; onShare?: () => void; onWhatsAppShare?: () => void; onPress: () => void }) {
   const { width } = useWindowDimensions();
   const [activeImage, setActiveImage] = useState(0);
   const images = listing.images?.length ? listing.images : (listing.image ? [listing.image] : []);
@@ -1408,7 +2095,7 @@ function ListingCard({ listing, theme, saved, liked, onToggleSaved, onToggleLike
         <View style={styles.storeMeta}>
           <View style={[styles.storeAvatar, { backgroundColor: darken(theme.accent, theme.isDark ? 0.35 : 0.88) }]}>
             {listing.storeLogo ? (
-              <Image source={{ uri: listing.storeLogo }} style={styles.storeAvatarImage} resizeMode="cover" />
+              <Image source={{ uri: listing.storeLogo }} style={styles.storeAvatarImage} resizeMode="cover" fadeDuration={0} resizeMethod="resize" />
             ) : (
               <Text style={[styles.storeAvatarText, { color: theme.accent }]}>{listing.store.slice(0, 1).toUpperCase()}</Text>
             )}
@@ -1442,7 +2129,7 @@ function ListingCard({ listing, theme, saved, liked, onToggleSaved, onToggleLike
             }}
             renderItem={({ item }) => (
               <Pressable onPress={onPress} style={{ width: galleryWidth }}>
-                <Image source={{ uri: item }} style={styles.listingImage} resizeMode="cover" />
+                <Image source={{ uri: optimizedImageUrl(item, 650) }} style={styles.listingImage} resizeMode="cover" fadeDuration={0} resizeMethod="resize" />
               </Pressable>
             )}
           />
@@ -1481,22 +2168,32 @@ function ListingCard({ listing, theme, saved, liked, onToggleSaved, onToggleLike
               <Phone size={8} color="#fff" strokeWidth={3} style={styles.whatsappPhoneMark} />
             </View>
           </Pressable>
-          <Pressable onPress={onToggleSaved} style={styles.saveAlign} accessibilityRole="button" accessibilityLabel={saved ? "Remove bookmark" : "Save product"}>
-            <Bookmark size={20} color={theme.text} fill={saved ? theme.text : "transparent"} />
+          <Pressable onPress={onAddToCart} style={styles.saveAlign} accessibilityRole="button" accessibilityLabel={inCart ? "In cart" : "Add to cart"}>
+            <ShoppingCart size={20} color={inCart ? BUTTON_BLUE : theme.text} fill={inCart ? BUTTON_BLUE : "transparent"} />
           </Pressable>
         </View>
         <Text style={[styles.metaText, { color: theme.muted }]}>{listing.likesCount || 0} people liked this</Text>
         <Pressable onPress={onPress}><Text style={[styles.itemText, { color: theme.text }]}><Text style={styles.itemStore}>{listing.store}</Text> {listing.title}</Text></Pressable>
         <Text style={[styles.price, { color: theme.text }]}>{listing.price}</Text>
-        <Text style={[styles.itemMeta, { color: theme.muted }]}>{listing.rating} ★ {listing.reviews} reviews • {listing.category}</Text>
+        <DisplayText style={[styles.itemMeta, { color: theme.muted }]} value={`${safeDisplayText(listing.rating, "0.0")} ★ ${Number(listing.reviews || 0)} reviews • ${safeDisplayText(listing.category, "Uncategorized")}`} />
       </View>
     </View>
   );
 }
 
-function SavedScreen({ theme, savedIds, onOpenProduct, toggleSaved }: { theme: Theme; savedIds: string[]; onOpenProduct: (l: Listing) => void; toggleSaved: (id: string) => void }) {
-  const saved = listings.filter((l) => savedIds.includes(l.id));
-  return <ScreenScroll theme={theme}>{saved.length === 0 ? <EmptyState theme={theme} title="Build your shortlist" text="Save products you love and keep them ready for later. Your favourites will appear here." icon="bookmark" /> : <><View style={styles.pageIntro}><Text style={[styles.pageTitle,{color:theme.text}]}>Saved items</Text><Text style={[styles.subtle,{color:theme.muted}]}>Your personal shortlist, ready whenever you are.</Text></View>{saved.map((l) => <ListingCard key={l.id} listing={l} theme={theme} saved onToggleSaved={() => toggleSaved(l.id)} onPress={() => onOpenProduct(l)} />)}</>}</ScreenScroll>;
+function CartScreen({ theme, auth, cartItems, onOpenProduct, onRemove, onQuantityChange, onRefresh }: { theme: Theme; auth: AuthPayload | null; cartItems: CartItem[]; onOpenProduct: (l: Listing) => void; onRemove: (id: number) => void; onQuantityChange: (id: number, quantity: number) => void; onRefresh: () => Promise<void> | void }) {
+  if (!auth?.access) return <ScreenScroll theme={theme}><EmptyState theme={theme} title="Your cart is waiting" text="Add products to your cart and they will appear here." icon="orders" /></ScreenScroll>;
+  const items = cartItems.map(item => ({item, listing: item.listing_detail ? mapApiListing(item.listing_detail) : listings.find(l=>String(l.id)===String(item.listing))})).filter((x): x is {item:CartItem;listing:Listing} => !!x.listing);
+  const total = items.reduce((sum,x)=>sum+Number(x.item.line_total||0),0);
+  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:140}}>
+    <View style={styles.pageIntro}><Text style={[styles.pageTitle,{color:theme.text}]}>Cart</Text><Text style={[styles.subtle,{color:theme.muted}]}>{items.length} {items.length===1?"item":"items"} ready for checkout.</Text></View>
+    {items.length===0 ? <EmptyState theme={theme} title="Your cart is empty" text="Tap the cart icon on any product to add it here." icon="orders"/> : <View style={{gap:12}}>{items.map(({item,listing})=><View key={item.id} style={[styles.orderCard,{backgroundColor:theme.card,borderColor:theme.border}]}>
+      <Pressable onPress={()=>onOpenProduct(listing)} style={{flexDirection:"row",gap:12,alignItems:"center"}}>{listing.image?<Image source={{uri:optimizedImageUrl(listing.image,220)}} style={{width:78,height:78,borderRadius:14}}/>:<View style={{width:78,height:78,borderRadius:14,backgroundColor:theme.background,alignItems:"center",justifyContent:"center"}}><ImageIcon size={24} color={theme.muted}/></View>}<View style={{flex:1}}><Text style={[styles.cardTitle,{color:theme.text}]} numberOfLines={2}>{listing.title}</Text><Text style={[styles.subtle,{color:theme.muted}]}>{listing.store}</Text><Text style={[styles.homeProductPrice,{color:theme.accent,marginTop:4}]}>{listing.price}</Text></View></Pressable>
+      <View style={{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:12}}><View style={{flexDirection:"row",alignItems:"center",gap:8}}><Pressable onPress={()=>onQuantityChange(item.id,item.quantity-1)} style={[styles.smallAction,{backgroundColor:theme.background,borderWidth:1,borderColor:theme.border,width:38,alignItems:"center"}]}><Text style={[styles.smallActionText,{color:theme.text}]}>−</Text></Pressable><Text style={{color:theme.text,fontWeight:"800",minWidth:24,textAlign:"center"}}>{item.quantity}</Text><Pressable onPress={()=>onQuantityChange(item.id,item.quantity+1)} style={[styles.smallAction,{backgroundColor:BUTTON_BLUE,width:38,alignItems:"center"}]}><Text style={styles.smallActionText}>+</Text></Pressable></View><View style={{flexDirection:"row",gap:10,alignItems:"center"}}><Text style={{color:theme.text,fontWeight:"800"}}>KES {Number(item.line_total||0).toLocaleString("en-KE")}</Text><Pressable onPress={()=>onRemove(item.id)}><Trash2 size={18} color="#DC2626"/></Pressable></View></View>
+    </View>)}</View>}
+    {items.length>0 && <View style={[styles.orderCard,{backgroundColor:theme.card,borderColor:theme.border,marginTop:12}]}><View style={styles.rowBetween}><Text style={[styles.cardTitle,{color:theme.text}]}>Cart total</Text><Text style={[styles.bigPrice,{color:theme.accent,fontSize:24}]}>KES {total.toLocaleString("en-KE")}</Text></View><Pressable onPress={()=>Alert.alert("Order now","Select a product and use Order now to submit its purchase request. Multi-item checkout can be connected to the order API next.")} style={[styles.primaryButton,{backgroundColor:BUTTON_BLUE,marginTop:12}]}><ShoppingBag size={18} color="#fff"/><Text style={styles.primaryButtonText}>Order now</Text></Pressable></View>}
+    <Pressable onPress={()=>void onRefresh()} style={{alignSelf:"center",padding:12,marginTop:12}}><Text style={{color:BUTTON_BLUE,fontWeight:"700"}}>Refresh cart</Text></Pressable>
+  </ScreenScroll>;
 }
 
 function openReportAlert(type: "listing" | "user", subject: string) {
@@ -1504,7 +2201,7 @@ function openReportAlert(type: "listing" | "user", subject: string) {
   Alert.alert(`Report ${type}`, `Choose a reason for reporting ${subject}.`, reasons.map((reason) => ({ text: reason, onPress: () => Alert.alert("Confirm report", `Report ${subject} for: ${reason}?`, [{ text: "Cancel", style: "cancel" }, { text: "Confirm", style: "destructive", onPress: () => Alert.alert("Report ready", "The current backend does not expose a reporting endpoint, so nothing was sent to the server. The reporting operation is isolated and ready for a real endpoint later.") }]) })));
 }
 
-function ProductScreen({ theme, listing, saved, onToggleSaved, onContactSeller, auth }: { theme: Theme; listing: Listing; saved: boolean; onToggleSaved: () => void; onContactSeller: () => void; auth: AuthPayload | null }) {
+function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLike, onContactSeller, auth, onOpenProduct, onBack }: { theme: Theme; listing: Listing; inCart: boolean; liked: boolean; onAddToCart: () => void; onToggleLike: () => void; onContactSeller: () => void; auth: AuthPayload | null; onOpenProduct: (listing: Listing) => void; onBack: () => void }) {
   const { width } = useWindowDimensions();
   const [activeImage, setActiveImage] = useState(0);
   const [purchaseOpen, setPurchaseOpen] = useState(false);
@@ -1513,6 +2210,41 @@ function ProductScreen({ theme, listing, saved, onToggleSaved, onContactSeller, 
   const [fulfillment, setFulfillment] = useState("pickup");
   const [submitting, setSubmitting] = useState(false);
   const [purchaseError, setPurchaseError] = useState("");
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [related, setRelated] = useState<Listing[]>([]);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportType, setReportType] = useState<"listing" | "seller">("listing");
+  const [reportReason, setReportReason] = useState("");
+  const [reportDetails, setReportDetails] = useState("");
+  const [reporting, setReporting] = useState(false);
+  const reportReasons = ["Scam or fraud", "Fake or misleading listing", "Prohibited item", "Harassment", "Spam", "Other"];
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const data = await apiRequest(`/api/listings/${listing.id}/reviews/`, {}, auth);
+        if (active) setReviews(Array.isArray(data) ? data : []);
+      } catch {}
+      try {
+        const data = await apiRequest(`/api/listings/?category=${listing.categoryId || ""}&is_available=true&page_size=8`, {}, auth);
+        const rows = apiResults<any>(data).map(mapApiListing).filter((x: Listing) => String(x.id) !== String(listing.id)).slice(0, 6);
+        if (active) setRelated(rows);
+      } catch {}
+    })();
+    return () => { active = false; };
+  }, [listing.id, listing.categoryId]);
+  const openReport = (type: "listing" | "seller") => { setReportType(type); setReportReason(""); setReportDetails(""); setReportOpen(true); };
+  const submitReport = async () => {
+    if (!auth?.access) { Alert.alert("Sign in required", "Please sign in to report a listing or seller."); return; }
+    if (!reportReason) { Alert.alert("Choose a reason", "Select a reason before submitting your report."); return; }
+    setReporting(true);
+    try {
+      await apiRequest("/api/reports/", { method: "POST", body: JSON.stringify({ listing: reportType === "listing" ? Number(listing.id) : null, reason: reportReason, category: reportType, description: reportDetails.trim(), reported_user: reportType === "seller" && listing.sellerId ? Number(listing.sellerId) : null }) }, auth);
+      setReportOpen(false);
+      Alert.alert("Report submitted", "Thank you. Our team will review the report and take appropriate action.");
+    } catch (e) { Alert.alert("Couldn't submit report", e instanceof Error ? e.message : "Please try again."); }
+    finally { setReporting(false); }
+  };
   const submitPurchase = async () => {
     if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before requesting a purchase."); return; }
     const qty = Number(quantity.replace(/[^0-9]/g, ""));
@@ -1553,7 +2285,7 @@ function ProductScreen({ theme, listing, saved, onToggleSaved, onContactSeller, 
             }}
             renderItem={({ item }) => (
               <View style={{ width: galleryWidth }}>
-                <Image source={{ uri: item }} style={[styles.detailGalleryImage, { width: galleryWidth }]} resizeMode="cover" />
+                <Image source={{ uri: optimizedImageUrl(item, 900) }} style={[styles.detailGalleryImage, { width: galleryWidth }]} resizeMode="cover" />
               </View>
             )}
           />
@@ -1577,47 +2309,143 @@ function ProductScreen({ theme, listing, saved, onToggleSaved, onContactSeller, 
         )}
       </View>
 
-      <View style={{ paddingHorizontal: 2 }}>
-        <View style={styles.rowBetween}>
-          <Text style={[styles.productTitle, { color: theme.text }]}>{listing.title}</Text>
-          <Pressable onPress={onToggleSaved}>
-            <Bookmark size={22} color={theme.text} fill={saved ? theme.text : "transparent"} />
-          </Pressable>
-        </View>
-        <Text style={[styles.bigPrice, { color: theme.accent }]}>{listing.price}</Text>
-        {listing.isOnOffer && listing.originalPrice != null && <Text style={[styles.storeListingOriginalPrice, { color: theme.muted }]}>Regular price: KES {listing.originalPrice.toLocaleString("en-KE")}</Text>}
-        <Text style={[styles.itemMeta, { color: theme.muted }]}>{listing.rating} ★ {listing.reviews} reviews • {listing.location}</Text>
-        <View style={[styles.storePill, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <View style={[styles.detailStoreAvatar,{backgroundColor:darken(theme.accent,theme.isDark ? 0.35 : 0.88)}]}>
-            {listing.storeLogo ? <Image source={{uri:listing.storeLogo}} style={styles.detailStoreAvatarImage} resizeMode="cover" /> : <Text style={[styles.detailStoreAvatarText,{color:theme.accent}]}>{listing.store.slice(0,1).toUpperCase()}</Text>}
+      <View style={[styles.productInfoRow, { borderBottomColor: theme.border }]}>
+        <View style={{ flex: 1, paddingRight: 12 }}>
+          <Text style={[styles.productTitle, { color: theme.text }]} numberOfLines={2}>
+            {safeDisplayText(listing.title, "Product")}
+          </Text>
+          <Text style={[styles.bigPrice, { color: theme.accent, marginTop: 5 }]}>{safeDisplayText(listing.price, "Price on request")}</Text>
+          <View style={styles.productMetaLine}>
+            <Text style={[styles.productMetaSecondary, { color: theme.muted }]}>{safeDisplayText(listing.rating, "0")} ★</Text>
+            <Text style={[styles.productMetaDot, { color: theme.muted }]}>•</Text>
+            <Text style={[styles.productMetaSecondary, { color: theme.muted }]}>{Number(listing.reviews || 0)} reviews</Text>
+            {!!listing.location && <><Text style={[styles.productMetaDot, { color: theme.muted }]}>•</Text><Text style={[styles.productMetaSecondary, { color: theme.muted }]} numberOfLines={1}>{safeDisplayText(listing.location, "")}</Text></>}
           </View>
-          <Text style={[styles.storePillText,{color:theme.text}]} numberOfLines={1}>{listing.store}</Text>
         </View>
-        <Text style={[styles.detailText, { color: theme.text }]}>{listing.description}</Text>
-        <View style={styles.detailButtons}>
-          <Pressable onPress={onContactSeller} style={[styles.primaryButton, { backgroundColor: BUTTON_BLUE, flex: 1 }]}>
-            <MessageCircle size={18} color="#fff" /><Text style={styles.primaryButtonText}>Contact seller</Text>
+        <View style={styles.productTitleActions}>
+          <Pressable onPress={onToggleLike} accessibilityRole="button" accessibilityLabel={liked ? "Unlike product" : "Like product"} style={[styles.productActionIcon, { backgroundColor: liked ? "#FEF2F2" : theme.card, borderColor: liked ? "#FECACA" : theme.border }]} hitSlop={6}>
+            <Heart size={21} color={liked ? "#EF4444" : theme.text} fill={liked ? "#EF4444" : "transparent"} />
           </Pressable>
-          <Pressable onPress={() => { if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before requesting a purchase."); return; } setPurchaseError(""); setPurchaseOpen(true); }} style={[styles.secondaryButton, { backgroundColor: theme.card, borderColor: theme.border, flex: 1 }]}>
-            <ShoppingBag size={18} color={theme.text} /><Text style={[styles.secondaryButtonText, { color: theme.text }]}>Request purchase</Text>
-          </Pressable>
-        </View>
-        <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
-          <Pressable onPress={() => openReportAlert("listing", listing.title)} style={[styles.reportInlineButton,{borderColor:theme.border,backgroundColor:theme.card}]}>
-            <AlertCircle size={16} color={theme.text} /><Text style={[styles.reportInlineText,{color:theme.text}]}>Report listing</Text>
-          </Pressable>
-          <Pressable onPress={() => openReportAlert("user", listing.store)} style={[styles.reportInlineButton,{borderColor:theme.border,backgroundColor:theme.card}]}>
-            <User size={16} color={theme.text} /><Text style={[styles.reportInlineText,{color:theme.text}]}>Report seller</Text>
+          <Pressable onPress={onAddToCart} accessibilityRole="button" accessibilityLabel={inCart ? "In cart" : "Add to cart"} style={[styles.productActionIcon, { backgroundColor: inCart ? "#EFF6FF" : theme.card, borderColor: inCart ? "#BFDBFE" : theme.border }]} hitSlop={6}>
+            <ShoppingCart size={21} color={inCart ? BUTTON_BLUE : theme.text} fill={inCart ? BUTTON_BLUE : "transparent"} />
           </Pressable>
         </View>
       </View>
+
+      {/* 1. Message seller / Order now */}
+      <View style={styles.detailButtons}>
+        <Pressable onPress={onContactSeller} style={[styles.primaryButton, { backgroundColor: BUTTON_BLUE, flex: 1 }]}>
+          <MessageCircle size={18} color="#fff" /><Text style={styles.primaryButtonText}>Message seller</Text>
+        </Pressable>
+        <Pressable onPress={() => {
+          if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before ordering this product."); return; }
+          if ((listing.stock ?? 0) <= 0) { Alert.alert("Out of stock", "This product is currently out of stock."); return; }
+          setPurchaseError(""); setPurchaseOpen(true);
+        }} style={[styles.primaryButton, { backgroundColor: BUTTON_BLUE, flex: 1 }]}>
+          <ShoppingBag size={18} color="#fff" /><Text style={styles.primaryButtonText}>Order now</Text>
+        </Pressable>
+      </View>
+
+      {/* 2. Description */}
+      <View style={[styles.detailSectionCard, { backgroundColor: theme.card, borderColor: theme.border, marginTop: 14 }]}>
+        <Text style={[styles.detailSectionTitle, { color: theme.text }]}>Description</Text>
+        <DisplayText style={[styles.detailText, { color: theme.muted, marginTop: 8 }]} value={listing.description} fallback="No description provided by the seller." />
+      </View>
+
+      {/* 3. Add to cart */}
+      <Pressable onPress={() => {
+        if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before adding items to your cart."); return; }
+        if ((listing.stock ?? 0) <= 0) { Alert.alert("Out of stock", "This product is currently out of stock."); return; }
+        onAddToCart();
+      }} style={[styles.secondaryButton, { backgroundColor: theme.card, borderColor: inCart ? "#BFDBFE" : theme.border, marginTop: 10, minHeight: 50 }]}>
+        <ShoppingCart size={18} color={inCart ? BUTTON_BLUE : theme.text} fill={inCart ? BUTTON_BLUE : "transparent"} />
+        <Text style={[styles.secondaryButtonText, { color: inCart ? BUTTON_BLUE : theme.text }]}>{inCart ? "Added to cart" : "Add to cart"}</Text>
+      </Pressable>
+
+      {/* 4. Reviews */}
+      <View style={[styles.detailSectionCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+        <View style={styles.rowBetween}>
+          <View>
+            <Text style={[styles.detailSectionTitle, { color: theme.text }]}>Reviews</Text>
+            <Text style={[styles.detailSectionSub, { color: theme.muted }]}>{safeDisplayText(listing.rating, "0")} ★ · {reviews.length || listing.reviews || 0} reviews</Text>
+          </View>
+          <View style={styles.reviewScoreBadge}><Text style={styles.reviewScoreText}>★</Text></View>
+        </View>
+        {reviews.length === 0 ? <Text style={[styles.detailSectionEmpty, { color: theme.muted }]}>No reviews yet. Completed orders can leave a review here.</Text> : reviews.slice(0, 4).map((r: any) => (
+          <View key={r.id} style={[styles.reviewRow, { borderTopColor: theme.border }]}>
+            <View style={styles.rowBetween}>
+              <Text style={[styles.reviewName, { color: theme.text }]}>{safeDisplayText(r.reviewer_name, "Marketplace buyer")}</Text>
+              <Text style={{ color: theme.accent, fontWeight: "900" }}>{"★".repeat(Math.max(0, Math.min(5, Number(r.rating || 0))))}</Text>
+            </View>
+            <Text style={[styles.reviewText, { color: theme.muted }]}>{safeDisplayText(r.text, "No written comment.")}</Text>
+          </View>
+        ))}
+      </View>
+
+      {/* 5. Store link */}
+      <Pressable onPress={() => globalThis.__MARKETPLACE_NAVIGATE_STORE__?.(listing)} style={[styles.storePill, styles.storeLinkCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+        <View style={[styles.detailStoreAvatar, { backgroundColor: darken(theme.accent, theme.isDark ? 0.35 : 0.88) }]}>
+          {listing.storeLogo ? <Image source={{ uri: listing.storeLogo }} style={styles.detailStoreAvatarImage} resizeMode="cover" /> : <Text style={[styles.detailStoreAvatarText, { color: theme.accent }]}>{safeDisplayText(listing.store, "Store").slice(0, 1).toUpperCase()}</Text>}
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.storePillText, { color: theme.text }]} numberOfLines={1}>{safeDisplayText(listing.store, "Store")}</Text>
+          <Text style={{ fontSize: 11, color: theme.muted }}>View store and other items</Text>
+        </View>
+        <ChevronRight size={18} color={theme.muted} />
+      </Pressable>
+
+      {/* 6. Reports */}
+      <View style={styles.reportActionsWrap}>
+        <Text style={[styles.reportSectionLabel, { color: theme.muted }]}>Something not right?</Text>
+        <View style={styles.reportActionsRow}>
+          <Pressable onPress={() => openReport("listing")} style={[styles.reportActionCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <View style={styles.reportActionIcon}><Flag size={17} color="#DC2626" /></View>
+            <View style={{ flex: 1 }}><Text style={[styles.reportActionTitle, { color: theme.text }]}>Report listing</Text><Text style={[styles.reportActionSub, { color: theme.muted }]}>Report this item</Text></View>
+            <ChevronRight size={16} color={theme.muted} />
+          </Pressable>
+          <Pressable onPress={() => openReport("seller")} style={[styles.reportActionCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <View style={[styles.reportActionIcon, { backgroundColor: theme.isDark ? "#27151A" : "#FFF7ED" }]}><User size={17} color="#EA580C" /></View>
+            <View style={{ flex: 1 }}><Text style={[styles.reportActionTitle, { color: theme.text }]}>Report seller</Text><Text style={[styles.reportActionSub, { color: theme.muted }]}>Report seller activity</Text></View>
+            <ChevronRight size={16} color={theme.muted} />
+          </Pressable>
+        </View>
+      </View>
+
+      {/* 7. Related items */}
+      {related.length > 0 ? (
+        <View style={{ marginTop: 18 }}>
+          <View style={styles.rowBetween}>
+            <View><Text style={[styles.detailSectionTitle, { color: theme.text }]}>Related items</Text><Text style={[styles.detailSectionSub, { color: theme.muted }]}>You may also like these products.</Text></View>
+            <ChevronRight size={18} color={theme.muted} />
+          </View>
+          <FlatList horizontal showsHorizontalScrollIndicator={false} data={related} keyExtractor={(x) => String(x.id)} contentContainerStyle={{ gap: 12, paddingTop: 10, paddingRight: 8 }} renderItem={({ item }) => (
+            <Pressable onPress={() => onOpenProduct(item)} style={[styles.relatedCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              {item.image ? <Image source={{ uri: optimizedImageUrl(item.image, 320) }} style={styles.relatedImage} /> : <View style={[styles.relatedImage, { alignItems: "center", justifyContent: "center", backgroundColor: theme.background }]}><ImageIcon size={28} color={theme.muted} /></View>}
+              <View style={{ paddingHorizontal: 10, paddingTop: 8 }}>
+                <DisplayText style={[styles.relatedTitle, { color: theme.text, paddingHorizontal: 0, marginTop: 0 }]} value={item.title} fallback="Untitled listing" numberOfLines={2} />
+                <DisplayText style={[styles.relatedPrice, { color: theme.accent, paddingHorizontal: 0 }]} value={item.price} fallback="Price on request" />
+              </View>
+            </Pressable>
+          )} />
+        </View>
+      ) : null}
     </ScreenScroll>
+    {reportOpen && (
+      <View style={styles.profileSheetOverlay}>
+        <Pressable style={styles.profileSheetBackdrop} onPress={reporting ? undefined : () => setReportOpen(false)} />
+        <View style={[styles.reportSheet,{backgroundColor:theme.card}]}>
+          <View style={[styles.reportHero,{backgroundColor:theme.isDark?"#3F172A":"#FEF2F2"}]}><View style={styles.reportHeroIcon}><Flag size={20} color="#DC2626"/></View><View style={{flex:1}}><Text style={[styles.reportTitle,{color:theme.text}]}>Report {reportType === "listing" ? "listing" : "seller"}</Text><Text style={[styles.reportSubtitle,{color:theme.muted}]}>Help us keep Marketplace safe.</Text></View><Pressable onPress={()=>setReportOpen(false)} style={styles.profileSheetClose}><X size={18} color={theme.text}/></Pressable></View>
+          <ScrollView contentContainerStyle={{padding:16,gap:10}} keyboardShouldPersistTaps="handled"><Text style={[styles.reportLabel,{color:theme.text}]}>Why are you reporting this?</Text><View style={styles.reportReasonGrid}>{reportReasons.map(r=><Pressable key={r} onPress={()=>setReportReason(r)} style={[styles.reportReason,{backgroundColor:reportReason===r?BUTTON_BLUE:theme.background,borderColor:reportReason===r?BUTTON_BLUE:theme.border}]}>{reportReason===r&&<CheckCircle2 size={15} color="#fff"/>}<Text style={[styles.reportReasonText,{color:reportReason===r?"#fff":theme.text}]}>{r}</Text></Pressable>)}</View><Text style={[styles.reportLabel,{color:theme.text}]}>Additional details (optional)</Text><TextInput value={reportDetails} onChangeText={setReportDetails} multiline placeholder="Tell us what happened…" placeholderTextColor={theme.muted} style={[styles.reportInput,{color:theme.text,borderColor:theme.border,backgroundColor:theme.background}]}/></ScrollView>
+          <View style={[styles.profileSheetActions,{borderTopColor:theme.border}]}><Pressable onPress={()=>setReportOpen(false)} disabled={reporting} style={[styles.profileCancelButton,{borderColor:theme.border}]}><Text style={[styles.profileCancelText,{color:theme.text}]}>Cancel</Text></Pressable><Pressable onPress={()=>void submitReport()} disabled={reporting} style={[styles.reportSubmitButton,{backgroundColor:"#DC2626",opacity:reporting?.65:1}]}>{reporting?<ActivityIndicator color="#fff"/>:<><Flag size={15} color="#fff"/><Text style={styles.profileSaveText}>Submit report</Text></>}</Pressable></View>
+        </View>
+      </View>
+    )}
     {purchaseOpen && (
       <View style={styles.profileSheetOverlay}>
         <Pressable style={styles.profileSheetBackdrop} onPress={submitting ? undefined : () => setPurchaseOpen(false)} />
         <View style={[styles.profileSheet, { backgroundColor: theme.card, maxHeight: "82%" }]}>
           <View style={[styles.profileSheetHeader, { borderBottomColor: theme.border }]}>
-            <View style={{ flex: 1 }}><Text style={[styles.profileSheetTitle, { color: theme.text }]}>Request purchase</Text><Text style={[styles.profileSheetSub, { color: theme.muted }]}>{listing.title}</Text></View>
+            <View style={{ flex: 1 }}><Text style={[styles.profileSheetTitle, { color: theme.text }]}>Order now</Text><Text style={[styles.profileSheetSub, { color: theme.muted }]}>{listing.title}</Text></View>
             <Pressable onPress={() => setPurchaseOpen(false)} disabled={submitting} style={[styles.profileSheetClose, { backgroundColor: theme.isDark ? "#26222F" : "#F1F5F9" }]}><X size={18} color={theme.text} /></Pressable>
           </View>
           <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }} keyboardShouldPersistTaps="handled">
@@ -1872,8 +2700,8 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
           <View style={styles.inlineFieldLabel}><MapPin size={15} color={theme.muted}/><Text style={[styles.fieldLabelNoMargin,{color:theme.text}]}>Location</Text></View>
           <Field label="" value={location} onChangeText={setLocation} placeholder="Town, area or pickup point" theme={theme}/>
           <Text style={[styles.fieldLabel,{color:theme.text}]}>Description</Text>
-          <TextInput value={description} onChangeText={setDescription} multiline maxLength={500} placeholder="Describe the item or service honestly. Mention condition, availability, what is included and anything a buyer should know." placeholderTextColor={theme.muted} style={[styles.descriptionInput,{color:theme.text,borderColor:theme.border,backgroundColor:theme.background}]}/>
-          <Text style={[styles.characterHint,{color:theme.muted}]}>{description.length}/500</Text>
+          <TextInput value={description} onChangeText={setDescription} multiline maxLength={2000} placeholder="Describe the item or service honestly. Mention condition, availability, what is included and anything a buyer should know." placeholderTextColor={theme.muted} style={[styles.descriptionInput,{color:theme.text,borderColor:theme.border,backgroundColor:theme.background}]}/>
+          <Text style={[styles.characterHint,{color:theme.muted}]}>{description.length}/2000</Text>
         </View>
 
         <View style={[styles.formCard,{backgroundColor:theme.card,borderColor:theme.border}]}>
@@ -2021,7 +2849,7 @@ function MetaVerifiedBadge({ size = 18 }: { size?: number }) {
   );
 }
 
-function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onSecurity, onNotificationPreferences, onHelp, onSignIn, onSignUp, onGoogle, onStore, onMessages, savedCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onSecurity: () => void; onNotificationPreferences: () => void; onHelp: () => void; onSignIn: () => void; onSignUp: () => void; onGoogle: () => void; onStore: () => void; onMessages: () => void; savedCount?: number }) {
+function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onSecurity, onNotificationPreferences, onHelp, onSignIn, onSignUp, onGoogle, onStore, onMessages, onCart, cartCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onSecurity: () => void; onNotificationPreferences: () => void; onHelp: () => void; onSignIn: () => void; onSignUp: () => void; onGoogle: () => void; onStore: () => void; onMessages: () => void; onCart: () => void; cartCount?: number }) {
   const insets = useSafeAreaInsets();
   const [profileMode, setProfileMode] = useState<"buyer" | "seller">("buyer");
   const [editing, setEditing] = useState(false);
@@ -2055,10 +2883,10 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
   </ScreenScroll>;
 
   const buyerActions = [
-    { icon: <ShoppingBag size={18} color={theme.accent} />, title: "My orders", text: "Track purchases & delivery", onPress: onOrders },
-    { icon: <Bookmark size={18} color={theme.accent} />, title: "Saved items", text: `${savedCount} saved ${savedCount === 1 ? "item" : "items"}`, onPress: () => {} },
-    { icon: <MessageCircle size={18} color={theme.accent} />, title: "Messages", text: "Chat with sellers", onPress: onMessages },
-    { icon: <Store size={18} color={theme.accent} />, title: "Following", text: "Stores you follow", onPress: () => {} },
+    { icon: <ShoppingBag size={19} color={theme.text} />, title: "My orders", text: "Track purchases & delivery", onPress: onOrders },
+    { icon: <ShoppingCart size={19} color={theme.text} />, title: "Cart", text: `${cartCount} ${cartCount === 1 ? "item" : "items"} in cart`, onPress: onCart },
+    { icon: <MessageCircle size={19} color={theme.text} />, title: "Messages", text: "Chat with sellers", onPress: onMessages },
+    { icon: <Store size={19} color={theme.text} />, title: "Following", text: "Stores you follow", onPress: () => {} },
   ];
   const sellerActions = [
     { icon: <Store size={18} color={theme.accent} />, title: "Seller hub", text: "Manage your store", onPress: onStore },
@@ -2072,7 +2900,26 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
     <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
       <View style={[styles.profileHeroCard,{backgroundColor:theme.card,borderColor:theme.border}]}>
         <View style={styles.profileHeroTop}>
-          <ProfileAvatar uri={currentUser?.avatar || currentUser?.avatar_url} initials={initials} size={78} theme={theme} />
+          <View style={styles.profileAvatarEditWrap}>
+            <ProfileAvatar uri={currentUser?.avatar || currentUser?.avatar_url} initials={initials} size={78} theme={theme} />
+            <Pressable
+              onPress={() => setEditing(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Edit profile photo and details"
+              hitSlop={10}
+              style={({ pressed }) => [
+                styles.profileEditIconButton,
+                {
+                  backgroundColor: BUTTON_BLUE,
+                  borderColor: theme.card,
+                  opacity: pressed ? 0.78 : 1,
+                  transform: [{ scale: pressed ? 0.94 : 1 }],
+                },
+              ]}
+            >
+              <Pencil size={15} color="#fff" strokeWidth={2.5} />
+            </Pressable>
+          </View>
           <View style={{flex:1,minWidth:0}}>
             <View style={styles.profileNameLine}>
               <Text style={[styles.profileName,{color:theme.text}]} numberOfLines={1}>{displayName}</Text>
@@ -2082,11 +2929,6 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
             <Text style={[styles.profileMember,{color:theme.muted}]}>Marketplace member</Text>
           </View>
 
-        </View>
-        <View style={[styles.profileTrustRow,{borderTopColor:theme.border}]}>
-          <View style={styles.profileTrustItem}><ShieldIcon theme={theme}/><View><Text style={[styles.profileTrustTitle,{color:theme.text}]}>Protected account</Text><Text style={[styles.profileTrustText,{color:theme.muted}]}>Secure marketplace access</Text></View></View>
-          <View style={[styles.profileTrustDivider,{backgroundColor:theme.border}]} />
-          <View style={styles.profileTrustItem}><Check size={17} color="#2B9E63"/><View><Text style={[styles.profileTrustTitle,{color:theme.text}]}>Good standing</Text><Text style={[styles.profileTrustText,{color:theme.muted}]}>No account issues</Text></View></View>
         </View>
       </View>
 
@@ -2100,25 +2942,23 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
         <View style={[styles.profileRoleBadge,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}><Text style={[styles.profileRoleBadgeText,{color:theme.accent}]}>{profileMode === "buyer" ? "SHOPPING" : "SELLING"}</Text></View>
       </View>
 
-      <View style={styles.profileActionGrid}>
-        {actions.map((item) => <ProfileActionTile key={item.title} theme={theme} icon={item.icon} title={item.title} text={item.text} onPress={item.onPress} />)}
-      </View>
-
       {profileMode === "buyer" ? <>
-        <View style={[styles.profileFeatureCard,{backgroundColor:theme.card,borderColor:theme.border}]}>
-          <View style={[styles.profileFeatureIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}><ShieldIcon theme={theme}/></View>
-          <View style={{flex:1}}><Text style={[styles.profileFeatureTitle,{color:theme.text}]}>Shop with confidence</Text><Text style={[styles.profileFeatureText,{color:theme.muted}]}>Keep your account verified, review seller ratings, and use Marketplace messages before sharing payment or delivery details.</Text></View>
+        <View style={{ gap: 12 }}>
+          {buyerActions.map((item) => (
+            <ProfileRow
+              key={item.title}
+              theme={theme}
+              icon={item.icon}
+              title={item.title}
+              onPress={item.onPress}
+            />
+          ))}
         </View>
         <ProfileRow theme={theme} icon={<Heart size={19} color={theme.text}/>} title="Wishlist & saved searches" onPress={() => {}} />
       </> : <>
         <View style={[styles.sellerSetupCard,{backgroundColor:theme.isDark ? "#172554" : "#EFF6FF", borderWidth:1, borderColor:theme.isDark ? "#1E3A8A" : "#BFDBFE"}]}>
           <View style={{flex:1}}><Text style={styles.sellerSetupEyebrow}>SELLER READINESS</Text><Text style={[styles.sellerSetupTitle,{color:theme.text}]}>Build a store buyers trust.</Text><Text style={[styles.sellerSetupText,{color:theme.muted}]}>Add your store details, listings, delivery options and payout information.</Text></View>
           <Pressable onPress={onStore} style={[styles.sellerSetupButton,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.sellerSetupButtonText}>Set up</Text><ChevronRight size={16} color="#fff"/></Pressable>
-        </View>
-        <View style={styles.profileSectionHeader}><View><Text style={[styles.profileSectionTitle,{color:theme.text}]}>Seller essentials</Text><Text style={[styles.profileSectionSub,{color:theme.muted}]}>Tools to keep your business organized.</Text></View></View>
-        <View style={styles.profileEssentialsRow}>
-          <ProfileMiniFeature theme={theme} icon={<Tag size={17} color={theme.accent}/>} title="Listing quality" text="Photos, pricing & stock" />
-          <ProfileMiniFeature theme={theme} icon={<Truck size={17} color={theme.accent}/>} title="Fulfilment" text="Delivery & pickup" />
         </View>
       </>}
 
@@ -2130,20 +2970,55 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
       {storeLoading && <Text style={[styles.profileLoading,{color:theme.muted}]}>Loading store profile…</Text>}
     </ScreenScroll>
 
+    {editing && currentUser && (
+      <EditProfileSheet
+        initialTab="profile"
+        theme={theme}
+        currentUser={currentUser}
+        store={store}
+        insetsBottom={insets.bottom}
+        onClose={() => setEditing(false)}
+        onUserUpdated={(user) => {
+          onUserUpdated(user);
+          const activeAuth = globalThis.__MARKETPLACE_AUTH__;
+          if (activeAuth) {
+            const nextAuth = { ...activeAuth, user };
+            globalThis.__MARKETPLACE_AUTH__ = nextAuth;
+            void AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextAuth));
+          }
+        }}
+        onStoreUpdated={(updatedStore) => setStore(updatedStore)}
+      />
+    )}
+
   </>;
 }
 
-function EditProfileSheet({ theme, currentUser, store, insetsBottom, onClose, onUserUpdated, onStoreUpdated }: { theme: Theme; currentUser: ApiUser; store: ProfileStore | null; insetsBottom: number; onClose: () => void; onUserUpdated: (user: ApiUser) => void; onStoreUpdated: (store: ProfileStore) => void }) {
+function EditProfileSheet({ initialTab = "profile", theme, currentUser, store, insetsBottom, onClose, onUserUpdated, onStoreUpdated }: { initialTab?: "profile" | "store"; theme: Theme; currentUser: ApiUser; store: ProfileStore | null; insetsBottom: number; onClose: () => void; onUserUpdated: (user: ApiUser) => void; onStoreUpdated: (store: ProfileStore) => void }) {
+  const [activeTab, setActiveTab] = useState<"profile" | "store">(store ? initialTab : "profile");
   const [fullName, setFullName] = useState(currentUser.full_name || "");
   const [avatar, setAvatar] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [storeName, setStoreName] = useState(store?.name || "");
   const [storeDescription, setStoreDescription] = useState(store?.description || "");
-  const [storeLocation, setStoreLocation] = useState(store?.location || "");
-  const [storePhone, setStorePhone] = useState(store?.phone || "");
+  const initialPhoneCountry = findPhoneCountry(String(store?.phone || ""));
+  const [phoneCountry, setPhoneCountry] = useState(initialPhoneCountry);
+  const [storePhone, setStorePhone] = useState(() => {
+    const raw = String(store?.phone || "").trim();
+    const country = findPhoneCountry(raw);
+    const digits = raw.replace(/\D/g, "");
+    const dialDigits = country.dial.replace(/\D/g, "");
+    if (!raw) return "";
+    if (digits.startsWith(dialDigits)) return digits.slice(dialDigits.length).replace(/^0+/, "").slice(0, phoneLocalMaxDigits(country.code));
+    if (raw.startsWith("0")) return raw.slice(1).replace(/\D/g, "").slice(0, phoneLocalMaxDigits(country.code));
+    return digits.slice(0, phoneLocalMaxDigits(country.code));
+  });
+  const [countryPickerOpen, setCountryPickerOpen] = useState(false);
+  const [countrySearch, setCountrySearch] = useState("");
   const [logo, setLogo] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [cover, setCover] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const editSheetScrollRef = useRef<ScrollView>(null);
 
   async function chooseImage(kind: "avatar" | "logo" | "cover") {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -2172,40 +3047,58 @@ function EditProfileSheet({ theme, currentUser, store, insetsBottom, onClose, on
   }
 
   async function saveChanges() {
-    if (!fullName.trim()) { setError("Please enter your name."); return; }
     if (!globalThis.__MARKETPLACE_AUTH__?.access) { setError("Please sign in again before editing your profile."); return; }
+    if (activeTab === "profile" && !fullName.trim()) { setError("Please enter your name."); return; }
+    if (activeTab === "store" && !store) { setError("Store profile is not available yet."); return; }
+
     setSaving(true); setError("");
     try {
       const activeAuth = globalThis.__MARKETPLACE_AUTH__!;
-      let avatarUrl: string | undefined;
-      let logoUrl: string | undefined;
-      let coverUrl: string | undefined;
-      if (avatar) avatarUrl = (await uploadAssetToCloudinary(avatar, activeAuth, "avatar")).secure_url;
-      if (logo) logoUrl = (await uploadAssetToCloudinary(logo, activeAuth, "store_logo")).secure_url;
-      if (cover) coverUrl = (await uploadAssetToCloudinary(cover, activeAuth, "store_cover")).secure_url;
+      if (activeTab === "profile") {
+        let avatarUrl: string | undefined;
+        if (avatar) avatarUrl = (await uploadAssetToCloudinary(avatar, activeAuth, "avatar")).secure_url;
 
-      const userPayload: any = { full_name: fullName.trim() };
-      if (avatarUrl) userPayload.avatar_url = avatarUrl;
-      const updatedUser = await apiRequest("/api/auth/me/", { method: "PATCH", body: JSON.stringify(userPayload) }, activeAuth) as ApiUser;
-      const nextAuth = { ...activeAuth, user: updatedUser };
-      globalThis.__MARKETPLACE_AUTH__ = nextAuth;
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextAuth));
-      onUserUpdated(updatedUser);
+        // Personal profile updates use the same multipart request path as store updates.
+        // This prevents DRF from rejecting the request with "Unsupported media type application/json"
+        // and keeps avatar URL updates consistent with the image upload flow.
+        const userForm = new FormData();
+        userForm.append("full_name", fullName.trim());
+        if (avatarUrl) userForm.append("avatar_url", avatarUrl);
+        const updatedUser = await apiRequest(
+          "/api/auth/me/",
+          { method: "PATCH", body: userForm },
+          activeAuth
+        ) as ApiUser;
+        const nextAuth = { ...activeAuth, user: updatedUser };
+        globalThis.__MARKETPLACE_AUTH__ = nextAuth;
+        await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextAuth));
+        onUserUpdated(updatedUser);
 
-      if (store) {
-        const storePayload: any = {
-          name: storeName.trim(),
-          description: storeDescription.trim(),
-          location: storeLocation.trim(),
-          phone: storePhone.trim(),
-        };
-        if (logoUrl) storePayload.logo_url = logoUrl;
-        if (coverUrl) storePayload.cover_url = coverUrl;
-        const updatedStore = await apiRequest("/api/stores/mine/", { method: "PATCH", body: JSON.stringify(storePayload) }, globalThis.__MARKETPLACE_AUTH__) as ProfileStore;
+        Alert.alert("Profile updated", "Your personal profile has been saved.", [{ text: "Done", onPress: onClose }]);
+      } else {
+        let logoUrl: string | undefined;
+        let coverUrl: string | undefined;
+        if (logo) logoUrl = (await uploadAssetToCloudinary(logo, activeAuth, "store_logo")).secure_url;
+        if (cover) coverUrl = (await uploadAssetToCloudinary(cover, activeAuth, "store_cover")).secure_url;
+
+        // The store endpoint accepts multipart/form-data (not application/json).
+        // Use FormData even when only text fields are being changed.
+        const storeForm = new FormData();
+        storeForm.append("name", storeName.trim());
+        storeForm.append("description", storeDescription.trim());
+        storeForm.append("phone", `+${phoneCountry.dial.replace(/\D/g, "")}${storePhone.replace(/\D/g, "")}`);
+        if (logoUrl) storeForm.append("logo_url", logoUrl);
+        if (coverUrl) storeForm.append("cover_url", coverUrl);
+
+        const updatedStore = await apiRequest(
+          "/api/stores/mine/",
+          { method: "PATCH", body: storeForm },
+          activeAuth
+        ) as ProfileStore;
         onStoreUpdated(updatedStore);
-      }
 
-      Alert.alert("Profile updated", "Your profile and store changes have been saved.", [{ text: "Done", onPress: onClose }]);
+        Alert.alert("Store updated", "Your store profile has been saved.", [{ text: "Done", onPress: onClose }]);
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : "Could not save your changes.");
     } finally {
@@ -2213,63 +3106,269 @@ function EditProfileSheet({ theme, currentUser, store, insetsBottom, onClose, on
     }
   }
 
-  return <View style={styles.profileSheetOverlay}>
-    <Pressable style={styles.profileSheetBackdrop} onPress={saving ? undefined : onClose} />
-    <View style={[styles.profileSheet,{backgroundColor:theme.card,paddingBottom:Math.max(insetsBottom,12)}]}>
-      <View style={[styles.profileSheetHeader,{borderBottomColor:theme.border}]}>
-        <View><Text style={[styles.profileSheetTitle,{color:theme.text}]}>Edit profile</Text><Text style={[styles.profileSheetSub,{color:theme.muted}]}>Update your profile and store appearance.</Text></View>
-        <Pressable onPress={onClose} disabled={saving} style={[styles.profileSheetClose,{backgroundColor:theme.isDark?"#26222F":"#F1F5F9"}]}><X size={18} color={theme.text}/></Pressable>
-      </View>
+  const filteredCountries = useMemo(() => {
+    const q = countrySearch.trim().toLowerCase();
+    if (!q) return PHONE_COUNTRIES;
+    return PHONE_COUNTRIES.filter((item) => item.name.toLowerCase().includes(q) || item.dial.includes(q) || item.code.toLowerCase().includes(q));
+  }, [countrySearch]);
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{padding:16,paddingBottom:18}} keyboardShouldPersistTaps="handled">
-        <Text style={[styles.profileEditSectionTitle,{color:theme.text}]}>Personal profile</Text>
-        <View style={[styles.profileEditCard,{backgroundColor:theme.isDark?"#17141D":"#F8FAFF",borderColor:theme.border}]}>
-          <View style={styles.profileEditAvatarRow}>
-            {avatar ? (
-              <Image source={{uri:avatar.uri}} style={styles.profileEditAvatar} />
-            ) : (
-              <ProfileAvatar
-                uri={currentUser.avatar || currentUser.avatar_url}
-                initials={(currentUser.full_name || "U").split(/\s+/).map((x) => x[0]).join("").slice(0,2).toUpperCase()}
-                size={74}
-                theme={theme}
-              />
+  const phoneMaxDigits = phoneLocalMaxDigits(phoneCountry.code);
+
+  const handlePhoneCountryChange = (country: { code: string; name: string; dial: string }) => {
+    setPhoneCountry(country);
+    setStorePhone(current => current.replace(/\D/g, "").slice(0, phoneLocalMaxDigits(country.code)));
+  };
+
+  return (
+    <View style={styles.profileSheetOverlay}>
+      <Pressable style={styles.profileSheetBackdrop} onPress={saving ? undefined : onClose} />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+        style={styles.profileSheetKeyboard}
+      >
+        <View style={[styles.profileSheet, { backgroundColor: theme.card, paddingBottom: Math.max(insetsBottom, 12) }]}>
+          <View style={[styles.profileSheetHeader, { borderBottomColor: theme.border }]}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={[styles.profileSheetTitle, { color: theme.text }]}>
+                {activeTab === "profile" ? "Edit profile" : "Edit store profile"}
+              </Text>
+              <Text style={[styles.profileSheetSub, { color: theme.muted }]}>Manage your personal account and public storefront.</Text>
+            </View>
+            <Pressable onPress={onClose} disabled={saving} style={[styles.profileSheetClose, { backgroundColor: theme.isDark ? "#26222F" : "#F1F5F9" }]}>
+              <X size={18} color={theme.text} />
+            </Pressable>
+          </View>
+
+          <View style={[styles.profileEditTabs, { borderBottomColor: theme.border }]}>
+            <Pressable
+              disabled={saving}
+              onPress={() => { setActiveTab("profile"); setError(""); }}
+              style={[styles.profileEditTab, activeTab === "profile" && { borderBottomColor: BUTTON_BLUE }]}
+            >
+              <User size={16} color={activeTab === "profile" ? BUTTON_BLUE : theme.muted} />
+              <Text style={[styles.profileEditTabText, { color: activeTab === "profile" ? BUTTON_BLUE : theme.muted }]}>Edit profile</Text>
+            </Pressable>
+            {store && (
+              <Pressable
+                disabled={saving}
+                onPress={() => { setActiveTab("store"); setError(""); }}
+                style={[styles.profileEditTab, activeTab === "store" && { borderBottomColor: BUTTON_BLUE }]}
+              >
+                <Store size={16} color={activeTab === "store" ? BUTTON_BLUE : theme.muted} />
+                <Text style={[styles.profileEditTabText, { color: activeTab === "store" ? BUTTON_BLUE : theme.muted }]}>Edit store profile</Text>
+              </Pressable>
             )}
-            <View style={{flex:1}}><Text style={[styles.profileEditLabel,{color:theme.text}]}>Profile photo</Text><Text style={[styles.profileEditHint,{color:theme.muted}]}>Choose a clear photo for your account.</Text><Pressable onPress={() => chooseImage("avatar")} style={[styles.profileBlueButton,{backgroundColor:BUTTON_BLUE}]}><Camera size={14} color="#fff"/><Text style={styles.profileBlueButtonText}>Choose photo</Text></Pressable></View>
           </View>
-          <Field label="Profile name" value={fullName} onChangeText={setFullName} theme={theme} />
-          <Text style={[styles.profileIdentityHint,{color:theme.muted}]}>Your personal name. This is separate from your store name.</Text>
-          <View style={{marginBottom:2}}><Text style={[styles.fieldLabel,{color:theme.text}]}>Email address</Text><View style={[styles.profileLockedField,{backgroundColor:theme.isDark?"#24212B":"#EEF2F7",borderColor:theme.border}]}><Text style={[styles.profileLockedText,{color:theme.muted}]} numberOfLines={1}>{currentUser.email}</Text><LockKeyhole size={16} color={theme.muted}/></View><Text style={[styles.profileEditHint,{color:theme.muted}]}>Your email is tied to your account and cannot be changed.</Text></View>
+
+          <ScrollView
+            ref={editSheetScrollRef}
+            style={{ flex: 1 }}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ padding: 16, paddingBottom: 180 }}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
+            {activeTab === "profile" ? (
+              <View>
+                <Text style={[styles.profileEditSectionTitle, { color: theme.text }]}>Personal profile</Text>
+                <View style={[styles.profileEditCard, { backgroundColor: theme.isDark ? "#17141D" : "#F8FAFF", borderColor: theme.border }]}>
+                  <View style={styles.profileEditAvatarRow}>
+                    <View style={styles.profileEditAvatarWrap}>
+                      {avatar ? (
+                        <Image source={{ uri: avatar.uri }} style={styles.profileEditAvatar} />
+                      ) : (
+                        <ProfileAvatar
+                          uri={currentUser.avatar || currentUser.avatar_url}
+                          initials={(currentUser.full_name || "U").split(/\s+/).map((x) => x[0]).join("").slice(0, 2).toUpperCase()}
+                          size={74}
+                          theme={theme}
+                        />
+                      )}
+                      <Pressable onPress={() => chooseImage("avatar")} style={[styles.profilePhotoAction, { backgroundColor: BUTTON_BLUE, borderColor: theme.card }]} hitSlop={6}>
+                        <Camera size={14} color="#fff" />
+                      </Pressable>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.profileEditLabel, { color: theme.text }]}>Profile photo</Text>
+                      <Text style={[styles.profileEditHint, { color: theme.muted }]}>Tap the camera button to choose a clear photo.</Text>
+                    </View>
+                  </View>
+                  <Field label="Profile name" value={fullName} onChangeText={setFullName} theme={theme} />
+                  <Text style={[styles.profileIdentityHint, { color: theme.muted }]}>Your personal name. This is separate from your store name.</Text>
+                  <View style={{ marginBottom: 2 }}>
+                    <Text style={[styles.fieldLabel, { color: theme.text }]}>Email address</Text>
+                    <View style={[styles.profileLockedField, { backgroundColor: theme.isDark ? "#24212B" : "#EEF2F7", borderColor: theme.border }]}>
+                      <Text style={[styles.profileLockedText, { color: theme.muted }]} numberOfLines={1}>{currentUser.email}</Text>
+                      <LockKeyhole size={16} color={theme.muted} />
+                    </View>
+                    <Text style={[styles.profileEditHint, { color: theme.muted }]}>Your email is tied to your account and cannot be changed.</Text>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View>
+                {store ? (
+                  <View>
+                    <Text style={[styles.profileEditSectionTitle, { color: theme.text }]}>Store profile</Text>
+                    <View style={[styles.profileEditCard, { backgroundColor: theme.isDark ? "#17141D" : "#F8FAFF", borderColor: theme.border }]}>
+                      <View style={[styles.profileCoverPreview, { backgroundColor: theme.isDark ? "#172554" : "#DBEAFE", borderColor: theme.border }]}>
+                        {cover ? (
+                          <Image source={{ uri: cover.uri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+                        ) : store.cover ? (
+                          <Image source={{ uri: store.cover }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+                        ) : (
+                          <View style={{ alignItems: "center" }}>
+                            <ImageIcon size={24} color={theme.accent} />
+                            <Text style={[styles.profileEditHint, { color: theme.accent }]}>No store cover yet</Text>
+                          </View>
+                        )}
+                        <Pressable onPress={() => chooseImage("cover")} style={[styles.profileMediaAction, { backgroundColor: BUTTON_BLUE, borderColor: theme.card }]} hitSlop={6}>
+                          <ImageIcon size={15} color="#fff" />
+                          <Text style={styles.profileMediaActionText}>Change cover</Text>
+                        </Pressable>
+                        <View style={[styles.profileEditCoverLogoHolder, { backgroundColor: BUTTON_BLUE, borderColor: theme.card }]}>
+                          {logo ? (
+                            <Image source={{ uri: logo.uri }} style={styles.profileEditCoverLogo} resizeMode="cover" />
+                          ) : store.logo ? (
+                            <Image source={{ uri: store.logo }} style={styles.profileEditCoverLogo} resizeMode="cover" />
+                          ) : (
+                            <Store size={24} color="#fff" />
+                          )}
+                          <Pressable onPress={() => chooseImage("logo")} style={[styles.profilePhotoAction, { backgroundColor: BUTTON_BLUE, borderColor: theme.card }]} hitSlop={6}>
+                            <Camera size={13} color="#fff" />
+                          </Pressable>
+                        </View>
+                      </View>
+
+                      <Field label="Store name" value={storeName} onChangeText={setStoreName} theme={theme} />
+                      <Text style={[styles.profileIdentityHint, { color: theme.muted }]}>Your public storefront can use a different name from your personal profile.</Text>
+
+                      <View style={{ marginBottom: 14 }}>
+                        <Text style={[styles.fieldLabel, { color: theme.text }]}>Description</Text>
+                        <TextInput
+                          value={storeDescription}
+                          onChangeText={setStoreDescription}
+                          placeholder="Describe what your store offers"
+                          placeholderTextColor={theme.muted}
+                          multiline
+                          maxLength={500}
+                          textAlignVertical="top"
+                          style={[styles.input, { height: 82, minHeight: 82, maxHeight: 82, width: "100%", paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10, color: theme.text, borderColor: theme.border, backgroundColor: theme.card }]}
+                        />
+                        <Text style={[styles.profileIdentityHint, { color: theme.muted, textAlign: "right", marginTop: 4 }]}>{storeDescription.length}/500</Text>
+                      </View>
+
+                      <View style={{ marginBottom: 14 }}>
+                        <Text style={[styles.fieldLabel, { color: theme.text }]}>Phone</Text>
+                        <View style={[styles.input, { flexDirection: "row", alignItems: "center", paddingHorizontal: 0, overflow: "hidden", borderColor: theme.border, backgroundColor: theme.card }]}>
+                          <Pressable
+                            onPress={() => { setCountrySearch(""); setCountryPickerOpen(true); }}
+                            style={{ height: "100%", minWidth: 94, paddingHorizontal: 10, borderRightWidth: 1, borderRightColor: theme.border, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 6 }}
+                            accessibilityRole="button"
+                            accessibilityLabel="Choose country calling code"
+                          >
+                            <Text style={{ fontSize: 20 }}>{countryFlag(phoneCountry.code)}</Text>
+                            <Text style={{ color: theme.text, fontWeight: "800", fontSize: 13 }}>{phoneCountry.dial}</Text>
+                            <ChevronDown size={14} color={theme.muted} />
+                          </Pressable>
+                          <TextInput
+                            value={storePhone}
+                            onChangeText={(value) => {
+                              const digits = value.replace(/\D/g, "").replace(/^0+/, "");
+                              setStorePhone(digits.slice(0, phoneMaxDigits));
+                            }}
+                            placeholder={phonePlaceholder(phoneCountry.code)}
+                            placeholderTextColor={theme.muted}
+                            keyboardType="phone-pad"
+                            onFocus={() => {
+                              setTimeout(() => editSheetScrollRef.current?.scrollToEnd({ animated: true }), 180);
+                            }}
+                            style={{ flex: 1, paddingHorizontal: 14, color: theme.text, fontSize: 16 }}
+                            maxLength={phoneMaxDigits}
+                          />
+                        </View>
+                        <Text style={[styles.profileIdentityHint, { color: theme.muted }]}>Choose any country code, then enter the local number.</Text>
+                      </View>
+                    </View>
+                  </View>
+                ) : null}
+              </View>
+            )}
+
+            {!!error && (
+              <View style={[styles.profileEditError, { backgroundColor: theme.isDark ? "#3A1F25" : "#FEF2F2", borderColor: theme.isDark ? "#7F1D1D" : "#FECACA" }]}>
+                <AlertCircle size={17} color="#DC2626" />
+                <Text style={[styles.profileEditErrorText, { color: theme.isDark ? "#FCA5A5" : "#B91C1C" }]}>{error}</Text>
+              </View>
+            )}
+          </ScrollView>
+
+          <View style={[styles.profileSheetActions, { borderTopColor: theme.border, backgroundColor: theme.card, paddingBottom: Math.max(insetsBottom, 12) }]}>
+            <Pressable onPress={onClose} disabled={saving} style={[styles.profileCancelButton, { borderColor: theme.border, backgroundColor: theme.card }]}>
+              <Text style={[styles.profileCancelText, { color: theme.text }]}>Cancel</Text>
+            </Pressable>
+            <Pressable onPress={saveChanges} disabled={saving} style={[styles.profileSaveButton, { backgroundColor: BUTTON_BLUE, opacity: saving ? 0.7 : 1 }]}>
+              {saving ? <RotateCcw size={16} color="#fff" /> : <Check size={16} color="#fff" />}
+              <Text style={styles.profileSaveText}>{saving ? "Saving…" : "Save changes"}</Text>
+            </Pressable>
+          </View>
         </View>
+      </KeyboardAvoidingView>
 
-        {store && <>
-          <Text style={[styles.profileEditSectionTitle,{color:theme.text,marginTop:18}]}>Store profile</Text>
-          <View style={[styles.profileEditCard,{backgroundColor:theme.isDark?"#17141D":"#F8FAFF",borderColor:theme.border}]}>
-            <View style={[styles.profileCoverPreview,{backgroundColor:theme.isDark?"#172554":"#DBEAFE",borderColor:theme.border}]}>
-              {cover ? <Image source={{uri:cover.uri}} style={StyleSheet.absoluteFillObject} resizeMode="cover" /> : store.cover ? <Image source={{uri:store.cover}} style={StyleSheet.absoluteFillObject} resizeMode="cover" /> : <View style={{alignItems:"center"}}><ImageIcon size={24} color={theme.accent}/><Text style={[styles.profileEditHint,{color:theme.accent}]}>No store cover yet</Text></View>}
-              <Pressable onPress={() => chooseImage("cover")} style={[styles.profileCoverButton,{backgroundColor:BUTTON_BLUE}]}><ImageIcon size={14} color="#fff"/><Text style={styles.profileBlueButtonText}>Change cover</Text></Pressable>
+      <Modal visible={countryPickerOpen} transparent animationType="slide" onRequestClose={() => setCountryPickerOpen(false)}>
+        <View style={styles.countryPickerOverlay}>
+          <Pressable style={styles.countryPickerBackdrop} onPress={() => setCountryPickerOpen(false)} />
+          <View style={[styles.countryPickerSheet, { backgroundColor: theme.card }]}>
+            <View style={[styles.countryPickerHeader, { borderBottomColor: theme.border }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.profileSheetTitle, { color: theme.text }]}>Choose country</Text>
+                <Text style={[styles.profileSheetSub, { color: theme.muted }]}>Select a country calling code.</Text>
+              </View>
+              <Pressable onPress={() => setCountryPickerOpen(false)} style={[styles.profileSheetClose, { backgroundColor: theme.isDark ? "#26222F" : "#F1F5F9" }]}>
+                <X size={18} color={theme.text} />
+              </Pressable>
             </View>
-            <View style={styles.profileStoreLogoRow}>
-              {logo ? <Image source={{uri:logo.uri}} style={styles.profileStoreLogo} /> : store.logo ? <Image source={{uri:store.logo}} style={styles.profileStoreLogo} /> : <View style={[styles.profileStoreLogo,{backgroundColor:BUTTON_BLUE}]}><Store size={22} color="#fff"/></View>}
-              <View style={{flex:1}}><Text style={[styles.profileEditLabel,{color:theme.text}]}>Store logo</Text><Pressable onPress={() => chooseImage("logo")} style={[styles.profileBlueButton,{backgroundColor:BUTTON_BLUE,alignSelf:"flex-start",marginTop:6}]}><Camera size={14} color="#fff"/><Text style={styles.profileBlueButtonText}>Change logo</Text></Pressable></View>
+            <View style={[styles.countrySearchBox, { borderColor: theme.border, backgroundColor: theme.background }]}>
+              <Search size={17} color={theme.muted} />
+              <TextInput
+                value={countrySearch}
+                onChangeText={setCountrySearch}
+                placeholder="Search country or code"
+                placeholderTextColor={theme.muted}
+                style={{ flex: 1, color: theme.text, fontSize: 15 }}
+                autoCapitalize="none"
+              />
             </View>
-            <Field label="Store name" value={storeName} onChangeText={setStoreName} theme={theme} />
-            <Text style={[styles.profileIdentityHint,{color:theme.muted}]}>Your public storefront can use a different name from your personal profile.</Text>
-            <Field label="Description" value={storeDescription} onChangeText={setStoreDescription} theme={theme} multiline />
-            <Field label="Location" value={storeLocation} onChangeText={setStoreLocation} theme={theme} />
-            <Field label="Phone" value={storePhone} onChangeText={setStorePhone} theme={theme} keyboardType="phone-pad" />
+            <FlatList
+              data={filteredCountries}
+              keyExtractor={(item) => item.code}
+              keyboardShouldPersistTaps="handled"
+              initialNumToRender={30}
+              renderItem={({ item }) => (
+                <Pressable
+                  onPress={() => {
+                    handlePhoneCountryChange(item);
+                    setCountryPickerOpen(false);
+                    setCountrySearch("");
+                  }}
+                  style={[styles.countryPickerRow, { borderBottomColor: theme.border }]}
+                >
+                  <Text style={styles.countryFlag}>{countryFlag(item.code)}</Text>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[styles.countryName, { color: theme.text }]} numberOfLines={1}>{item.name}</Text>
+                    <Text style={[styles.countryCode, { color: theme.muted }]}>{item.dial}</Text>
+                  </View>
+                  {phoneCountry.code === item.code && <Check size={18} color={BUTTON_BLUE} />}
+                </Pressable>
+              )}
+              ListEmptyComponent={<View style={{ padding: 24, alignItems: "center" }}><Text style={{ color: theme.muted }}>No countries found.</Text></View>}
+            />
           </View>
-        </>}
-
-        {!!error && <View style={[styles.profileEditError,{backgroundColor:theme.isDark?"#3A1F25":"#FEF2F2",borderColor:theme.isDark?"#7F1D1D":"#FECACA"}]}><AlertCircle size={17} color="#DC2626"/><Text style={[styles.profileEditErrorText,{color:theme.isDark?"#FCA5A5":"#B91C1C"}]}>{error}</Text></View>}
-      </ScrollView>
-
-      <View style={[styles.profileSheetActions,{borderTopColor:theme.border,backgroundColor:theme.card,paddingBottom:Math.max(insetsBottom,12)}]}>
-        <Pressable onPress={onClose} disabled={saving} style={[styles.profileCancelButton,{borderColor:theme.border,backgroundColor:theme.card}]}><Text style={[styles.profileCancelText,{color:theme.text}]}>Cancel</Text></Pressable>
-        <Pressable onPress={saveChanges} disabled={saving} style={[styles.profileSaveButton,{backgroundColor:BUTTON_BLUE,opacity:saving?0.7:1}]}>{saving ? <RotateCcw size={16} color="#fff"/> : <Check size={16} color="#fff"/>}<Text style={styles.profileSaveText}>{saving ? "Saving…" : "Save changes"}</Text></Pressable>
-      </View>
+        </View>
+      </Modal>
     </View>
-  </View>;
+  );
 }
 
 function OrdersScreen({ theme, auth, currentUser }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null }) {
@@ -2369,6 +3468,13 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
   const [messageText, setMessageText] = useState("");
   const [sending, setSending] = useState(false);
   const [search, setSearch] = useState("");
+  const messagesScrollRef = useRef<ScrollView>(null);
+  const messageInsets = useSafeAreaInsets();
+
+  useEffect(() => {
+    const timer = setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 40);
+    return () => clearTimeout(timer);
+  }, [messages.length]);
 
   const loadConversations = async (showSpinner = true) => {
     if (!auth?.access) { setLoading(false); return; }
@@ -2427,7 +3533,7 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
     const otherAvatar = isBuyer ? selectedConversation.seller_avatar : selectedConversation.buyer_avatar;
     const initials = otherName.split(/\s+/).map((x) => x[0]).join("").slice(0,2).toUpperCase();
     return (
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={90}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
         <View style={[styles.chatHeader, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <Pressable onPress={() => setSelectedConversation(null)} style={[styles.chatBackButton, { backgroundColor: theme.isDark ? "#24212B" : "#F3F4F6" }]}><ArrowLeft size={19} color={theme.text} /></Pressable>
           <View style={[styles.chatAvatar, { backgroundColor: theme.isDark ? "#24212B" : "#EFF6FF" }]}>
@@ -2439,7 +3545,7 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
           </View>
           <View style={[styles.chatOnlineDot, { backgroundColor: "#22C55E" }]} />
         </View>
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 14, paddingBottom: 18 }} keyboardShouldPersistTaps="handled">
+        <ScrollView ref={messagesScrollRef} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, paddingBottom: 18 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
           {messages.length === 0 ? (
             <View style={styles.chatEmpty}>
               <View style={[styles.chatEmptyIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><MessageCircle size={25} color={theme.accent} /></View>
@@ -2456,7 +3562,7 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
             </View>;
           })}
         </ScrollView>
-        <View style={[styles.chatComposer, { backgroundColor: theme.card, borderTopColor: theme.border }]}>
+        <View style={[styles.chatComposer, { backgroundColor: theme.card, borderTopColor: theme.border, paddingBottom: Math.max(8, messageInsets.bottom) }]}>
           <Pressable style={[styles.chatAttach, { backgroundColor: theme.isDark ? "#24212B" : "#F3F4F6" }]} onPress={() => Alert.alert("Attachments", "Photo and document attachments can be added here.")}><Paperclip size={19} color={theme.muted} /></Pressable>
           <TextInput value={messageText} onChangeText={setMessageText} placeholder="Write a message..." placeholderTextColor={theme.muted} multiline style={[styles.chatInput, { color: theme.text, backgroundColor: theme.isDark ? "#24212B" : "#F7F8FA", borderColor: theme.border }]} />
           <Pressable onPress={sendMessage} disabled={!messageText.trim() || sending} style={[styles.chatSend, { backgroundColor: messageText.trim() && !sending ? BUTTON_BLUE : theme.border }]}>
@@ -2537,11 +3643,11 @@ function SecurityPrivacyScreen({ theme, auth, onSignOut }: { theme: Theme; auth:
 }
 
 function NotificationPreferencesScreen({ theme }: { theme: Theme }) {
-  const defaults={allow:true,sound:true,vibration:true,messages:true,purchases:true,orders:true,listings:true,saved:true,seller:true,security:true,account:true,promotions:false,recommendations:true,offers:false,quiet:false};
+  const defaults={allow:true,sound:true,vibration:true,messages:true,purchases:true,orders:true,listings:true,cart:true,seller:true,security:true,account:true,promotions:false,recommendations:true,offers:false,quiet:false};
   const [prefs,setPrefs]=useState<any>(defaults);
   useEffect(()=>{AsyncStorage.getItem("marketplace_notification_preferences").then(raw=>{if(raw)setPrefs((p:any)=>({...p,...JSON.parse(raw)}));}).catch(()=>{});},[]);
   const update=(patch:any)=>{const next={...prefs,...patch};setPrefs(next);void AsyncStorage.setItem("marketplace_notification_preferences",JSON.stringify(next));};
-  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><SettingsSection theme={theme} title="Global"><PreferenceSwitch theme={theme} title="Allow notifications" value={prefs.allow} onValueChange={(v)=>update({allow:v})}/><PreferenceSwitch theme={theme} title="Notification sound" value={prefs.sound} onValueChange={(v)=>update({sound:v})}/><PreferenceSwitch theme={theme} title="Notification vibration" value={prefs.vibration} onValueChange={(v)=>update({vibration:v})}/></SettingsSection><SettingsSection theme={theme} title="Marketplace Activity"><PreferenceSwitch theme={theme} title="New messages" value={prefs.messages} onValueChange={(v)=>update({messages:v})}/><PreferenceSwitch theme={theme} title="Purchase requests" value={prefs.purchases} onValueChange={(v)=>update({purchases:v})}/><PreferenceSwitch theme={theme} title="Order updates" value={prefs.orders} onValueChange={(v)=>update({orders:v})}/><PreferenceSwitch theme={theme} title="Listing activity" value={prefs.listings} onValueChange={(v)=>update({listings:v})}/><PreferenceSwitch theme={theme} title="Saved listing updates" value={prefs.saved} onValueChange={(v)=>update({saved:v})}/><PreferenceSwitch theme={theme} title="Seller activity" value={prefs.seller} onValueChange={(v)=>update({seller:v})}/></SettingsSection><SettingsSection theme={theme} title="Security"><PreferenceSwitch theme={theme} title="Login / security alerts" value={prefs.security} onValueChange={(v)=>update({security:v})}/><PreferenceSwitch theme={theme} title="Account changes" value={prefs.account} onValueChange={(v)=>update({account:v})}/></SettingsSection><SettingsSection theme={theme} title="Marketing"><PreferenceSwitch theme={theme} title="Promotions" value={prefs.promotions} onValueChange={(v)=>update({promotions:v})}/><PreferenceSwitch theme={theme} title="Marketplace recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})}/><PreferenceSwitch theme={theme} title="Special offers" value={prefs.offers} onValueChange={(v)=>update({offers:v})}/></SettingsSection><SettingsSection theme={theme} title="Quiet Hours"><PreferenceSwitch theme={theme} title="Enable quiet hours" value={prefs.quiet} onValueChange={(v)=>update({quiet:v})}/><Text style={[styles.preferenceDescription,{color:theme.muted,padding:14}]}>Start and end time controls can be connected to the Android notification scheduler when one is available; no second notification system is introduced here.</Text></SettingsSection><Pressable onPress={()=>Alert.alert("Mark all as read","This action is supported by the existing notifications feed when authenticated.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><Check size={18} color={theme.accent}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Mark all notifications as read</Text></Pressable><Pressable onPress={()=>Alert.alert("Notification history","History clearing is only available if the backend/feed exposes that operation.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><Trash2 size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Clear notification history</Text></Pressable></ScreenScroll>;
+  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><SettingsSection theme={theme} title="Global"><PreferenceSwitch theme={theme} title="Allow notifications" value={prefs.allow} onValueChange={(v)=>update({allow:v})}/><PreferenceSwitch theme={theme} title="Notification sound" value={prefs.sound} onValueChange={(v)=>update({sound:v})}/><PreferenceSwitch theme={theme} title="Notification vibration" value={prefs.vibration} onValueChange={(v)=>update({vibration:v})}/></SettingsSection><SettingsSection theme={theme} title="Marketplace Activity"><PreferenceSwitch theme={theme} title="New messages" value={prefs.messages} onValueChange={(v)=>update({messages:v})}/><PreferenceSwitch theme={theme} title="Purchase requests" value={prefs.purchases} onValueChange={(v)=>update({purchases:v})}/><PreferenceSwitch theme={theme} title="Order updates" value={prefs.orders} onValueChange={(v)=>update({orders:v})}/><PreferenceSwitch theme={theme} title="Listing activity" value={prefs.listings} onValueChange={(v)=>update({listings:v})}/><PreferenceSwitch theme={theme} title="Cart updates" value={prefs.cart} onValueChange={(v)=>update({cart:v})}/><PreferenceSwitch theme={theme} title="Seller activity" value={prefs.seller} onValueChange={(v)=>update({seller:v})}/></SettingsSection><SettingsSection theme={theme} title="Security"><PreferenceSwitch theme={theme} title="Login / security alerts" value={prefs.security} onValueChange={(v)=>update({security:v})}/><PreferenceSwitch theme={theme} title="Account changes" value={prefs.account} onValueChange={(v)=>update({account:v})}/></SettingsSection><SettingsSection theme={theme} title="Marketing"><PreferenceSwitch theme={theme} title="Promotions" value={prefs.promotions} onValueChange={(v)=>update({promotions:v})}/><PreferenceSwitch theme={theme} title="Marketplace recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})}/><PreferenceSwitch theme={theme} title="Special offers" value={prefs.offers} onValueChange={(v)=>update({offers:v})}/></SettingsSection><SettingsSection theme={theme} title="Quiet Hours"><PreferenceSwitch theme={theme} title="Enable quiet hours" value={prefs.quiet} onValueChange={(v)=>update({quiet:v})}/><Text style={[styles.preferenceDescription,{color:theme.muted,padding:14}]}>Start and end time controls can be connected to the Android notification scheduler when one is available; no second notification system is introduced here.</Text></SettingsSection><Pressable onPress={()=>Alert.alert("Mark all as read","This action is supported by the existing notifications feed when authenticated.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><Check size={18} color={theme.accent}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Mark all notifications as read</Text></Pressable><Pressable onPress={()=>Alert.alert("Notification history","History clearing is only available if the backend/feed exposes that operation.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><Trash2 size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Clear notification history</Text></Pressable></ScreenScroll>;
 }
 
 function HelpSupportScreen({ theme, onFAQ, onSafety, onReport, onTerms, onPrivacy }: { theme: Theme; onFAQ:()=>void; onSafety:()=>void; onReport:()=>void; onTerms:()=>void; onPrivacy:()=>void }) {
@@ -2549,12 +3655,12 @@ function HelpSupportScreen({ theme, onFAQ, onSafety, onReport, onTerms, onPrivac
 }
 
 const FAQ_DATA = [
-  ["BUYING", ["How do I buy an item?","How do I contact a seller?","How do I save a listing?","How do I report a seller?"]],
+  ["BUYING", ["How do I buy an item?","How do I contact a seller?","How do I add an item to my cart?","How do I report a seller?"]],
   ["SELLING", ["How do I create a listing?","How do I edit a listing?","How do I remove a listing?","How do I respond to buyers?"]],
   ["ACCOUNT", ["How do I change my password?","How do I sign out?","How do I delete my account?"]],
   ["SAFETY", ["How do I avoid scams?","What should I do if a seller asks for unusual payment?","How do I report suspicious activity?"]],
 ] as const;
-function FAQScreen({ theme }: { theme: Theme }) { const [open,setOpen]=useState<string|null>(null); const answers:any={"How do I buy an item?":"Open a listing, review the seller and order details, then use the purchase flow available for that listing.","How do I contact a seller?":"Open a listing and use the existing contact/messages action.","How do I save a listing?":"Use the save/bookmark action on a listing while signed in.","How do I report a seller?":"Use Report a Problem or the reporting flow from the relevant listing/user interface.","How do I create a listing?":"Use Sell from the bottom navigation while signed in.","How do I edit a listing?":"Open your Seller workspace and choose the listing you want to edit.","How do I remove a listing?":"Use the existing listing management controls. Destructive actions should be confirmed first.","How do I respond to buyers?":"Open Messages and reply to the buyer conversation.","How do I change my password?":"Use Forgot Password from the existing login flow. Direct password-change support depends on a backend endpoint.","How do I sign out?":"Open Security & Privacy and choose Sign out of this device.","How do I delete my account?":"The UI provides a destructive confirmation, but the current backend must expose a deletion endpoint before any deletion can occur.","How do I avoid scams?":"Keep conversations in Marketplace, verify listings and sellers, and avoid unusual payment requests.","What should I do if a seller asks for unusual payment?":"Do not send payment until the request is verified; report the listing or user if it appears suspicious.","How do I report suspicious activity?":"Use Report a Problem or Report Listing / Report User with a required reason and optional details."}; return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}>{FAQ_DATA.map(([cat,items])=><SettingsSection key={cat} theme={theme} title={cat}>{items.map(q=><Pressable key={q} onPress={()=>setOpen(open===q?null:q)} style={[styles.faqRow,{borderBottomColor:theme.border}]}><View style={{flex:1}}><Text style={[styles.faqQuestion,{color:theme.text}]}>{q}</Text>{open===q&&<Text style={[styles.faqAnswer,{color:theme.muted}]}>{answers[q]}</Text>}</View>{open===q?<ChevronUp size={18} color={theme.muted}/>:<ChevronDown size={18} color={theme.muted}/>}</Pressable>)}</SettingsSection>)}</ScreenScroll>; }
+function FAQScreen({ theme }: { theme: Theme }) { const [open,setOpen]=useState<string|null>(null); const answers:any={"How do I buy an item?":"Open a listing, review the seller and order details, then use the purchase flow available for that listing.","How do I contact a seller?":"Open a listing and use the existing contact/messages action.","How do I add an item to my cart?":"Use the cart action on a listing while signed in. Your cart keeps the item and quantity ready for ordering.","How do I report a seller?":"Use Report a Problem or the reporting flow from the relevant listing/user interface.","How do I create a listing?":"Use Sell from the bottom navigation while signed in.","How do I edit a listing?":"Open your Seller workspace and choose the listing you want to edit.","How do I remove a listing?":"Use the existing listing management controls. Destructive actions should be confirmed first.","How do I respond to buyers?":"Open Messages and reply to the buyer conversation.","How do I change my password?":"Use Forgot Password from the existing login flow. Direct password-change support depends on a backend endpoint.","How do I sign out?":"Open Security & Privacy and choose Sign out of this device.","How do I delete my account?":"The UI provides a destructive confirmation, but the current backend must expose a deletion endpoint before any deletion can occur.","How do I avoid scams?":"Keep conversations in Marketplace, verify listings and sellers, and avoid unusual payment requests.","What should I do if a seller asks for unusual payment?":"Do not send payment until the request is verified; report the listing or user if it appears suspicious.","How do I report suspicious activity?":"Use Report a Problem or Report Listing / Report User with a required reason and optional details."}; return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}>{FAQ_DATA.map(([cat,items])=><SettingsSection key={cat} theme={theme} title={cat}>{items.map(q=><Pressable key={q} onPress={()=>setOpen(open===q?null:q)} style={[styles.faqRow,{borderBottomColor:theme.border}]}><View style={{flex:1}}><Text style={[styles.faqQuestion,{color:theme.text}]}>{q}</Text>{open===q&&<Text style={[styles.faqAnswer,{color:theme.muted}]}>{answers[q]}</Text>}</View>{open===q?<ChevronUp size={18} color={theme.muted}/>:<ChevronDown size={18} color={theme.muted}/>}</Pressable>)}</SettingsSection>)}</ScreenScroll>; }
 
 function ReportProblemScreen({ theme, auth }: { theme: Theme; auth: AuthPayload | null }) { const [category,setCategory]=useState("Login problem"); const [description,setDescription]=useState(""); const [listingId,setListingId]=useState(""); const [reportId,setReportId]=useState(""); const categories=["Login problem","Payment problem","Listing problem","Messaging problem","App crash","Performance problem","Security concern","Other"]; const submit=()=>{if(!category||description.trim().length<10){Alert.alert("Check the form","Choose a category and enter at least 10 characters describing the problem.");return;} Alert.alert("Report ready","The current backend does not expose a support-report endpoint, so nothing was sent to the server. Your details can be connected to a real endpoint later.");}; return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><SettingsSection theme={theme} title="Problem category"><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:8}}>{categories.map(c=><ChoiceChip key={c} theme={theme} label={c} selected={category===c} onPress={()=>setCategory(c)}/>)}</ScrollView></SettingsSection><SettingsSection theme={theme} title="Details"><TextInput value={description} onChangeText={setDescription} placeholder="Describe what happened..." placeholderTextColor={theme.muted} multiline style={[styles.reportInput,{color:theme.text,backgroundColor:theme.card,borderColor:theme.border}]}/><TextInput value={listingId} onChangeText={setListingId} placeholder="Optional listing ID" placeholderTextColor={theme.muted} style={[styles.reportInputSingle,{color:theme.text,backgroundColor:theme.card,borderColor:theme.border}]}/><TextInput value={reportId} onChangeText={setReportId} placeholder="Optional user / report ID" placeholderTextColor={theme.muted} style={[styles.reportInputSingle,{color:theme.text,backgroundColor:theme.card,borderColor:theme.border}]}/></SettingsSection><Pressable onPress={submit} style={[styles.authPrimary,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.authPrimaryText}>Submit Report</Text><Send size={17} color="#fff"/></Pressable></ScreenScroll>; }
 
@@ -2567,7 +3673,229 @@ function ChoiceChip({ theme, label, selected, onPress }: { theme:Theme; label:st
 function ChoiceRow({ theme, title, options, value, onChange }: {theme:Theme;title:string;options:string[];value:string;onChange:(v:string)=>void}) { return <View style={[styles.preferenceBlock,{backgroundColor:theme.card,borderColor:theme.border}]}><Text style={[styles.preferenceTitle,{color:theme.text}]}>{title}</Text><View style={{flexDirection:"row",flexWrap:"wrap",gap:7,marginTop:9}}>{options.map(o=><ChoiceChip key={o} theme={theme} label={o} selected={value===o} onPress={()=>onChange(o)}/>)}</View></View>; }
 function PreferenceActionRow({ theme, icon, title, description, onPress, destructive=false }: {theme:Theme;icon:React.ReactNode;title:string;description?:string;onPress:()=>void;destructive?:boolean}) { return <Pressable onPress={onPress} style={[styles.preferenceActionRow,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.preferenceActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}>{icon}</View><View style={{flex:1}}><Text style={[styles.preferenceTitle,{color:destructive?"#D33D3D":theme.text}]}>{title}</Text>{description&&<Text style={[styles.preferenceDescription,{color:theme.muted}]}>{description}</Text>}</View><ChevronRight size={18} color={theme.muted}/></Pressable>; }
 
-function SettingsScreen({ theme, dark, setDark }: { theme: Theme; dark: boolean; setDark: (v:boolean)=>void }) { return <ScreenScroll theme={theme}><SettingRow theme={theme} icon={<Moon size={19} color={theme.text}/>} title="Dark mode" trailing={<Switch value={dark} onValueChange={setDark} thumbColor={dark?"#fff":"#f4f3f4"} trackColor={{false:"#D5D1DB",true:theme.accent}}/>}/><SettingRow theme={theme} icon={<Bell size={19} color={theme.text}/>} title="Notifications" trailing={<Check size={18} color={theme.accent}/>} /><SettingRow theme={theme} icon={<Users size={19} color={theme.text}/>} title="Privacy" trailing={<ChevronRight size={18} color={theme.muted}/>} /></ScreenScroll>; }
+function SettingsScreen({ theme, dark, setDark }: { theme: Theme; dark: boolean; setDark: (v:boolean)=>void }) {
+  return (
+    <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 118 }}>
+      <View style={[styles.settingsHero, { backgroundColor:theme.card, borderColor:theme.border }]}>
+        <View style={[styles.settingsHeroIcon, { backgroundColor:theme.isDark ? "rgba(96,165,250,.14)" : "#EFF6FF" }]}>
+          <Settings size={24} color={theme.accent} strokeWidth={2.2} />
+        </View>
+        <View style={{ flex:1 }}>
+          <Text style={[styles.settingsHeroTitle, { color:theme.text }]}>Settings</Text>
+          <Text style={[styles.settingsHeroSubtitle, { color:theme.muted }]}>Personalize your marketplace experience.</Text>
+        </View>
+      </View>
+
+      <SettingsSection theme={theme} title="Appearance">
+        <SettingRow
+          theme={theme}
+          icon={<Moon size={19} color={theme.accent} strokeWidth={2.2}/>}
+          title="Dark mode"
+          subtitle={dark ? "A darker interface is active." : "Use the light marketplace interface."}
+          trailing={
+            <Switch
+              value={dark}
+              onValueChange={setDark}
+              trackColor={{ false:"#D9DEE8", true:theme.accent }}
+              thumbColor="#fff"
+              ios_backgroundColor="#D9DEE8"
+            />
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection theme={theme} title="Preferences">
+        <SettingRow
+          theme={theme}
+          icon={<Bell size={19} color={theme.accent} strokeWidth={2.2}/>}
+          title="Notifications"
+          subtitle="Stay updated about messages, listings and activity."
+          trailing={
+            <View style={[styles.settingStatusPill, { backgroundColor:theme.isDark ? "rgba(96,165,250,.12)" : "#EFF6FF" }]}>
+              <View style={[styles.settingStatusDot, { backgroundColor:theme.accent }]} />
+              <Text style={[styles.settingStatusText, { color:theme.accent }]}>On</Text>
+            </View>
+          }
+        />
+        <SettingRow
+          theme={theme}
+          icon={<Users size={19} color={theme.accent} strokeWidth={2.2}/>}
+          title="Privacy"
+          subtitle="Manage who can interact with you and your marketplace activity."
+          trailing={<ChevronRight size={19} color={theme.muted} strokeWidth={2.2}/>}
+        />
+      </SettingsSection>
+
+      <View style={styles.settingsFooter}>
+        <Text style={[styles.settingsFooterText, { color:theme.muted }]}>Marketplace settings</Text>
+        <Text style={[styles.settingsFooterVersion, { color:theme.muted }]}>Your preferences are saved on this device.</Text>
+      </View>
+    </ScreenScroll>
+  );
+}
+function PublicStoreScreen({ theme, auth, listing, onOpenProduct }: { theme: Theme; auth: AuthPayload | null; listing: Listing; onOpenProduct: (listing: Listing) => void }) {
+  const [store, setStore] = useState<any>(null);
+  const [items, setItems] = useState<Listing[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { (async () => { try { const [s, l] = await Promise.all([apiRequest(`/api/stores/${listing.storeId}/`, {}, auth), apiRequest(`/api/stores/${listing.storeId}/listings/`, {}, auth)]); setStore(s); setItems(apiResults<any>(l).map(mapApiListing)); } catch {} finally { setLoading(false); } })(); }, [listing.storeId]);
+  const storeItems = items.filter(x => String(x.id) !== String(listing.id));
+  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:124}}>
+    <View style={[styles.detailSectionCard, { backgroundColor: theme.card, borderColor: theme.border, borderRadius: 24, padding: 18 }]}>
+      <View style={{flexDirection:"row",alignItems:"center",gap:13}}>
+        {store?.logo ? <Image source={{uri:store.logo}} style={{width:66,height:66,borderRadius:20}}/> : <View style={{width:66,height:66,borderRadius:20,backgroundColor:theme.background,alignItems:"center",justifyContent:"center"}}><Store size={28} color={theme.accent}/></View>}
+        <View style={{flex:1}}><DisplayText style={[styles.productTitle,{color:theme.text}]} value={store?.name || listing.store} fallback="Store" /><DisplayText style={{color:theme.muted,marginTop:3}} value={`${safeDisplayText(store?.owner_name, "Seller")} · ${safeDisplayText(store?.location, "Marketplace")}`} /></View>
+      </View>
+      <DisplayText style={[styles.detailText,{color:theme.muted,marginTop:14}]} value={store?.description} fallback="Explore products, seller information and other items from this store." />
+      <View style={{flexDirection:"row",gap:10,marginTop:16}}>
+        <View style={[styles.publicStoreStat,{backgroundColor:theme.background}]}><Text style={[styles.publicStoreStatValue,{color:theme.text}]}>{storeItems.length}</Text><Text style={[styles.publicStoreStatLabel,{color:theme.muted}]}>Items</Text></View>
+        <View style={[styles.publicStoreStat,{backgroundColor:theme.background}]}><Store size={15} color={theme.accent}/><Text style={[styles.publicStoreStatLabel,{color:theme.muted}]}>Storefront</Text></View>
+      </View>
+    </View>
+    <View style={{marginTop:20,marginBottom:10}}><Text style={[styles.detailSectionTitle,{color:theme.text}]}>Other items from this store</Text><Text style={[styles.detailSectionSub,{color:theme.muted}]}>More products from this seller.</Text></View>
+    {loading ? <ActivityIndicator color={BUTTON_BLUE} style={{marginTop:20}}/> : storeItems.length ? <View style={styles.storeListingGrid}>{storeItems.map(x=><StoreListingCard key={x.id} listing={x} theme={theme} onPress={()=>onOpenProduct(x)} />)}</View> : <View style={[styles.detailSectionCard,{backgroundColor:theme.card,borderColor:theme.border,alignItems:"center",paddingVertical:28}]}><Store size={24} color={theme.muted}/><Text style={[styles.detailSectionTitle,{color:theme.text,marginTop:8}]}>No other items yet</Text><Text style={[styles.detailSectionSub,{color:theme.muted,textAlign:"center",marginTop:4}]}>Check back later for more products.</Text></View>}
+  </ScreenScroll>;
+}
+
+function SellerProfileScreen({ theme, auth, listing, onOpenStore }: { theme: Theme; auth: AuthPayload | null; listing: Listing; onOpenStore: () => void }) {
+  const [seller, setSeller] = useState<any>(null);
+  const [store, setStore] = useState<any>(null);
+  useEffect(() => { (async () => { try { const [u,s] = await Promise.all([listing.sellerId ? apiRequest(`/api/auth/users/${listing.sellerId}/`, {}, auth) : Promise.resolve(null), listing.storeId ? apiRequest(`/api/stores/${listing.storeId}/`, {}, auth) : Promise.resolve(null)]); setSeller(u); setStore(s); } catch {} })(); }, [listing.sellerId, listing.storeId]);
+  const sellerName = safeDisplayText(seller?.full_name || seller?.name || store?.owner_name, listing.store || "Seller");
+  const hasStore = Boolean(store?.id || listing.storeId);
+  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:124}}>
+    <View style={[styles.detailSectionCard, styles.sellerProfileHero, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <View style={styles.sellerProfileAvatarWrap}>
+        {seller?.avatar ? <Image source={{ uri: seller.avatar }} style={styles.sellerProfileAvatar} /> : <View style={[styles.sellerProfileAvatar, { backgroundColor: theme.background, alignItems: "center", justifyContent: "center" }]}><User size={38} color={theme.accent} /></View>}
+        <View style={styles.sellerOnlineDot} />
+      </View>
+      <DisplayText style={[styles.productTitle,{color:theme.text,marginTop:14}]} value={sellerName} fallback="Seller" />
+      <DisplayText style={{color:theme.muted,marginTop:5}} value={seller?.is_community_verified ? "Verified community member" : "Marketplace seller"} />
+      <View style={[styles.sellerStatsRow,{borderColor:theme.border}]}>
+        <View style={styles.sellerStat}><Text style={[styles.sellerStatValue,{color:theme.text}]}>{hasStore ? "1" : "0"}</Text><Text style={[styles.sellerStatLabel,{color:theme.muted}]}>Store</Text></View>
+        <View style={[styles.sellerStatDivider,{backgroundColor:theme.border}]} />
+        <View style={styles.sellerStat}><Text style={[styles.sellerStatValue,{color:theme.text}]}>✓</Text><Text style={[styles.sellerStatLabel,{color:theme.muted}]}>Identity</Text></View>
+        <View style={[styles.sellerStatDivider,{backgroundColor:theme.border}]} />
+        <View style={styles.sellerStat}><Text style={[styles.sellerStatValue,{color:theme.text}]}>—</Text><Text style={[styles.sellerStatLabel,{color:theme.muted}]}>Rating</Text></View>
+      </View>
+      <Pressable onPress={onOpenStore} style={[styles.primaryButton,{backgroundColor:BUTTON_BLUE,marginTop:18}]}><Store size={18} color="#fff"/><Text style={styles.primaryButtonText}>View store</Text></Pressable>
+    </View>
+    <View style={[styles.detailSectionCard,{backgroundColor:theme.card,borderColor:theme.border,marginTop:12}]}>
+      <Text style={[styles.detailSectionTitle,{color:theme.text}]}>About this seller</Text>
+      <DisplayText style={[styles.detailText,{color:theme.muted,marginTop:8}]} value={store?.description} fallback="Browse this seller's store, review their products and use Marketplace messages before ordering." />
+      {store?.location ? <View style={{flexDirection:"row",alignItems:"center",gap:7,marginTop:12}}><MapPin size={15} color={theme.accent}/><DisplayText style={{color:theme.text,fontSize:12,fontWeight:"700"}} value={store.location} /></View> : null}
+    </View>
+  </ScreenScroll>;
+}
+
+function StoreVerificationModal({ theme, auth, onClose, onVerified }: { theme: Theme; auth: AuthPayload; onClose: () => void; onVerified: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [emailMasked, setEmailMasked] = useState(auth.user.email);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+
+  const loadStatus = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await apiRequest("/api/stores/verification-status/", {}, auth);
+      setVerified(Boolean(data?.verified));
+      setEmailMasked(data?.email_masked || auth.user.email);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Unable to check store verification.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void loadStatus(); }, []);
+
+  const sendCode = async () => {
+    setSending(true);
+    setError("");
+    try {
+      const data = await apiRequest("/api/stores/send-verification/", { method: "POST" }, auth);
+      setVerified(Boolean(data?.verified));
+      setEmailMasked(data?.email_masked || auth.user.email);
+      if (!data?.verified) setSent(true);
+      if (!data?.verified) Alert.alert("Verification email sent", `We sent a 6-digit code to ${data?.email_masked || emailMasked}.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "We could not send the verification email.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const confirmCode = async () => {
+    if (code.trim().length !== 6) {
+      setError("Enter the 6-digit code from your email.");
+      return;
+    }
+    setConfirming(true);
+    setError("");
+    try {
+      const data = await apiRequest("/api/stores/confirm-verification/", { method: "POST", body: JSON.stringify({ code: code.trim() }) }, auth);
+      if (data?.verified) {
+        setVerified(true);
+        setCode("");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Verification failed. Check the code and try again.");
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <Modal transparent visible animationType="fade" onRequestClose={onClose}>
+      <KeyboardAvoidingView style={styles.storeVerificationOverlay} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+        <Pressable style={styles.storeVerificationBackdrop} onPress={onClose} />
+        <View style={[styles.storeVerificationCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <View style={styles.storeVerificationIconWrap}><ShieldIcon theme={theme} /></View>
+          <Text style={[styles.storeVerificationTitle, { color: theme.text }]}>Verify your store</Text>
+          <Text style={[styles.storeVerificationText, { color: theme.muted }]}>Verify ownership using the email address linked to your Marketplace account before changing your store profile details.</Text>
+          <View style={[styles.storeVerificationEmail, { backgroundColor: theme.isDark ? "#17141D" : "#F8FAFF", borderColor: theme.border }]}>
+            <CheckCircle2 size={18} color={verified ? "#16A34A" : BUTTON_BLUE} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={[styles.storeVerificationEmailLabel, { color: theme.muted }]}>Verification email</Text>
+              <Text style={[styles.storeVerificationEmailValue, { color: theme.text }]} numberOfLines={1}>{emailMasked}</Text>
+            </View>
+          </View>
+          {loading ? (
+            <View style={{ paddingVertical: 20, alignItems: "center" }}><ActivityIndicator color={BUTTON_BLUE} /></View>
+          ) : verified ? (
+            <View style={[styles.storeVerificationSuccess, { backgroundColor: theme.isDark ? "rgba(22,163,74,.12)" : "#F0FDF4", borderColor: "#86EFAC" }]}>
+              <CheckCircle2 size={20} color="#16A34A" />
+              <View style={{ flex: 1 }}><Text style={[styles.storeVerificationSuccessTitle, { color: theme.text }]}>Store verified</Text><Text style={[styles.storeVerificationSuccessText, { color: theme.muted }]}>You can now update your store profile details.</Text></View>
+            </View>
+          ) : !sent ? (
+            <Pressable disabled={sending} onPress={sendCode} style={[styles.storeVerificationPrimary, { backgroundColor: BUTTON_BLUE, opacity: sending ? .7 : 1 }]}>
+              {sending ? <ActivityIndicator size="small" color="#fff" /> : <Send size={16} color="#fff" />}<Text style={styles.storeVerificationPrimaryText}>{sending ? "Sending code…" : "Send verification code"}</Text>
+            </Pressable>
+          ) : (
+            <>
+              <Text style={[styles.storeVerificationFieldLabel, { color: theme.text }]}>6-digit verification code</Text>
+              <TextInput value={code} onChangeText={(value) => setCode(value.replace(/\D/g, "").slice(0, 6))} keyboardType="number-pad" maxLength={6} autoFocus placeholder="123456" placeholderTextColor={theme.muted} style={[styles.storeVerificationInput, { color: theme.text, borderColor: theme.border, backgroundColor: theme.isDark ? "#17141D" : "#F8FAFF" }]} />
+              <Pressable disabled={confirming} onPress={confirmCode} style={[styles.storeVerificationPrimary, { backgroundColor: BUTTON_BLUE, opacity: confirming ? .7 : 1 }]}>
+                {confirming ? <ActivityIndicator size="small" color="#fff" /> : <Check size={17} color="#fff" />}<Text style={styles.storeVerificationPrimaryText}>{confirming ? "Verifying…" : "Verify store"}</Text>
+              </Pressable>
+              <Pressable disabled={sending} onPress={sendCode} style={{ alignItems: "center", paddingVertical: 10 }}><Text style={{ color: BUTTON_BLUE, fontSize: 11, fontWeight: "900" }}>{sending ? "Sending…" : "Resend code"}</Text></Pressable>
+            </>
+          )}
+          {!!error && <View style={[styles.profileEditError, { backgroundColor: theme.isDark ? "rgba(127,29,29,.22)" : "#FEF2F2", borderColor: "#FECACA" }]}><AlertCircle size={16} color="#DC2626" /><Text style={[styles.profileEditErrorText, { color: "#B91C1C" }]}>{error}</Text></View>}
+          <View style={styles.storeVerificationActions}>
+            <Pressable onPress={onClose} style={[styles.profileCancelButton, { borderColor: theme.border, backgroundColor: theme.card }]}><Text style={[styles.profileCancelText, { color: theme.text }]}>Cancel</Text></Pressable>
+            {verified && <Pressable onPress={onVerified} style={[styles.profileSaveButton, { backgroundColor: BUTTON_BLUE }]}><Settings size={17} color="#fff" /><Text style={styles.profileSaveText}>Update store profile</Text></Pressable>}
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserUpdated }: { theme: Theme; auth: AuthPayload | null; onOpenProduct: (listing: Listing) => void; onMarketplaceChanged?: () => void; onUserUpdated?: (user: ApiUser) => void }) {
   const [store, setStore] = useState<ProfileStore | null>(null);
   const [mine, setMine] = useState<Listing[]>([]);
@@ -2575,6 +3903,7 @@ function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserU
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [storeVerificationOpen, setStoreVerificationOpen] = useState(false);
   const [editingListing, setEditingListing] = useState<Listing | null>(null);
 
   const loadStore = async (isRefresh = false) => {
@@ -2604,6 +3933,16 @@ function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserU
   const storeInitial = (store?.name || "My Store").trim().slice(0, 1).toUpperCase();
   const cover = store?.cover || "";
   const logo = store?.logo || "";
+  const promptStoreProfileEdit = () => {
+    Alert.alert(
+      "Edit store profile",
+      "Update your store logo, cover photo, and storefront details.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Edit store profile", onPress: () => setEditing(true) },
+      ],
+    );
+  };
 
   return (
     <>
@@ -2611,15 +3950,22 @@ function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserU
       {/* Store identity */}
       <View style={[styles.storePageCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
         <View style={styles.storeCover}>
-          {cover ? (
-            <Image source={{ uri: cover }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
-          ) : (
-            <View style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.isDark ? "#172554" : "#DBEAFE" }]}>
-              <View style={styles.storeCoverGlow} />
-            </View>
-          )}
-          <View style={styles.storeCoverShade} />
-          <View style={styles.storeCoverTopRow}>
+          <Pressable
+            onPress={promptStoreProfileEdit}
+            accessibilityRole="button"
+            accessibilityLabel="Edit store cover photo"
+            style={[StyleSheet.absoluteFillObject, { zIndex: 0 }]}
+          >
+            {cover ? (
+              <Image source={{ uri: cover }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+            ) : (
+              <View style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.isDark ? "#172554" : "#DBEAFE" }]}>
+                <View style={styles.storeCoverGlow} />
+              </View>
+            )}
+          </Pressable>
+          <View pointerEvents="none" style={[styles.storeCoverShade, { zIndex: 1 }]} />
+          <View style={[styles.storeCoverTopRow, { zIndex: 3 }]}>
             <View style={styles.storeStatusPill}>
               <View style={[styles.storeStatusDot, { backgroundColor: store?.is_active === false ? "#F59E0B" : "#22C55E" }]} />
               <Text style={styles.storeStatusText}>{store?.is_active === false ? "Setup needed" : "Store active"}</Text>
@@ -2628,12 +3974,18 @@ function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserU
               {refreshing ? <ActivityIndicator size="small" color="#fff" /> : <RotateCcw size={16} color="#fff" />}
             </Pressable>
           </View>
+          <Pressable
+            onPress={promptStoreProfileEdit}
+            accessibilityRole="button"
+            accessibilityLabel="Edit store logo"
+            hitSlop={8}
+            style={[styles.storeCoverLogoHolder, { backgroundColor: theme.isDark ? "#1D4ED8" : BUTTON_BLUE, borderColor: theme.card, zIndex: 3 }]}
+          >
+            {logo ? <Image source={{ uri: logo }} style={styles.storeCoverLogoImage} /> : <Text style={styles.storeLogoLetter}>{storeInitial}</Text>}
+          </Pressable>
         </View>
 
-        <View style={styles.storeIdentityBlock}>
-          <View style={[styles.storeLogoLarge, { backgroundColor: theme.isDark ? "#1D4ED8" : BUTTON_BLUE, borderColor: theme.card }]}>
-            {logo ? <Image source={{ uri: logo }} style={styles.storeLogoImage} /> : <Text style={styles.storeLogoLetter}>{storeInitial}</Text>}
-          </View>
+        <View style={[styles.storeIdentityBlock, { paddingTop: 14 }]}>
           <View style={styles.storeIdentityText}>
             <View style={styles.storeNameRow}>
               <Text style={[styles.storePageTitle, { color: theme.text }]} numberOfLines={1}>{store?.name || "My Store"}</Text>
@@ -2658,7 +4010,7 @@ function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserU
         </View>
 
         <View style={styles.storeQuickActions}>
-          <Pressable onPress={() => setEditing(true)} style={[styles.storePrimaryAction, { backgroundColor: BUTTON_BLUE }]}>
+          <Pressable onPress={() => setStoreVerificationOpen(true)} style={[styles.storePrimaryAction, { backgroundColor: BUTTON_BLUE }]}>
             <Settings size={16} color="#fff" /><Text style={styles.storePrimaryActionText}>Manage store</Text>
           </Pressable>
           <Pressable onPress={() => Alert.alert("Store sharing", "Your public store sharing link will be available when store pages are enabled.")} style={[styles.storeSecondaryAction, { backgroundColor: theme.card, borderColor: theme.border }]}>
@@ -2736,8 +4088,21 @@ function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserU
       />
     )}
 
+    {storeVerificationOpen && auth && (
+      <StoreVerificationModal
+        theme={theme}
+        auth={auth}
+        onClose={() => setStoreVerificationOpen(false)}
+        onVerified={() => {
+          setStoreVerificationOpen(false);
+          setEditing(true);
+        }}
+      />
+    )}
+
     {editing && auth?.user && (
       <EditProfileSheet
+        initialTab="store"
         theme={theme}
         currentUser={auth.user}
         store={store}
@@ -2758,10 +4123,10 @@ function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserU
   );
 }
 
-function StoreListingCard({ listing, theme, onPress, onEdit }: { listing: Listing; theme: Theme; onPress: () => void; onEdit: () => void }) {
+function StoreListingCard({ listing, theme, onPress, onEdit }: { listing: Listing; theme: Theme; onPress: () => void; onEdit?: () => void }) {
   return <View style={[styles.storeListingCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
     <Pressable onPress={onPress} style={styles.storeListingImageWrap}>
-      <Image source={{ uri: listing.image }} style={styles.storeListingImage} />
+      <Image source={{ uri: optimizedImageUrl(listing.image, 500) }} style={styles.storeListingImage} />
       <View style={styles.storeListingType}><Text style={styles.storeListingTypeText}>{listing.type}</Text></View>
       {listing.isOnOffer && <View style={styles.storeOfferPill}><BadgePercent size={11} color="#15803D" /><Text style={styles.storeOfferPillText}>OFFER</Text></View>}
       {listing.isFeatured && <View style={styles.storeBoostPill}><Zap size={10} color="#fff" fill="#fff" /><Text style={styles.storeBoostPillText}>BOOSTED</Text></View>}
@@ -2769,7 +4134,7 @@ function StoreListingCard({ listing, theme, onPress, onEdit }: { listing: Listin
     <View style={styles.storeListingBody}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
         <Text style={[styles.storeListingTitle, { color: theme.text, flex: 1 }]} numberOfLines={2}>{listing.title}</Text>
-        <Pressable onPress={onEdit} hitSlop={8} style={[styles.storeListingEditButton, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><Pencil size={14} color={BUTTON_BLUE} /></Pressable>
+        {onEdit ? <Pressable onPress={onEdit} hitSlop={8} style={[styles.storeListingEditButton, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><Pencil size={14} color={BUTTON_BLUE} /></Pressable> : null}
       </View>
       <Text style={[styles.storeListingPrice, { color: BUTTON_BLUE }]}>{listing.price}</Text>
       {listing.isOnOffer && listing.originalPrice != null && <Text style={[styles.storeListingOriginalPrice, { color: theme.muted }]}>Regular KES {listing.originalPrice.toLocaleString("en-KE")}</Text>}
@@ -2896,10 +4261,29 @@ function ShieldIcon({ theme }: { theme: Theme }) { return <View style={[styles.p
 function ProfileActionTile({ theme, icon, title, text, onPress }: { theme:Theme; icon:React.ReactNode; title:string; text:string; onPress:()=>void }) { return <Pressable onPress={onPress} style={[styles.profileActionTile,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.profileActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}>{icon}</View><View style={{flex:1,minWidth:0}}><Text style={[styles.profileActionTitle,{color:theme.text}]} numberOfLines={1}>{title}</Text><Text style={[styles.profileActionText,{color:theme.muted}]} numberOfLines={2}>{text}</Text></View><ChevronRight size={16} color={theme.muted}/></Pressable>; }
 function ProfileMiniFeature({ theme, icon, title, text }: { theme:Theme; icon:React.ReactNode; title:string; text:string }) { return <View style={[styles.profileMiniFeature,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.profileActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}>{icon}</View><Text style={[styles.profileMiniTitle,{color:theme.text}]}>{title}</Text><Text style={[styles.profileMiniText,{color:theme.muted}]}>{text}</Text></View>; }
 function ProfileRow({ theme, icon, title, onPress }: { theme:Theme; icon:React.ReactNode; title:string; onPress:()=>void }) { return <Pressable onPress={onPress} style={[styles.profileRow,{backgroundColor:theme.card,borderColor:theme.border}]}>{icon}<Text style={[styles.profileRowText,{color:theme.text}]}>{title}</Text><ChevronRight size={18} color={theme.muted}/></Pressable>; }
-function SettingRow({ theme, icon, title, trailing }: { theme:Theme; icon:React.ReactNode; title:string; trailing:React.ReactNode }) { return <View style={[styles.settingRow,{backgroundColor:theme.card,borderColor:theme.border}]}>{icon}<Text style={[styles.profileRowText,{color:theme.text,flex:1}]}>{title}</Text>{trailing}</View>; }
+function SettingRow({ theme, icon, title, subtitle, trailing, onPress }: { theme:Theme; icon:React.ReactNode; title:string; subtitle?:string; trailing:React.ReactNode; onPress?:()=>void }) {
+  const content = (
+    <View style={styles.settingRowInner}>
+      <View style={[styles.settingIconTile, { backgroundColor: theme.isDark ? "rgba(96,165,250,.12)" : "#EFF6FF" }]}>
+        {icon}
+      </View>
+      <View style={styles.settingCopy}>
+        <Text style={[styles.settingTitle, { color:theme.text }]}>{title}</Text>
+        {!!subtitle && <Text style={[styles.settingSubtitle, { color:theme.muted }]} numberOfLines={2}>{subtitle}</Text>}
+      </View>
+      <View style={styles.settingTrailing}>{trailing}</View>
+    </View>
+  );
+  return onPress ? (
+    <Pressable onPress={onPress} style={({pressed}) => [styles.settingRow,{backgroundColor:theme.card,borderColor:theme.border,opacity:pressed?0.82:1}]}>{content}</Pressable>
+  ) : (
+    <View style={[styles.settingRow,{backgroundColor:theme.card,borderColor:theme.border}]}>{content}</View>
+  );
+}
+
 function Badge({ text, theme }: { text:string; theme:Theme }) { const color=text==="Completed"?"#2B9E63":text==="Pending"?"#D77E00":"#3B82F6"; return <View style={[styles.badge,{backgroundColor:darken(color,0.9)}]}><Text style={[styles.badgeText,{color}]}>{text}</Text></View>; }
-function EmptyState({ theme, title, text, actionLabel, onAction, icon = "sparkles" }: { theme:Theme; title:string; text:string; actionLabel?:string; onAction?:()=>void; icon?:"sparkles"|"search"|"bookmark"|"orders"|"notifications"|"messages" }) {
-  const Icon = icon === "search" ? Search : icon === "bookmark" ? Bookmark : icon === "orders" ? ShoppingBag : icon === "notifications" ? Bell : icon === "messages" ? MessageCircle : Sparkles;
+function EmptyState({ theme, title, text, actionLabel, onAction, icon = "sparkles" }: { theme:Theme; title:string; text:string; actionLabel?:string; onAction?:()=>void; icon?:"sparkles"|"search"|"bookmark"|"cart"|"orders"|"notifications"|"messages" }) {
+  const Icon = icon === "search" ? Search : icon === "bookmark" ? Bookmark : icon === "cart" ? ShoppingCart : icon === "orders" ? ShoppingBag : icon === "notifications" ? Bell : icon === "messages" ? MessageCircle : Sparkles;
   return <View style={[styles.energyEmpty,{backgroundColor:theme.card,borderColor:theme.border}]}>
     <View style={[styles.energyEmptyGlow,{backgroundColor:theme.isDark?"rgba(96,165,250,.10)":"rgba(37,99,235,.07)"}]} />
     <View style={[styles.energyEmptyIcon,{backgroundColor:theme.isDark?"#24212B":"#EFF6FF"}]}><Icon size={30} color={BUTTON_BLUE} strokeWidth={2.2}/></View>
@@ -2916,6 +4300,8 @@ function darken(hex: string, ratio: number) { return hex; }
 type Theme = { isDark: boolean; background: string; card: string; nav: string; text: string; muted: string; border: string; accent: string; };
 const lightTheme: Theme = { isDark:false, background:"#F8FAFF", card:"#FFFFFF", nav:"rgba(255,255,255,0.98)", text:"#16131F", muted:"#948FA0", border:"#DBEAFE", accent:"#2563EB" };
 const darkTheme: Theme = { isDark:true, background:"#111016", card:"#1B1822", nav:"rgba(24,21,31,0.98)", text:"#F7F4FD", muted:"#AAA3B6", border:"#312C39", accent:"#60A5FA" };
+
+export default App;
 
 const styles = StyleSheet.create({
   container:{flex:1,alignItems:"center",justifyContent:"center"},
@@ -2938,7 +4324,22 @@ const styles = StyleSheet.create({
   primaryButton:{height:44,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:16,flexDirection:"row",gap:8}, primaryButtonText:{color:"#fff",fontSize:14,fontWeight:"800"}, secondaryButton:{height:44,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:12,flexDirection:"row",gap:8,borderWidth:1}, secondaryButtonText:{fontSize:13,fontWeight:"800"},
   sectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:10}, sectionTitle:{fontSize:18,fontWeight:"800"}, sectionAction:{fontSize:13,fontWeight:"800"},
   categoryTile:{width:88,height:88,borderRadius:18,borderWidth:1,alignItems:"center",justifyContent:"center",gap:6}, categoryEmoji:{fontSize:26}, categoryText:{fontSize:11,fontWeight:"700"},
-  compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",overflow:"hidden"},compactImage:{width:82,height:82},compactStoreRow:{flexDirection:"row",alignItems:"center",gap:6,marginTop:4},compactStoreAvatar:{width:20,height:20,borderRadius:10,alignItems:"center",justifyContent:"center",overflow:"hidden"},compactStoreAvatarImage:{width:"100%",height:"100%"},compactStoreAvatarText:{fontSize:8,fontWeight:"900"},priceSmall:{fontSize:15,fontWeight:"800",marginTop:6},
+  homeShopHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:16},
+homeShopTitle:{fontSize:26,fontWeight:"900",letterSpacing:-0.5},
+homeShopSub:{fontSize:13,fontWeight:"600",marginTop:1},
+homeShopIcon:{width:42,height:42,borderWidth:1,borderRadius:21,alignItems:"center",justifyContent:"center"},
+homeProductGrid:{flexDirection:"row",flexWrap:"wrap",justifyContent:"space-between",rowGap:14},
+homeProductTile:{width:"48.2%",borderWidth:1,borderRadius:14,overflow:"hidden"},
+homeProductImageWrap:{width:"100%",aspectRatio:0.9,position:"relative",backgroundColor:"#F3F4F6"},
+homeProductImage:{width:"100%",height:"100%"},
+homeOfferBadge:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:7,backgroundColor:"#16A34A"},
+homeOfferText:{fontSize:9,fontWeight:"900",color:"#fff"},
+homeProductInfo:{padding:10},
+homeProductTitle:{fontSize:14,fontWeight:"800"},
+homeProductStore:{fontSize:10,marginTop:4},
+homeProductPrice:{fontSize:15,fontWeight:"900",marginTop:6},
+homeProductSkeleton:{width:"48.2%",aspectRatio:0.78,borderWidth:1,borderRadius:14},
+compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",overflow:"hidden"},compactImage:{width:82,height:82},compactStoreRow:{flexDirection:"row",alignItems:"center",gap:6,marginTop:4},compactStoreAvatar:{width:20,height:20,borderRadius:10,alignItems:"center",justifyContent:"center",overflow:"hidden"},compactStoreAvatarImage:{width:"100%",height:"100%"},compactStoreAvatarText:{fontSize:8,fontWeight:"900"},priceSmall:{fontSize:15,fontWeight:"800",marginTop:6},
   sellBanner:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"center",gap:12,marginTop:8},sellBannerTitle:{fontSize:15,fontWeight:"800",marginBottom:3},
   searchBox:{height:48,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:8}, searchInput:{flex:1,fontSize:14,paddingVertical:0},
   filterRow:{paddingVertical:6,gap:8,paddingRight:10},filterChip:{paddingHorizontal:14,paddingVertical:8,borderRadius:999,borderWidth:1,minHeight:34,justifyContent:"center"},filterText:{fontSize:11,fontWeight:"800"},
@@ -2958,10 +4359,28 @@ const styles = StyleSheet.create({
   card:{width:"100%",borderRadius:18,borderWidth:1,overflow:"hidden",marginTop:6},
   cardHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",padding:12}, storeMeta:{flexDirection:"row",alignItems:"center",flex:1,minWidth:0},storeAvatar:{width:36,height:36,borderRadius:18,alignItems:"center",justifyContent:"center",marginRight:10,overflow:"hidden"},storeAvatarImage:{width:"100%",height:"100%"},storeAvatarText:{fontSize:13,fontWeight:"800"},storeTextWrap:{flex:1,minWidth:0},storeName:{fontSize:14,fontWeight:"800"},location:{fontSize:11,marginTop:2},listingImage:{width:"100%",height:330,backgroundColor:"#EEE"},productGallery:{height:330,position:"relative",overflow:"hidden"},productGalleryPlaceholder:{alignItems:"center",justifyContent:"center"},galleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},galleryDot:{width:5,height:5,borderRadius:3,backgroundColor:"rgba(255,255,255,.55)"},galleryDotActive:{width:7,height:7,borderRadius:4,backgroundColor:"#fff"},galleryCount:{position:"absolute",right:10,top:10,paddingHorizontal:8,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(0,0,0,.52)"},galleryCountText:{fontSize:9,fontWeight:"900",color:"#fff"},generalOfferBadge:{position:"absolute",left:10,top:10,paddingHorizontal:8,paddingVertical:5,borderRadius:999,backgroundColor:"#DCFCE7",flexDirection:"row",alignItems:"center",gap:3},generalOfferBadgeText:{fontSize:8,fontWeight:"900",color:"#15803D"},generalBoostBadge:{position:"absolute",right:10,top:10,paddingHorizontal:8,paddingVertical:5,borderRadius:999,backgroundColor:BUTTON_BLUE,flexDirection:"row",alignItems:"center",gap:3},generalBoostBadgeText:{fontSize:8,fontWeight:"900",color:"#fff"},cardBody:{padding:12},actionRow:{flexDirection:"row",alignItems:"center",gap:14},actionButton:{flexDirection:"row",alignItems:"center",gap:4},whatsappActionButton:{width:28,height:28,alignItems:"center",justifyContent:"center"},whatsappIconCircle:{width:25,height:25,borderRadius:13,backgroundColor:"#25D366",alignItems:"center",justifyContent:"center"},whatsappPhoneMark:{position:"absolute",left:8.5,top:8.5},actionCount:{fontSize:11},saveAlign:{marginLeft:"auto"},metaText:{fontSize:11,marginTop:8},itemText:{fontSize:14,lineHeight:20,marginTop:8},itemStore:{fontWeight:"800"},price:{fontSize:24,fontWeight:"800",marginTop:8},itemMeta:{fontSize:11,marginTop:7},
   bottomNav:{flexDirection:"row",justifyContent:"space-around",alignItems:"center",borderTopWidth:1,paddingHorizontal:8,position:"absolute",bottom:0,left:0,right:0},navItem:{alignItems:"center",justifyContent:"center",flex:1,minHeight:46},navIconCreate:{width:44,height:44,borderRadius:15,alignItems:"center",justifyContent:"center"},navLabel:{fontSize:9,marginTop:3},navLabelActive:{fontWeight:"800"},
-  detailImage:{width:"100%",height:330,borderRadius:20,backgroundColor:"#EEE"},detailGallery:{height:420,borderRadius:24,overflow:"hidden",position:"relative",alignSelf:"center",marginBottom:2},detailGalleryImage:{height:420,backgroundColor:"#EEE"},detailGalleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},productTitle:{fontSize:20,fontWeight:"800",lineHeight:26},bigPrice:{fontSize:28,fontWeight:"900",marginTop:8},storePill:{borderWidth:1,borderRadius:999,paddingHorizontal:9,paddingVertical:6,alignSelf:"flex-start",marginTop:12,flexDirection:"row",alignItems:"center",gap:7,maxWidth:"90%"},detailStoreAvatar:{width:24,height:24,borderRadius:12,alignItems:"center",justifyContent:"center",overflow:"hidden"},detailStoreAvatarImage:{width:"100%",height:"100%"},detailStoreAvatarText:{fontSize:9,fontWeight:"900"},storePillText:{fontSize:12,fontWeight:"800",flexShrink:1},detailText:{fontSize:14,lineHeight:22,marginTop:14},detailButtons:{flexDirection:"row",gap:8,marginTop:18},rowBetween:{flexDirection:"row",alignItems:"flex-start",justifyContent:"space-between",gap:12},
+  detailImage:{width:"100%",height:330,borderRadius:20,backgroundColor:"#EEE"},detailGallery:{height:330,borderRadius:24,overflow:"hidden",position:"relative",alignSelf:"center",marginBottom:2},detailGalleryImage:{height:330,backgroundColor:"#EEE"},detailGalleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},productTitle:{fontSize:20,fontWeight:"800",lineHeight:26},bigPrice:{fontSize:28,fontWeight:"900",marginTop:8},storePill:{borderWidth:1,borderRadius:999,paddingHorizontal:9,paddingVertical:6,alignSelf:"flex-start",marginTop:12,flexDirection:"row",alignItems:"center",gap:7,maxWidth:"90%"},detailStoreAvatar:{width:24,height:24,borderRadius:12,alignItems:"center",justifyContent:"center",overflow:"hidden"},detailStoreAvatarImage:{width:"100%",height:"100%"},detailStoreAvatarText:{fontSize:9,fontWeight:"900"},storePillText:{fontSize:12,fontWeight:"800",flexShrink:1},detailText:{fontSize:14,lineHeight:22,marginTop:14},detailButtons:{flexDirection:"row",gap:8,marginTop:18},rowBetween:{flexDirection:"row",alignItems:"flex-start",justifyContent:"space-between",gap:12},
   formHint:{fontSize:13,lineHeight:19,marginBottom:8},fieldLabel:{fontSize:12,fontWeight:"800",marginBottom:7},input:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,fontSize:14},uploadBox:{height:120,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",gap:8,marginBottom:14},
-  createHeader:{flexDirection:"row",alignItems:"flex-start",gap:12,marginTop:4},createTitle:{fontSize:28,fontWeight:"900",letterSpacing:-0.5},createSub:{fontSize:12,lineHeight:18,marginTop:4,maxWidth:280},createStepBadge:{paddingHorizontal:10,paddingVertical:7,borderRadius:999},createStepText:{fontSize:11,fontWeight:"900"},progressRail:{marginTop:14,marginBottom:2},progressTrack:{height:5,borderRadius:999,overflow:"hidden"},progressFill:{height:5,borderRadius:999},progressLabels:{flexDirection:"row",justifyContent:"space-between",marginTop:7},progressLabel:{fontSize:10,fontWeight:"700"},progressLabelActive:{fontSize:10,fontWeight:"900"},progressStepButton:{paddingHorizontal:6,paddingVertical:4},typeCard:{borderWidth:1,borderRadius:20,padding:14},inlineLabel:{flexDirection:"row",alignItems:"center",gap:8},cardTitle:{fontSize:15,fontWeight:"900"},cardHint:{fontSize:11,lineHeight:17,marginTop:4,marginBottom:12},segmented:{borderWidth:1,borderRadius:16,padding:4,flexDirection:"row",gap:4},segment:{flex:1,height:42,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},segmentText:{fontSize:13,fontWeight:"800"},formCard:{borderWidth:1,borderRadius:20,padding:14},photoCover:{height:174,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",padding:14},photoCoverImage:{height:210,borderWidth:1,borderRadius:18,overflow:"hidden",position:"relative"},photoCoverImageFill:{width:"100%",height:"100%"},coverBadge:{position:"absolute",top:10,left:10,backgroundColor:"rgba(37,99,235,.95)",paddingHorizontal:9,paddingVertical:5,borderRadius:999},coverBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",letterSpacing:.7},coverEditHint:{position:"absolute",bottom:10,left:10,right:10,flexDirection:"row",alignItems:"center",gap:5},coverEditText:{color:"#fff",fontSize:10,fontWeight:"800",textShadowColor:"rgba(0,0,0,.7)",textShadowOffset:{width:0,height:1},textShadowRadius:3},coverHelper:{fontSize:10,lineHeight:15,marginTop:6},uploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.52)",alignItems:"center",justifyContent:"center",gap:7},uploadOverlayText:{color:"#fff",fontSize:11,fontWeight:"800"},uploadDoneBadge:{position:"absolute",right:10,bottom:10,width:27,height:27,borderRadius:14,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoThumbRowWide:{flexDirection:"row",gap:8,marginTop:10,flexWrap:"wrap"},photoThumbLarge:{width:62,height:62,borderWidth:1,borderRadius:13,overflow:"hidden",position:"relative"},photoThumbImage:{width:"100%",height:"100%"},photoAddThumb:{alignItems:"center",justifyContent:"center",borderStyle:"dashed"},thumbnailUploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.5)",alignItems:"center",justifyContent:"center"},thumbnailDoneBadge:{position:"absolute",right:4,bottom:4,width:19,height:19,borderRadius:10,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoAddedState:{alignItems:"center",justifyContent:"center"},photoUploadIcon:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center"},photoUploadTitle:{fontSize:14,fontWeight:"900",marginTop:10},photoAddedText:{fontSize:14,fontWeight:"900",marginTop:9},photoHint:{fontSize:11,marginTop:4,textAlign:"center"},photoThumbRow:{flexDirection:"row",gap:8,marginTop:9},photoThumb:{height:50,flex:1,borderWidth:1,borderRadius:13,alignItems:"center",justifyContent:"center"},fieldRow:{flexDirection:"row",gap:12,alignItems:"center"},switchWrapModern:{width:96,alignItems:"center",justifyContent:"center",marginBottom:10},switchLabel:{fontSize:10,fontWeight:"800",marginBottom:2},categoryPicker:{gap:8,paddingBottom:10},categoryChip:{borderWidth:1,borderRadius:999,paddingHorizontal:11,paddingVertical:8},categoryChipText:{fontSize:11,fontWeight:"800"},optionRow:{flexDirection:"row",gap:8,marginBottom:12},optionPill:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:14,alignItems:"center",justifyContent:"center"},optionPillText:{fontSize:12,fontWeight:"800"},inlineFieldLabel:{flexDirection:"row",alignItems:"center",gap:6,marginBottom:7},fieldLabelNoMargin:{fontSize:12,fontWeight:"800"},descriptionInput:{minHeight:118,borderWidth:1,borderRadius:14,padding:12,fontSize:14,lineHeight:20,textAlignVertical:"top"},characterHint:{fontSize:10,textAlign:"right",marginTop:5},tipCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"flex-start",gap:10},tipTitle:{fontSize:13,fontWeight:"800"},tipText:{fontSize:11,lineHeight:17,marginTop:3},publishSheet:{borderWidth:1,borderRadius:18,padding:10,flexDirection:"row",alignItems:"center",gap:8,marginTop:2}, publishSheetFixed:{position:"absolute",left:0,right:0,bottom:0,borderTopWidth:1,paddingHorizontal:12,paddingTop:10,paddingBottom:14,flexDirection:"row",alignItems:"center",gap:8,zIndex:50,elevation:12},publishSheetTitle:{fontSize:12,fontWeight:"900"},publishSheetSub:{fontSize:10,lineHeight:15,marginTop:2},  photoRemoveButton:{position:"absolute",top:2,right:2,width:22,height:22,borderRadius:11,backgroundColor:"rgba(0,0,0,.65)",alignItems:"center",justifyContent:"center"}, photoRemoveText:{color:"#fff",fontSize:14,fontWeight:"800"}, successScreen:{flex:1,alignItems:"center",justifyContent:"center",paddingHorizontal:20,gap:26}, verifiedAnimationWrap:{width:190,height:190,alignItems:"center",justifyContent:"center",position:"relative"}, successHalo:{position:"absolute",width:178,height:178,borderRadius:89,borderWidth:8}, verifiedBadge:{width:126,height:126,borderRadius:63,alignItems:"center",justifyContent:"center",elevation:10,shadowOpacity:0.2,shadowRadius:18,shadowOffset:{width:0,height:8}}, successSparkle:{position:"absolute",width:10,height:10,borderRadius:5}, sparkleTop:{top:12},sparkleRight:{right:14},sparkleBottom:{bottom:18},sparkleLeft:{left:14}, successCheckOuter:{width:170,height:170,borderRadius:85,alignItems:"center",justifyContent:"center",borderWidth:1}, successCheckCircle:{width:118,height:118,borderRadius:59,alignItems:"center",justifyContent:"center"}, successTitle:{fontSize:30,fontWeight:"900",textAlign:"center",letterSpacing:-0.5}, successSub:{fontSize:14,lineHeight:21,textAlign:"center",marginTop:8,paddingHorizontal:10}, successActions:{flexDirection:"row",gap:10,marginTop:24}, profileAuthCard:{borderWidth:1,borderRadius:28,padding:24,marginTop:12,marginHorizontal:2,alignItems:"center",shadowColor:"#000",shadowOpacity:.08,shadowRadius:18,shadowOffset:{width:0,height:8},elevation:5},profileAuthIcon:{width:72,height:72,borderRadius:24,alignItems:"center",justifyContent:"center",marginBottom:16},profileAuthTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.6,textAlign:"center"},profileAuthText:{fontSize:13,lineHeight:20,textAlign:"center",marginTop:8,maxWidth:340},profileAuthButton:{width:"100%",minHeight:52,borderWidth:1,borderRadius:16,alignItems:"center",justifyContent:"center",marginTop:10,paddingHorizontal:16},profileAuthButtonText:{fontSize:14,fontWeight:"900"},
- settingsSectionTitle:{fontSize:13,fontWeight:"900",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:6},preferenceBlock:{borderWidth:1,borderRadius:18,padding:14,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionRow:{minHeight:68,borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionIcon:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},preferenceTitle:{fontSize:13,fontWeight:"900"},preferenceDescription:{fontSize:10.5,lineHeight:16,marginTop:3},choiceChip:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:13,alignItems:"center",justifyContent:"center"},faqRow:{minHeight:58,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12,paddingVertical:11,paddingHorizontal:4},faqQuestion:{fontSize:13,fontWeight:"800",lineHeight:19},faqAnswer:{fontSize:11.5,lineHeight:18,marginTop:7},reportInput:{minHeight:120,borderWidth:1,borderRadius:16,padding:13,fontSize:13,textAlignVertical:"top",marginBottom:9},reportInputSingle:{height:48,borderWidth:1,borderRadius:14,paddingHorizontal:13,fontSize:13,marginBottom:9},safetyHero:{borderWidth:1,borderRadius:24,padding:20,alignItems:"flex-start",marginBottom:10},safetyTip:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"flex-start",gap:11,marginBottom:9},safetyNumber:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},legalCard:{borderWidth:1,borderRadius:24,padding:20,marginTop:8},legalTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.5},legalHeading:{fontSize:14,fontWeight:"900",marginTop:20,marginBottom:6},legalText:{fontSize:12.5,lineHeight:20}, profileHeader:{flexDirection:"row",alignItems:"center",gap:14,paddingVertical:8},profileAvatar:{width:76,height:76,borderRadius:38,alignItems:"center",justifyContent:"center"},profileAvatarText:{fontSize:18,fontWeight:"900",color:"#fff"},profileHeroCard:{borderWidth:1,borderRadius:26,padding:18,marginBottom:13,shadowColor:"#000",shadowOpacity:.07,shadowRadius:16,shadowOffset:{width:0,height:7},elevation:4},profileHeroTop:{flexDirection:"row",alignItems:"center",gap:12},profileAvatarLarge:{width:64,height:64,borderRadius:22,alignItems:"center",justifyContent:"center"},profileAvatarTextLarge:{fontSize:20,fontWeight:"900",color:"#fff"},profileNameLine:{flexDirection:"row",alignItems:"center",gap:7},profileName:{fontSize:18,fontWeight:"900",letterSpacing:-0.3,flexShrink:1},profileEmail:{fontSize:11,marginTop:3},profileMember:{fontSize:10,marginTop:3},profileVerified:{flexDirection:"row",alignItems:"center",gap:3,paddingHorizontal:7,paddingVertical:4,borderRadius:999},profileVerifiedText:{fontSize:9,fontWeight:"900"},metaVerifiedBadge:{backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,.55)"},profileIdentityHint:{fontSize:9.5,lineHeight:14,marginTop:-4,marginBottom:10},profileEditButton:{width:34,height:34,borderWidth:1,borderRadius:12,alignItems:"center",justifyContent:"center"},profileTrustRow:{borderTopWidth:1,marginTop:14,paddingTop:12,flexDirection:"row",alignItems:"center",gap:10},profileTrustItem:{flex:1,flexDirection:"row",alignItems:"center",gap:8},profileShieldIcon:{width:26,height:26,borderRadius:9,alignItems:"center",justifyContent:"center"},profileTrustDivider:{width:1,height:28},profileTrustTitle:{fontSize:10,fontWeight:"900"},profileTrustText:{fontSize:8.5,marginTop:2},profileModeSwitch:{height:52,borderWidth:1,borderRadius:17,padding:4,flexDirection:"row",gap:4,marginBottom:16},profileModeButton:{flex:1,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:6},profileModeText:{fontSize:12,fontWeight:"900"},profileSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:5,marginBottom:10},profileSectionTitle:{fontSize:18,fontWeight:"900",letterSpacing:-0.2},profileSectionSub:{fontSize:10,lineHeight:15,marginTop:3,maxWidth:290},profileRoleBadge:{paddingHorizontal:8,paddingVertical:5,borderRadius:999},profileRoleBadgeText:{fontSize:8,fontWeight:"900",letterSpacing:1},profileActionGrid:{flexDirection:"row",flexWrap:"wrap",gap:9},profileActionTile:{flexBasis:"48%",flexGrow:1,minWidth:145,minHeight:100,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:9},profileActionIcon:{width:40,height:40,borderRadius:11,alignItems:"center",justifyContent:"center"},profileActionTitle:{fontSize:13,fontWeight:"900",letterSpacing:-.1},profileActionText:{fontSize:10.5,lineHeight:15,marginTop:4},profileFeatureCard:{borderWidth:1,borderRadius:18,padding:13,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:10},profileFeatureIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},profileFeatureTitle:{fontSize:12,fontWeight:"900"},profileFeatureText:{fontSize:9.5,lineHeight:15,marginTop:4},sellerSetupCard:{borderRadius:20,padding:15,marginTop:12,flexDirection:"row",alignItems:"center",gap:12},sellerSetupEyebrow:{fontSize:8,fontWeight:"900",letterSpacing:1.4,color:"#93C5FD"},sellerSetupTitle:{fontSize:17,fontWeight:"900",color:"#FFFFFF",marginTop:5,letterSpacing:-0.3},sellerSetupText:{fontSize:9.5,lineHeight:15,color:"#CBD5E1",marginTop:4},sellerSetupButton:{height:38,paddingHorizontal:12,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:3},sellerSetupButtonText:{fontSize:11,fontWeight:"900"},profileEssentialsRow:{flexDirection:"row",gap:9,alignItems:"stretch"},profileMiniFeature:{flex:1,minWidth:0,borderWidth:1,borderRadius:18,padding:13,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},profileMiniTitle:{fontSize:11,fontWeight:"900",marginTop:8},profileMiniText:{fontSize:9,lineHeight:14,marginTop:3},profileRow:{minHeight:62,borderWidth:1,borderRadius:18,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12,marginBottom:8},profileRowText:{fontSize:14,fontWeight:"700"},logoutRow:{minHeight:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12},logoutText:{color:"#D33D3D",fontSize:14,fontWeight:"800"},
-  profileLoading:{fontSize:10,textAlign:"center",marginTop:2,marginBottom:4},profileSheetOverlay:{position:"absolute",left:0,right:0,top:0,bottom:0,zIndex:100,elevation:100,justifyContent:"flex-end"},profileSheetBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(0,0,0,.58)"},profileSheet:{maxHeight:"92%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:-8},elevation:24},profileSheetHeader:{minHeight:68,borderBottomWidth:1,paddingHorizontal:16,paddingVertical:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},profileSheetTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},profileSheetSub:{fontSize:10,marginTop:3},profileSheetClose:{width:34,height:34,borderRadius:17,alignItems:"center",justifyContent:"center"},profileEditSectionTitle:{fontSize:13,fontWeight:"900",marginBottom:8},profileEditCard:{borderWidth:1,borderRadius:18,padding:13},profileEditAvatarRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileEditAvatar:{width:64,height:64,borderRadius:20,alignItems:"center",justifyContent:"center"},profileEditLabel:{fontSize:12,fontWeight:"900"},profileEditHint:{fontSize:9.5,lineHeight:14,marginTop:3},profileBlueButton:{height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,alignSelf:"flex-start",marginTop:7},profileBlueButtonText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileLockedField:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:7},profileLockedText:{fontSize:13,flex:1,marginRight:8},profileCoverPreview:{height:138,borderWidth:1,borderRadius:16,overflow:"hidden",alignItems:"center",justifyContent:"center",marginBottom:13},profileCoverButton:{position:"absolute",right:10,bottom:10,height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5},profileStoreLogoRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileStoreLogo:{width:58,height:58,borderRadius:16,alignItems:"center",justifyContent:"center"},profileEditError:{borderWidth:1,borderRadius:14,padding:11,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:8},profileEditErrorText:{flex:1,fontSize:10.5,lineHeight:16,fontWeight:"700"},profileSheetActions:{borderTopWidth:1,paddingHorizontal:16,paddingTop:10,flexDirection:"row",gap:9},profileCancelButton:{height:46,borderWidth:1,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center"},profileCancelText:{fontSize:13,fontWeight:"900"},profileSaveButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},profileSaveText:{fontSize:13,fontWeight:"900",color:"#fff"},
-  storePageCard:{borderWidth:1,borderRadius:26,overflow:"hidden",marginBottom:12},storeCover:{height:150,position:"relative",overflow:"hidden"},storeCoverGlow:{position:"absolute",width:230,height:230,borderRadius:115,backgroundColor:"rgba(37,99,235,.28)",right:-70,top:-110},storeCoverShade:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(2,6,23,.18)"},storeCoverTopRow:{position:"absolute",left:12,right:12,top:12,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},storeStatusPill:{height:30,paddingHorizontal:10,borderRadius:999,backgroundColor:"rgba(2,6,23,.48)",flexDirection:"row",alignItems:"center",gap:6},storeStatusDot:{width:7,height:7,borderRadius:4},storeStatusText:{fontSize:10,fontWeight:"900",color:"#fff"},storeCircleButton:{width:34,height:34,borderRadius:17,backgroundColor:"rgba(2,6,23,.48)",alignItems:"center",justifyContent:"center"},storeIdentityBlock:{paddingHorizontal:16,paddingTop:0,paddingBottom:14,flexDirection:"row",gap:12},storeLogoLarge:{width:72,height:72,borderRadius:22,borderWidth:4,alignItems:"center",justifyContent:"center",marginTop:-34,overflow:"hidden"},storeLogoImage:{width:"100%",height:"100%"},storeLogoLetter:{fontSize:24,fontWeight:"900",color:"#fff"},storeIdentityText:{flex:1,paddingTop:8,minWidth:0},storeNameRow:{flexDirection:"row",alignItems:"center",gap:7},storePageTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4,flexShrink:1},storeVerifiedBadge:{width:19,height:19,borderRadius:10,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},storeIdentityLabelRow:{flexDirection:"row",alignItems:"center",gap:7,marginBottom:4},storeIdentityLabel:{fontSize:8,fontWeight:"900",letterSpacing:1.2},storeOwnerLabel:{fontSize:8.5},storePageDescription:{fontSize:11,lineHeight:17,marginTop:4},storeMetaLine:{flexDirection:"row",alignItems:"center",gap:4,marginTop:6},storeMetaText:{fontSize:10,flexShrink:1},storeStatsRow:{marginHorizontal:16,borderTopWidth:1,borderBottomWidth:1,minHeight:62,flexDirection:"row",alignItems:"center",justifyContent:"space-around"},storeStat:{flex:1,alignItems:"center"},storeStatValue:{fontSize:17,fontWeight:"900"},storeStatLabel:{fontSize:9,fontWeight:"700",marginTop:2},storeStatDivider:{width:1,height:28},storeQuickActions:{padding:12,flexDirection:"row",gap:8},storePrimaryAction:{height:44,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storePrimaryActionText:{color:"#fff",fontSize:12,fontWeight:"900"},storeSecondaryAction:{height:44,borderRadius:13,paddingHorizontal:15,borderWidth:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeSecondaryActionText:{fontSize:12,fontWeight:"900"},storeToolsCard:{borderWidth:1,borderRadius:22,padding:14,marginBottom:14},storeToolsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},storeToolsTitle:{fontSize:15,fontWeight:"900"},storeToolsSubtitle:{fontSize:10,lineHeight:15,marginTop:3},storeToolsIcon:{width:36,height:36,borderRadius:12,alignItems:"center",justifyContent:"center"},storeToolGrid:{flexDirection:"row",flexWrap:"wrap",gap:8},storeToolItem:{width:"48.5%",minHeight:100,borderRadius:15,padding:11},storeToolTitle:{fontSize:11,fontWeight:"900",marginTop:8},storeToolText:{fontSize:9,lineHeight:14,marginTop:3},storeListingsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:4,marginBottom:10},storeListingsTitle:{fontSize:17,fontWeight:"900",letterSpacing:-.2},storeListingsSubtitle:{fontSize:10,marginTop:3},storeCountPill:{minWidth:32,height:30,paddingHorizontal:9,borderRadius:999,alignItems:"center",justifyContent:"center"},storeCountText:{fontSize:12,fontWeight:"900"},storeLoadingCard:{minHeight:150,borderWidth:1,borderRadius:20,alignItems:"center",justifyContent:"center",gap:9},storeLoadingText:{fontSize:11,fontWeight:"700"},storeErrorCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:10},storeErrorTitle:{fontSize:12,fontWeight:"900"},storeErrorText:{fontSize:9.5,lineHeight:14,marginTop:3},storeRetryButton:{height:34,paddingHorizontal:12,borderRadius:10,alignItems:"center",justifyContent:"center"},storeRetryText:{fontSize:10,fontWeight:"900",color:"#fff"},storeEmptyCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",justifyContent:"center",minHeight:200},storeEmptyIcon:{width:52,height:52,borderRadius:17,alignItems:"center",justifyContent:"center",marginBottom:12},storeEmptyTitle:{fontSize:14,fontWeight:"900",textAlign:"center"},storeEmptyText:{fontSize:10.5,lineHeight:16,textAlign:"center",marginTop:5,maxWidth:280},storeListingGrid:{flexDirection:"row",flexWrap:"wrap",gap:10},storeListingCard:{width:"48.6%",borderWidth:1,borderRadius:18,overflow:"hidden"},storeListingImageWrap:{height:145,position:"relative"},storeListingImage:{width:"100%",height:"100%",backgroundColor:"#E5E7EB"},storeListingType:{position:"absolute",left:8,bottom:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(2,6,23,.58)"},storeListingTypeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingBody:{padding:10},storeOfferPill:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:"#DCFCE7"},storeOfferPillText:{fontSize:8,fontWeight:"900",color:"#15803D"},storeBoostPill:{position:"absolute",right:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:BUTTON_BLUE},storeBoostPillText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingEditButton:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},storeListingOriginalPrice:{fontSize:9,textDecorationLine:"line-through",marginTop:2},listingEditorToggle:{minHeight:62,borderWidth:1,borderRadius:16,paddingHorizontal:12,paddingVertical:10,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},listingToggle:{width:40,height:23,borderRadius:999,justifyContent:"center"},listingToggleKnob:{width:19,height:19,borderRadius:10,backgroundColor:"#fff"},listingEditorSection:{borderWidth:1,borderRadius:18,padding:12,marginBottom:12},listingEditorSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10},listingEditPhoto:{width:118,height:150,borderWidth:2,borderRadius:14,overflow:"hidden",position:"relative"},listingEditPhotoImage:{width:"100%",height:"100%"},listingEditCover:{position:"absolute",left:6,top:6,paddingHorizontal:6,paddingVertical:4,borderRadius:7,backgroundColor:"rgba(37,99,235,.92)"},listingEditPhotoActions:{position:"absolute",left:5,right:5,bottom:5,flexDirection:"row",justifyContent:"center",gap:5},listingPhotoAction:{width:28,height:28,borderRadius:9,alignItems:"center",justifyContent:"center"},listingBoostCard:{borderWidth:1,borderRadius:18,padding:12,flexDirection:"row",alignItems:"center",gap:9,marginBottom:12},listingBoostIcon:{width:36,height:36,borderRadius:11,alignItems:"center",justifyContent:"center"},storeListingTitle:{fontSize:11.5,fontWeight:"900",lineHeight:16,minHeight:32},storeListingPrice:{fontSize:15,fontWeight:"900",marginTop:6},storeListingMeta:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:6},storeListingMetaText:{fontSize:8.5,flex:1,marginRight:4},  messagesIntro:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:14},messagesTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.5},messagesSubtitle:{fontSize:11,marginTop:3},messagesRefresh:{width:38,height:38,borderRadius:12,borderWidth:1,alignItems:"center",justifyContent:"center"},messagesSearch:{height:48,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:9,marginBottom:12},messagesSearchInput:{flex:1,fontSize:13},messageSkeleton:{height:82,borderWidth:1,borderRadius:18,marginBottom:9,opacity:.65},messagesEmptyCard:{borderWidth:1,borderRadius:22,padding:28,alignItems:"center",justifyContent:"center",marginTop:26,minHeight:250},messagesEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},messagesEmptyTitle:{fontSize:16,fontWeight:"900"},messagesEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",maxWidth:300,marginTop:5},messageConversationRow:{minHeight:78,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9},messageAvatar:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center",overflow:"hidden"},messageAvatarImage:{width:"100%",height:"100%"},messageAvatarText:{fontSize:14,fontWeight:"900"},messageRowTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:7},messageConversationName:{fontSize:13,fontWeight:"900",flex:1},messageTime:{fontSize:9},messageStoreName:{fontSize:9.5,fontWeight:"800",marginTop:2},messagePreview:{fontSize:10.5,marginTop:4},messageUnread:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:11,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},messageUnreadText:{fontSize:9,fontWeight:"900",color:"#fff"},chatHeader:{minHeight:64,borderWidth:1,borderRadius:18,marginBottom:8,padding:9,flexDirection:"row",alignItems:"center",gap:9},chatBackButton:{width:38,height:38,borderRadius:12,alignItems:"center",justifyContent:"center"},chatAvatar:{width:42,height:42,borderRadius:14,alignItems:"center",justifyContent:"center",overflow:"hidden"},chatAvatarImage:{width:"100%",height:"100%"},chatAvatarText:{fontSize:12,fontWeight:"900"},chatName:{fontSize:13,fontWeight:"900"},chatStore:{fontSize:9.5,marginTop:2},chatOnlineDot:{width:8,height:8,borderRadius:4,marginRight:3},chatEmpty:{alignItems:"center",justifyContent:"center",paddingTop:90,paddingHorizontal:30},chatEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},chatEmptyTitle:{fontSize:16,fontWeight:"900"},chatEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",marginTop:5},chatBubbleRow:{flexDirection:"row",marginBottom:8},chatBubble:{maxWidth:"82%",borderWidth:1,borderRadius:18,paddingHorizontal:12,paddingVertical:9},chatBubbleText:{fontSize:12,lineHeight:18},chatTime:{fontSize:8,alignSelf:"flex-end",marginTop:4},chatComposer:{borderTopWidth:1,paddingTop:8,paddingBottom:8,flexDirection:"row",alignItems:"flex-end",gap:7},chatAttach:{width:40,height:40,borderRadius:12,alignItems:"center",justifyContent:"center"},chatInput:{flex:1,minHeight:40,maxHeight:105,borderWidth:1,borderRadius:13,paddingHorizontal:11,paddingVertical:9,fontSize:12},chatSend:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},  orderCard:{minHeight:68,borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:10},badge:{paddingHorizontal:10,paddingVertical:6,borderRadius:999},badgeText:{fontSize:11,fontWeight:"800"},notificationCard:{borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:12},notificationIcon:{width:38,height:38,borderRadius:19,alignItems:"center",justifyContent:"center"},messageRow:{borderWidth:1,borderRadius:16,padding:12,flexDirection:"row",alignItems:"center",gap:12},settingRow:{borderWidth:1,borderRadius:18,marginBottom:9,paddingHorizontal:14,minHeight:58,flexDirection:"row",alignItems:"center",gap:12},smallAction:{borderRadius:10,paddingHorizontal:13,paddingVertical:9},smallActionText:{color:"#fff",fontWeight:"800",fontSize:12},notificationDot:{width:8,height:8,borderRadius:4,marginTop:6},empty:{borderWidth:1,borderRadius:20,padding:28,alignItems:"center",justifyContent:"center",gap:8,marginTop:40},
+  createHeader:{flexDirection:"row",alignItems:"flex-start",gap:12,marginTop:4},createTitle:{fontSize:28,fontWeight:"900",letterSpacing:-0.5},createSub:{fontSize:12,lineHeight:18,marginTop:4,maxWidth:280},createStepBadge:{paddingHorizontal:10,paddingVertical:7,borderRadius:999},createStepText:{fontSize:11,fontWeight:"900"},progressRail:{marginTop:14,marginBottom:2},progressTrack:{height:5,borderRadius:999,overflow:"hidden"},progressFill:{height:5,borderRadius:999},progressLabels:{flexDirection:"row",justifyContent:"space-between",marginTop:7},progressLabel:{fontSize:10,fontWeight:"700"},progressLabelActive:{fontSize:10,fontWeight:"900"},progressStepButton:{paddingHorizontal:6,paddingVertical:4},typeCard:{borderWidth:1,borderRadius:20,padding:14},inlineLabel:{flexDirection:"row",alignItems:"center",gap:8},cardTitle:{fontSize:15,fontWeight:"900"},cardHint:{fontSize:11,lineHeight:17,marginTop:4,marginBottom:12},segmented:{borderWidth:1,borderRadius:16,padding:4,flexDirection:"row",gap:4},segment:{flex:1,height:42,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},segmentText:{fontSize:13,fontWeight:"800"},formCard:{borderWidth:1,borderRadius:20,padding:14},photoCover:{height:174,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",padding:14},photoCoverImage:{height:210,borderWidth:1,borderRadius:18,overflow:"hidden",position:"relative"},photoCoverImageFill:{width:"100%",height:"100%"},coverBadge:{position:"absolute",top:10,left:10,backgroundColor:"rgba(37,99,235,.95)",paddingHorizontal:9,paddingVertical:5,borderRadius:999},coverBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",letterSpacing:.7},coverEditHint:{position:"absolute",bottom:10,left:10,right:10,flexDirection:"row",alignItems:"center",gap:5},coverEditText:{color:"#fff",fontSize:10,fontWeight:"800",textShadowColor:"rgba(0,0,0,.7)",textShadowOffset:{width:0,height:1},textShadowRadius:3},coverHelper:{fontSize:10,lineHeight:15,marginTop:6},uploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.52)",alignItems:"center",justifyContent:"center",gap:7},uploadOverlayText:{color:"#fff",fontSize:11,fontWeight:"800"},uploadDoneBadge:{position:"absolute",right:10,bottom:10,width:27,height:27,borderRadius:14,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoThumbRowWide:{flexDirection:"row",gap:8,marginTop:10,flexWrap:"wrap"},photoThumbLarge:{width:62,height:62,borderWidth:1,borderRadius:13,overflow:"hidden",position:"relative"},photoThumbImage:{width:"100%",height:"100%"},photoAddThumb:{alignItems:"center",justifyContent:"center",borderStyle:"dashed"},thumbnailUploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.5)",alignItems:"center",justifyContent:"center"},thumbnailDoneBadge:{position:"absolute",right:4,bottom:4,width:19,height:19,borderRadius:10,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoAddedState:{alignItems:"center",justifyContent:"center"},photoUploadIcon:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center"},photoUploadTitle:{fontSize:14,fontWeight:"900",marginTop:10},photoAddedText:{fontSize:14,fontWeight:"900",marginTop:9},photoHint:{fontSize:11,marginTop:4,textAlign:"center"},photoThumbRow:{flexDirection:"row",gap:8,marginTop:9},photoThumb:{height:50,flex:1,borderWidth:1,borderRadius:13,alignItems:"center",justifyContent:"center"},fieldRow:{flexDirection:"row",gap:12,alignItems:"center"},switchWrapModern:{width:96,alignItems:"center",justifyContent:"center",marginBottom:10},switchLabel:{fontSize:10,fontWeight:"800",marginBottom:2},categoryPicker:{gap:8,paddingBottom:10},categoryChip:{borderWidth:1,borderRadius:999,paddingHorizontal:11,paddingVertical:8},categoryChipText:{fontSize:11,fontWeight:"800"},optionRow:{flexDirection:"row",gap:8,marginBottom:12},optionPill:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:14,alignItems:"center",justifyContent:"center"},optionPillText:{fontSize:12,fontWeight:"800"},inlineFieldLabel:{flexDirection:"row",alignItems:"center",gap:6,marginBottom:7},fieldLabelNoMargin:{fontSize:12,fontWeight:"800"},descriptionInput:{minHeight:190,borderWidth:1,borderRadius:14,padding:12,fontSize:14,lineHeight:20,textAlignVertical:"top"},characterHint:{fontSize:10,textAlign:"right",marginTop:5},tipCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"flex-start",gap:10},tipTitle:{fontSize:13,fontWeight:"800"},tipText:{fontSize:11,lineHeight:17,marginTop:3},publishSheet:{borderWidth:1,borderRadius:18,padding:10,flexDirection:"row",alignItems:"center",gap:8,marginTop:2}, publishSheetFixed:{position:"absolute",left:0,right:0,bottom:0,borderTopWidth:1,paddingHorizontal:12,paddingTop:10,paddingBottom:14,flexDirection:"row",alignItems:"center",gap:8,zIndex:50,elevation:12},publishSheetTitle:{fontSize:12,fontWeight:"900"},publishSheetSub:{fontSize:10,lineHeight:15,marginTop:2},  photoRemoveButton:{position:"absolute",top:2,right:2,width:22,height:22,borderRadius:11,backgroundColor:"rgba(0,0,0,.65)",alignItems:"center",justifyContent:"center"}, photoRemoveText:{color:"#fff",fontSize:14,fontWeight:"800"}, successScreen:{flex:1,alignItems:"center",justifyContent:"center",paddingHorizontal:20,gap:26}, verifiedAnimationWrap:{width:190,height:190,alignItems:"center",justifyContent:"center",position:"relative"}, successHalo:{position:"absolute",width:178,height:178,borderRadius:89,borderWidth:8}, verifiedBadge:{width:126,height:126,borderRadius:63,alignItems:"center",justifyContent:"center",elevation:10,shadowOpacity:0.2,shadowRadius:18,shadowOffset:{width:0,height:8}}, successSparkle:{position:"absolute",width:10,height:10,borderRadius:5}, sparkleTop:{top:12},sparkleRight:{right:14},sparkleBottom:{bottom:18},sparkleLeft:{left:14}, successCheckOuter:{width:170,height:170,borderRadius:85,alignItems:"center",justifyContent:"center",borderWidth:1}, successCheckCircle:{width:118,height:118,borderRadius:59,alignItems:"center",justifyContent:"center"}, successTitle:{fontSize:30,fontWeight:"900",textAlign:"center",letterSpacing:-0.5}, successSub:{fontSize:14,lineHeight:21,textAlign:"center",marginTop:8,paddingHorizontal:10}, successActions:{flexDirection:"row",gap:10,marginTop:24}, profileAuthCard:{borderWidth:1,borderRadius:28,padding:24,marginTop:12,marginHorizontal:2,alignItems:"center",shadowColor:"#000",shadowOpacity:.08,shadowRadius:18,shadowOffset:{width:0,height:8},elevation:5},profileAuthIcon:{width:72,height:72,borderRadius:24,alignItems:"center",justifyContent:"center",marginBottom:16},profileAuthTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.6,textAlign:"center"},profileAuthText:{fontSize:13,lineHeight:20,textAlign:"center",marginTop:8,maxWidth:340},profileAuthButton:{width:"100%",minHeight:52,borderWidth:1,borderRadius:16,alignItems:"center",justifyContent:"center",marginTop:10,paddingHorizontal:16},profileAuthButtonText:{fontSize:14,fontWeight:"900"},
+ settingsSectionTitle:{fontSize:13,fontWeight:"900",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:6},preferenceBlock:{borderWidth:1,borderRadius:18,padding:14,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionRow:{minHeight:68,borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionIcon:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},preferenceTitle:{fontSize:13,fontWeight:"900"},preferenceDescription:{fontSize:10.5,lineHeight:16,marginTop:3},choiceChip:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:13,alignItems:"center",justifyContent:"center"},faqRow:{minHeight:58,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12,paddingVertical:11,paddingHorizontal:4},faqQuestion:{fontSize:13,fontWeight:"800",lineHeight:19},faqAnswer:{fontSize:11.5,lineHeight:18,marginTop:7},reportInput:{minHeight:120,borderWidth:1,borderRadius:16,padding:13,fontSize:13,textAlignVertical:"top",marginBottom:9},reportInputSingle:{height:48,borderWidth:1,borderRadius:14,paddingHorizontal:13,fontSize:13,marginBottom:9},safetyHero:{borderWidth:1,borderRadius:24,padding:20,alignItems:"flex-start",marginBottom:10},safetyTip:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"flex-start",gap:11,marginBottom:9},safetyNumber:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},legalCard:{borderWidth:1,borderRadius:24,padding:20,marginTop:8},legalTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.5},legalHeading:{fontSize:14,fontWeight:"900",marginTop:20,marginBottom:6},legalText:{fontSize:12.5,lineHeight:20}, profileHeader:{flexDirection:"row",alignItems:"center",gap:14,paddingVertical:8},profileAvatar:{width:76,height:76,borderRadius:38,alignItems:"center",justifyContent:"center"},profileAvatarText:{fontSize:18,fontWeight:"900",color:"#fff"},profileHeroCard:{borderWidth:1,borderRadius:26,padding:18,marginBottom:13,shadowColor:"#000",shadowOpacity:.07,shadowRadius:16,shadowOffset:{width:0,height:7},elevation:4},profileHeroTop:{flexDirection:"row",alignItems:"center",gap:12},profileAvatarEditWrap:{width:78,height:78,position:"relative"},profileEditIconButton:{position:"absolute",right:-5,bottom:-5,width:32,height:32,borderRadius:16,borderWidth:2,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:5},profileAvatarLarge:{width:64,height:64,borderRadius:22,alignItems:"center",justifyContent:"center"},profileAvatarTextLarge:{fontSize:20,fontWeight:"900",color:"#fff"},profileNameLine:{flexDirection:"row",alignItems:"center",gap:7},profileName:{fontSize:18,fontWeight:"900",letterSpacing:-0.3,flexShrink:1},profileEmail:{fontSize:11,marginTop:3},profileMember:{fontSize:10,marginTop:3},profileVerified:{flexDirection:"row",alignItems:"center",gap:3,paddingHorizontal:7,paddingVertical:4,borderRadius:999},profileVerifiedText:{fontSize:9,fontWeight:"900"},metaVerifiedBadge:{backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,.55)"},profileIdentityHint:{fontSize:9.5,lineHeight:14,marginTop:-4,marginBottom:10},profileEditButton:{width:34,height:34,borderWidth:1,borderRadius:12,alignItems:"center",justifyContent:"center"},profileTrustRow:{borderTopWidth:1,marginTop:14,paddingTop:12,flexDirection:"row",alignItems:"center",gap:10},profileTrustItem:{flex:1,flexDirection:"row",alignItems:"center",gap:8},profileShieldIcon:{width:26,height:26,borderRadius:9,alignItems:"center",justifyContent:"center"},profileTrustDivider:{width:1,height:28},profileTrustTitle:{fontSize:10,fontWeight:"900"},profileTrustText:{fontSize:8.5,marginTop:2},profileModeSwitch:{height:52,borderWidth:1,borderRadius:17,padding:4,flexDirection:"row",gap:4,marginBottom:16},profileModeButton:{flex:1,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:6},profileModeText:{fontSize:12,fontWeight:"900"},profileSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:5,marginBottom:10},profileSectionTitle:{fontSize:18,fontWeight:"900",letterSpacing:-0.2},profileSectionSub:{fontSize:10,lineHeight:15,marginTop:3,maxWidth:290},profileRoleBadge:{paddingHorizontal:8,paddingVertical:5,borderRadius:999},profileRoleBadgeText:{fontSize:8,fontWeight:"900",letterSpacing:1},profileActionGrid:{flexDirection:"row",flexWrap:"wrap",gap:9},profileActionTile:{flexBasis:"48%",flexGrow:1,minWidth:145,minHeight:100,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:9},profileActionIcon:{width:40,height:40,borderRadius:11,alignItems:"center",justifyContent:"center"},profileActionTitle:{fontSize:13,fontWeight:"900",letterSpacing:-.1},profileActionText:{fontSize:10.5,lineHeight:15,marginTop:4},profileFeatureCard:{borderWidth:1,borderRadius:18,padding:13,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:10},profileFeatureIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},profileFeatureTitle:{fontSize:12,fontWeight:"900"},profileFeatureText:{fontSize:9.5,lineHeight:15,marginTop:4},sellerSetupCard:{borderRadius:20,padding:15,marginTop:12,flexDirection:"row",alignItems:"center",gap:12},sellerSetupEyebrow:{fontSize:8,fontWeight:"900",letterSpacing:1.4,color:"#93C5FD"},sellerSetupTitle:{fontSize:17,fontWeight:"900",color:"#FFFFFF",marginTop:5,letterSpacing:-0.3},sellerSetupText:{fontSize:9.5,lineHeight:15,color:"#CBD5E1",marginTop:4},sellerSetupButton:{height:38,paddingHorizontal:12,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:3},sellerSetupButtonText:{fontSize:11,fontWeight:"900"},profileEssentialsRow:{flexDirection:"row",gap:9,alignItems:"stretch"},profileMiniFeature:{flex:1,minWidth:0,borderWidth:1,borderRadius:18,padding:13,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},profileMiniTitle:{fontSize:11,fontWeight:"900",marginTop:8},profileMiniText:{fontSize:9,lineHeight:14,marginTop:3},profileRow:{minHeight:62,borderWidth:1,borderRadius:18,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12,marginBottom:8},profileRowText:{fontSize:14,fontWeight:"700"},logoutRow:{minHeight:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12},logoutText:{color:"#D33D3D",fontSize:14,fontWeight:"800"},
+  profileLoading:{fontSize:10,textAlign:"center",marginTop:2,marginBottom:4},storeVerificationOverlay:{flex:1,alignItems:"center",justifyContent:"center",padding:20},storeVerificationBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(15,23,42,.58)"},storeVerificationCard:{width:"100%",maxWidth:420,borderWidth:1,borderRadius:24,padding:20,shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:8},elevation:24},storeVerificationIconWrap:{width:50,height:50,borderRadius:25,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center",marginBottom:12},storeVerificationTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},storeVerificationText:{fontSize:11,lineHeight:17,marginTop:6},storeVerificationEmail:{marginTop:15,borderWidth:1,borderRadius:14,padding:12,flexDirection:"row",alignItems:"center",gap:10},storeVerificationEmailLabel:{fontSize:9,fontWeight:"800",textTransform:"uppercase",letterSpacing:.4},storeVerificationEmailValue:{fontSize:12,fontWeight:"800",marginTop:2},storeVerificationSuccess:{marginTop:15,borderWidth:1,borderRadius:14,padding:12,flexDirection:"row",alignItems:"center",gap:10},storeVerificationSuccessTitle:{fontSize:12,fontWeight:"900"},storeVerificationSuccessText:{fontSize:10,lineHeight:15,marginTop:2},storeVerificationPrimary:{height:46,borderRadius:13,marginTop:15,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeVerificationPrimaryText:{fontSize:12.5,fontWeight:"900",color:"#fff"},storeVerificationFieldLabel:{fontSize:11,fontWeight:"900",marginTop:15,marginBottom:6},storeVerificationInput:{height:48,borderWidth:1,borderRadius:13,paddingHorizontal:14,fontSize:18,fontWeight:"900",letterSpacing:4,textAlign:"center"},storeVerificationActions:{flexDirection:"row",gap:9,marginTop:14},profileSheetOverlay:{position:"absolute",left:0,right:0,top:0,bottom:0,zIndex:100,elevation:100,justifyContent:"flex-end"},profileSheetKeyboard:{width:"100%",flex:1,justifyContent:"flex-end"},profileSheetBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(0,0,0,.58)"},profileSheet:{height:"92%",maxHeight:"92%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:-8},elevation:24},profileSheetHeader:{minHeight:68,borderBottomWidth:1,paddingHorizontal:16,paddingVertical:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},profileEditTabs:{height:50,borderBottomWidth:1,flexDirection:"row",paddingHorizontal:10},profileEditTab:{flex:1,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,borderBottomWidth:2,borderBottomColor:"transparent"},profileEditTabText:{fontSize:11,fontWeight:"900"},profileSheetTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},profileSheetSub:{fontSize:10,marginTop:3},profileSheetClose:{width:34,height:34,borderRadius:17,alignItems:"center",justifyContent:"center"},profileEditSectionTitle:{fontSize:13,fontWeight:"900",marginBottom:8},profileEditCard:{borderWidth:1,borderRadius:18,padding:13},profileEditAvatarRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileEditAvatar:{width:74,height:74,borderRadius:37,alignItems:"center",justifyContent:"center"},profileEditAvatarWrap:{width:74,height:74,borderRadius:37,position:"relative"},profilePhotoAction:{position:"absolute",right:-3,bottom:-3,width:29,height:29,borderRadius:15,borderWidth:3,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:4},profileEditLabel:{fontSize:12,fontWeight:"900"},profileEditHint:{fontSize:9.5,lineHeight:14,marginTop:3},profileBlueButton:{height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,alignSelf:"flex-start",marginTop:7},profileBlueButtonText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileLockedField:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:7},profileLockedText:{fontSize:13,flex:1,marginRight:8},profileCoverPreview:{height:138,borderWidth:1,borderRadius:16,overflow:"hidden",alignItems:"center",justifyContent:"center",marginBottom:13},profileEditCoverLogoHolder:{position:"absolute",left:12,bottom:10,width:72,height:72,borderRadius:36,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},profileEditCoverLogo:{width:"100%",height:"100%",borderRadius:36},profileCoverButton:{position:"absolute",right:10,bottom:10,height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5},profileMediaAction:{position:"absolute",right:10,bottom:10,minHeight:34,borderRadius:12,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,borderWidth:2,shadowColor:"#000",shadowOpacity:.18,shadowRadius:6,shadowOffset:{width:0,height:2},elevation:4},profileMediaActionText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileStoreLogoWrap:{width:64,height:64,borderRadius:32,position:"relative"},profileStoreLogoRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileStoreLogo:{width:64,height:64,borderRadius:32,alignItems:"center",justifyContent:"center",overflow:"hidden"},countryPickerOverlay:{flex:1,justifyContent:"flex-end",backgroundColor:"rgba(15,23,42,.45)"},countryPickerBackdrop:{...StyleSheet.absoluteFillObject},countryPickerSheet:{height:"78%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.22,shadowRadius:16,shadowOffset:{width:0,height:-4},elevation:12},countryPickerHeader:{paddingHorizontal:18,paddingVertical:14,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12},countrySearchBox:{margin:12,borderWidth:1,borderRadius:13,minHeight:46,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:9},countryPickerRow:{minHeight:62,paddingHorizontal:18,flexDirection:"row",alignItems:"center",gap:12,borderBottomWidth:StyleSheet.hairlineWidth},countryFlag:{fontSize:25,width:36,textAlign:"center"},countryName:{fontSize:14,fontWeight:"700"},countryCode:{fontSize:12,marginTop:2},profileEditError:{borderWidth:1,borderRadius:14,padding:11,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:8},profileEditErrorText:{flex:1,fontSize:10.5,lineHeight:16,fontWeight:"700"},profileSheetActions:{borderTopWidth:1,paddingHorizontal:16,paddingTop:10,flexDirection:"row",gap:9},profileCancelButton:{height:46,borderWidth:1,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center"},profileCancelText:{fontSize:13,fontWeight:"900"},profileSaveButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},profileSaveText:{fontSize:13,fontWeight:"900",color:"#fff"},
+  storePageCard:{borderWidth:1,borderRadius:26,overflow:"hidden",marginBottom:12},storeCover:{height:150,position:"relative",overflow:"hidden"},storeCoverLogoHolder:{position:"absolute",left:16,bottom:-2,width:82,height:82,borderRadius:41,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},storeCoverLogoImage:{width:"100%",height:"100%",borderRadius:41},storeCoverGlow:{position:"absolute",width:230,height:230,borderRadius:115,backgroundColor:"rgba(37,99,235,.28)",right:-70,top:-110},storeCoverShade:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(2,6,23,.18)"},storeCoverTopRow:{position:"absolute",left:12,right:12,top:12,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},storeStatusPill:{height:30,paddingHorizontal:10,borderRadius:999,backgroundColor:"rgba(2,6,23,.48)",flexDirection:"row",alignItems:"center",gap:6},storeStatusDot:{width:7,height:7,borderRadius:4},storeStatusText:{fontSize:10,fontWeight:"900",color:"#fff"},storeCircleButton:{width:34,height:34,borderRadius:17,backgroundColor:"rgba(2,6,23,.48)",alignItems:"center",justifyContent:"center"},storeIdentityBlock:{paddingHorizontal:16,paddingTop:0,paddingBottom:14,flexDirection:"row",gap:12},storeLogoLarge:{width:72,height:72,borderRadius:22,borderWidth:4,alignItems:"center",justifyContent:"center",marginTop:-34,overflow:"hidden"},storeLogoImage:{width:"100%",height:"100%"},storeLogoLetter:{fontSize:24,fontWeight:"900",color:"#fff"},storeIdentityText:{flex:1,paddingTop:8,minWidth:0},storeNameRow:{flexDirection:"row",alignItems:"center",gap:7},storePageTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4,flexShrink:1},storeVerifiedBadge:{width:19,height:19,borderRadius:10,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},storeIdentityLabelRow:{flexDirection:"row",alignItems:"center",gap:7,marginBottom:4},storeIdentityLabel:{fontSize:8,fontWeight:"900",letterSpacing:1.2},storeOwnerLabel:{fontSize:8.5},storePageDescription:{fontSize:11,lineHeight:17,marginTop:4},storeMetaLine:{flexDirection:"row",alignItems:"center",gap:4,marginTop:6},storeMetaText:{fontSize:10,flexShrink:1},storeStatsRow:{marginHorizontal:16,borderTopWidth:1,borderBottomWidth:1,minHeight:62,flexDirection:"row",alignItems:"center",justifyContent:"space-around"},storeStat:{flex:1,alignItems:"center"},storeStatValue:{fontSize:17,fontWeight:"900"},storeStatLabel:{fontSize:9,fontWeight:"700",marginTop:2},storeStatDivider:{width:1,height:28},storeQuickActions:{padding:12,flexDirection:"row",gap:8},storePrimaryAction:{height:44,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storePrimaryActionText:{color:"#fff",fontSize:12,fontWeight:"900"},storeSecondaryAction:{height:44,borderRadius:13,paddingHorizontal:15,borderWidth:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeSecondaryActionText:{fontSize:12,fontWeight:"900"},storeToolsCard:{borderWidth:1,borderRadius:22,padding:14,marginBottom:14},storeToolsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},storeToolsTitle:{fontSize:15,fontWeight:"900"},storeToolsSubtitle:{fontSize:10,lineHeight:15,marginTop:3},storeToolsIcon:{width:36,height:36,borderRadius:12,alignItems:"center",justifyContent:"center"},storeToolGrid:{flexDirection:"row",flexWrap:"wrap",gap:8},storeToolItem:{width:"48.5%",minHeight:100,borderRadius:15,padding:11},storeToolTitle:{fontSize:11,fontWeight:"900",marginTop:8},storeToolText:{fontSize:9,lineHeight:14,marginTop:3},storeListingsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:4,marginBottom:10},storeListingsTitle:{fontSize:17,fontWeight:"900",letterSpacing:-.2},storeListingsSubtitle:{fontSize:10,marginTop:3},storeCountPill:{minWidth:32,height:30,paddingHorizontal:9,borderRadius:999,alignItems:"center",justifyContent:"center"},storeCountText:{fontSize:12,fontWeight:"900"},storeLoadingCard:{minHeight:150,borderWidth:1,borderRadius:20,alignItems:"center",justifyContent:"center",gap:9},storeLoadingText:{fontSize:11,fontWeight:"700"},storeErrorCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:10},storeErrorTitle:{fontSize:12,fontWeight:"900"},storeErrorText:{fontSize:9.5,lineHeight:14,marginTop:3},storeRetryButton:{height:34,paddingHorizontal:12,borderRadius:10,alignItems:"center",justifyContent:"center"},storeRetryText:{fontSize:10,fontWeight:"900",color:"#fff"},storeEmptyCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",justifyContent:"center",minHeight:200},storeEmptyIcon:{width:52,height:52,borderRadius:17,alignItems:"center",justifyContent:"center",marginBottom:12},storeEmptyTitle:{fontSize:14,fontWeight:"900",textAlign:"center"},storeEmptyText:{fontSize:10.5,lineHeight:16,textAlign:"center",marginTop:5,maxWidth:280},storeListingGrid:{flexDirection:"row",flexWrap:"wrap",gap:10},storeListingCard:{width:"48.6%",borderWidth:1,borderRadius:18,overflow:"hidden"},storeListingImageWrap:{height:145,position:"relative"},storeListingImage:{width:"100%",height:"100%",backgroundColor:"#E5E7EB"},storeListingType:{position:"absolute",left:8,bottom:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(2,6,23,.58)"},storeListingTypeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingBody:{padding:10},storeOfferPill:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:"#DCFCE7"},storeOfferPillText:{fontSize:8,fontWeight:"900",color:"#15803D"},storeBoostPill:{position:"absolute",right:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:BUTTON_BLUE},storeBoostPillText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingEditButton:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},storeListingOriginalPrice:{fontSize:9,textDecorationLine:"line-through",marginTop:2},listingEditorToggle:{minHeight:62,borderWidth:1,borderRadius:16,paddingHorizontal:12,paddingVertical:10,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},listingToggle:{width:40,height:23,borderRadius:999,justifyContent:"center"},listingToggleKnob:{width:19,height:19,borderRadius:10,backgroundColor:"#fff"},listingEditorSection:{borderWidth:1,borderRadius:18,padding:12,marginBottom:12},listingEditorSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10},listingEditPhoto:{width:118,height:150,borderWidth:2,borderRadius:14,overflow:"hidden",position:"relative"},listingEditPhotoImage:{width:"100%",height:"100%"},listingEditCover:{position:"absolute",left:6,top:6,paddingHorizontal:6,paddingVertical:4,borderRadius:7,backgroundColor:"rgba(37,99,235,.92)"},listingEditPhotoActions:{position:"absolute",left:5,right:5,bottom:5,flexDirection:"row",justifyContent:"center",gap:5},listingPhotoAction:{width:28,height:28,borderRadius:9,alignItems:"center",justifyContent:"center"},listingBoostCard:{borderWidth:1,borderRadius:18,padding:12,flexDirection:"row",alignItems:"center",gap:9,marginBottom:12},listingBoostIcon:{width:36,height:36,borderRadius:11,alignItems:"center",justifyContent:"center"},storeListingTitle:{fontSize:11.5,fontWeight:"900",lineHeight:16,minHeight:32},storeListingPrice:{fontSize:15,fontWeight:"900",marginTop:6},storeListingMeta:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:6},storeListingMetaText:{fontSize:8.5,flex:1,marginRight:4},  messagesIntro:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:14},messagesTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.5},messagesSubtitle:{fontSize:11,marginTop:3},messagesRefresh:{width:38,height:38,borderRadius:12,borderWidth:1,alignItems:"center",justifyContent:"center"},messagesSearch:{height:48,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:9,marginBottom:12},messagesSearchInput:{flex:1,fontSize:13},messageSkeleton:{height:82,borderWidth:1,borderRadius:18,marginBottom:9,opacity:.65},messagesEmptyCard:{borderWidth:1,borderRadius:22,padding:28,alignItems:"center",justifyContent:"center",marginTop:26,minHeight:250},messagesEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},messagesEmptyTitle:{fontSize:16,fontWeight:"900"},messagesEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",maxWidth:300,marginTop:5},messageConversationRow:{minHeight:78,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9},messageAvatar:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center",overflow:"hidden"},messageAvatarImage:{width:"100%",height:"100%"},messageAvatarText:{fontSize:14,fontWeight:"900"},messageRowTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:7},messageConversationName:{fontSize:13,fontWeight:"900",flex:1},messageTime:{fontSize:9},messageStoreName:{fontSize:9.5,fontWeight:"800",marginTop:2},messagePreview:{fontSize:10.5,marginTop:4},messageUnread:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:11,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},messageUnreadText:{fontSize:9,fontWeight:"900",color:"#fff"},chatHeader:{minHeight:64,borderWidth:1,borderRadius:18,marginBottom:8,padding:9,flexDirection:"row",alignItems:"center",gap:9},chatBackButton:{width:38,height:38,borderRadius:12,alignItems:"center",justifyContent:"center"},chatAvatar:{width:42,height:42,borderRadius:14,alignItems:"center",justifyContent:"center",overflow:"hidden"},chatAvatarImage:{width:"100%",height:"100%"},chatAvatarText:{fontSize:12,fontWeight:"900"},chatName:{fontSize:13,fontWeight:"900"},chatStore:{fontSize:9.5,marginTop:2},chatOnlineDot:{width:8,height:8,borderRadius:4,marginRight:3},chatEmpty:{alignItems:"center",justifyContent:"center",paddingTop:90,paddingHorizontal:30},chatEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},chatEmptyTitle:{fontSize:16,fontWeight:"900"},chatEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",marginTop:5},chatBubbleRow:{flexDirection:"row",marginBottom:8},chatBubble:{maxWidth:"82%",borderWidth:1,borderRadius:18,paddingHorizontal:12,paddingVertical:9},chatBubbleText:{fontSize:12,lineHeight:18},chatTime:{fontSize:8,alignSelf:"flex-end",marginTop:4},chatComposer:{borderTopWidth:1,paddingTop:8,paddingBottom:8,flexDirection:"row",alignItems:"flex-end",gap:7},chatAttach:{width:40,height:40,borderRadius:12,alignItems:"center",justifyContent:"center"},chatInput:{flex:1,minHeight:40,maxHeight:105,borderWidth:1,borderRadius:13,paddingHorizontal:11,paddingVertical:9,fontSize:12},chatSend:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},  sellerProfileHero:{alignItems:"center",paddingVertical:22,paddingHorizontal:18,borderRadius:24},publicStoreStat:{flex:1,minHeight:48,borderRadius:14,alignItems:"center",justifyContent:"center",gap:3},publicStoreStatValue:{fontSize:16,fontWeight:"900"},publicStoreStatLabel:{fontSize:9,fontWeight:"800"},sellerProfileAvatarWrap:{position:"relative"},sellerProfileAvatar:{width:88,height:88,borderRadius:44},sellerOnlineDot:{position:"absolute",right:2,bottom:4,width:16,height:16,borderRadius:8,backgroundColor:"#22C55E",borderWidth:3,borderColor:"#fff"},sellerStatsRow:{width:"100%",flexDirection:"row",alignItems:"center",justifyContent:"space-around",marginTop:20,paddingVertical:14,borderTopWidth:1,borderBottomWidth:1},sellerStat:{alignItems:"center",minWidth:70},sellerStatValue:{fontSize:19,fontWeight:"900"},sellerStatLabel:{fontSize:10,marginTop:3,fontWeight:"700"},sellerStatDivider:{width:1,height:28},notificationBadge:{position:"absolute",top:-4,right:-5,minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:"#DC2626",alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},notificationBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",lineHeight:11},productInfoRow:{flexDirection:"row",alignItems:"center",paddingHorizontal:2,paddingVertical:14,borderBottomWidth:StyleSheet.hairlineWidth},productMetaLine:{flexDirection:"row",alignItems:"center",flexWrap:"wrap",gap:5,marginTop:6},productMetaValue:{fontSize:16,fontWeight:"900"},productMetaSecondary:{fontSize:12,fontWeight:"600"},productMetaDot:{fontSize:12,fontWeight:"700"},productTopBar:{height:52,flexDirection:"row",alignItems:"center",paddingHorizontal:2},productTopIcon:{width:40,height:40,borderRadius:13,borderWidth:1,alignItems:"center",justifyContent:"center"},productTopLabel:{fontSize:14,fontWeight:"900"},productTitleActionRow:{minHeight:54,flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10,paddingHorizontal:2,marginBottom:10},productTitleActions:{flexDirection:"row",alignItems:"center",gap:8},productActionIcon:{width:46,height:46,borderRadius:15,borderWidth:1,alignItems:"center",justifyContent:"center"},reviewScoreBadge:{width:34,height:34,borderRadius:12,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center"},reviewScoreText:{fontSize:18,fontWeight:"900",color:BUTTON_BLUE},storeLinkCard:{width:"100%",maxWidth:"100%",alignSelf:"stretch",marginTop:14,paddingHorizontal:12,paddingVertical:10,borderRadius:18},reportActionsWrap:{marginTop:18},reportSectionLabel:{fontSize:10,fontWeight:"800",marginBottom:8,letterSpacing:.2},reportActionsRow:{gap:9},reportActionCard:{minHeight:62,borderWidth:1,borderRadius:18,paddingHorizontal:11,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10},reportActionIcon:{width:38,height:38,borderRadius:13,backgroundColor:"#FEF2F2",alignItems:"center",justifyContent:"center"},reportActionTitle:{fontSize:11.5,fontWeight:"900"},reportActionSub:{fontSize:9.5,marginTop:2},detailSectionCard:{borderWidth:1,borderRadius:18,padding:14,marginTop:14},detailSectionTitle:{fontSize:16,fontWeight:"900"},detailSectionSub:{fontSize:10,marginTop:3},detailSectionEmpty:{fontSize:11,lineHeight:17,marginTop:12},reviewRow:{borderTopWidth:1,paddingTop:10,marginTop:10},reviewName:{fontSize:11,fontWeight:"900"},reviewText:{fontSize:10.5,lineHeight:16,marginTop:4},relatedCard:{width:150,borderWidth:1,borderRadius:16,overflow:"hidden",paddingBottom:9},relatedImage:{width:150,height:130,backgroundColor:"#E5E7EB"},relatedTitle:{fontSize:11,fontWeight:"800",lineHeight:15,paddingHorizontal:9,marginTop:7},relatedPrice:{fontSize:13,fontWeight:"900",paddingHorizontal:9,marginTop:5},reportSheet:{maxHeight:"88%",borderTopLeftRadius:26,borderTopRightRadius:26,overflow:"hidden"},reportHero:{padding:16,flexDirection:"row",alignItems:"center",gap:11},reportHeroIcon:{width:42,height:42,borderRadius:14,backgroundColor:"#FEE2E2",alignItems:"center",justifyContent:"center"},reportTitle:{fontSize:18,fontWeight:"900"},reportSubtitle:{fontSize:10.5,marginTop:3},reportLabel:{fontSize:12,fontWeight:"900",marginTop:3},reportReasonGrid:{gap:8},reportReason:{minHeight:44,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},reportReasonText:{fontSize:11,fontWeight:"800"},reportInput:{minHeight:105,borderWidth:1,borderRadius:14,padding:12,textAlignVertical:"top",fontSize:12},reportSubmitButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},  orderCard:{minHeight:68,borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:10},badge:{paddingHorizontal:10,paddingVertical:6,borderRadius:999},badgeText:{fontSize:11,fontWeight:"800"},notificationCard:{borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:12},notificationIcon:{width:38,height:38,borderRadius:19,alignItems:"center",justifyContent:"center"},messageRow:{borderWidth:1,borderRadius:16,padding:12,flexDirection:"row",alignItems:"center",gap:12},settingsHero:{borderWidth:1,borderRadius:22,padding:17,marginBottom:20,flexDirection:"row",alignItems:"center",gap:13,shadowOpacity:0.04,shadowRadius:12,shadowOffset:{width:0,height:4},elevation:1},
+  settingsHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},
+  settingsHeroTitle:{fontSize:21,fontWeight:"900",letterSpacing:-0.3},
+  settingsHeroSubtitle:{fontSize:12,lineHeight:18,marginTop:3},
+  settingsSection:{marginBottom:17},
+  settingRow:{borderWidth:1,borderRadius:18,marginBottom:9,paddingHorizontal:12,minHeight:76,overflow:"hidden"},
+  settingRowInner:{minHeight:74,flexDirection:"row",alignItems:"center",gap:11},
+  settingIconTile:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},
+  settingCopy:{flex:1,minWidth:0},
+  settingTitle:{fontSize:13,fontWeight:"800",letterSpacing:-0.1},
+  settingSubtitle:{fontSize:10.5,lineHeight:15,marginTop:3,paddingRight:4},
+  settingTrailing:{alignItems:"center",justifyContent:"center",paddingLeft:5},
+  settingStatusPill:{height:28,borderRadius:999,paddingHorizontal:9,flexDirection:"row",alignItems:"center",gap:5},
+  settingStatusDot:{width:6,height:6,borderRadius:3},
+  settingStatusText:{fontSize:10,fontWeight:"900"},
+  settingsFooter:{alignItems:"center",paddingVertical:10,gap:3},
+  settingsFooterText:{fontSize:10,fontWeight:"800"},
+  settingsFooterVersion:{fontSize:9.5},
+smallAction:{borderRadius:10,paddingHorizontal:13,paddingVertical:9},smallActionText:{color:"#fff",fontWeight:"800",fontSize:12},notificationDot:{width:8,height:8,borderRadius:4,marginTop:6},empty:{borderWidth:1,borderRadius:20,padding:28,alignItems:"center",justifyContent:"center",gap:8,marginTop:40},
 });
