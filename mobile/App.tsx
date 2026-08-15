@@ -3837,7 +3837,9 @@ function StoreVerificationModal({ theme, auth, onClose, onVerified }: { theme: T
     setConfirming(true);
     setError("");
     try {
-      const data = await apiRequest("/api/stores/confirm-verification/", { method: "POST", body: JSON.stringify({ code: code.trim() }) }, auth);
+      const formData = new FormData();
+      formData.append("code", code.trim());
+      const data = await apiRequest("/api/stores/confirm-verification/", { method: "POST", body: formData }, auth);
       if (data?.verified) {
         setVerified(true);
         setCode("");

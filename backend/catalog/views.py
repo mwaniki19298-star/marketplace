@@ -12,7 +12,7 @@ from django.core.mail import send_mail
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, MultiPartParser, JSONParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -41,7 +41,7 @@ class StoreViewSet(viewsets.ModelViewSet):
     queryset = Store.objects.select_related("owner").all()
     serializer_class = StoreSerializer
     permission_classes = [IsOwnerOrReadOnly]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     @action(detail=False, methods=["get", "patch"], permission_classes=[IsAuthenticated], url_path="mine")
     def mine(self, request):
