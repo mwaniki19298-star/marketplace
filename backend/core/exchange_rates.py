@@ -3,8 +3,7 @@ from datetime import timedelta
 import requests
 from django.core.cache import cache
 from django.http import JsonResponse
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.decorators import api_view
 
 
 CACHE_KEY = "marketplace_exchange_rates_usd"
@@ -12,7 +11,6 @@ CACHE_TTL = 60 * 60  # refresh at most hourly; the provider publishes current ra
 
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
 def exchange_rates(request):
     base = str(request.query_params.get("base", "USD")).upper()
     if base != "USD":

@@ -42,7 +42,6 @@ export default defineConfig({
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
     'global.global': 'globalThis',
     'process.env.EXPO_PUBLIC_API_BASE_URL': JSON.stringify(process.env.EXPO_PUBLIC_API_BASE_URL || ''),
-    'process.env.VITE_API_BASE_URL': JSON.stringify(process.env.VITE_API_BASE_URL || ''),
     'process.env.EXPO_PUBLIC_WEB_BASE_URL': JSON.stringify(process.env.EXPO_PUBLIC_WEB_BASE_URL || ''),
     'process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID': JSON.stringify(process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || ''),
     'process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID': JSON.stringify(process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || ''),

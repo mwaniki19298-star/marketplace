@@ -119,35 +119,20 @@ else:
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# Browser origins allowed to call the API. Keep these as origins only (no trailing paths).
-# Production includes the current Vercel project domains as well as the custom domain.
-CORS_ALLOWED_ORIGINS = [
-    x.strip().rstrip("/")
-    for x in os.getenv(
-        "CORS_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://localhost:8081,"
-        "https://marketplace-picpibes-marketplace13.vercel.app,"
-        "https://marketplace-tau-sand.vercel.app,"
-        "https://marketplace-git-main-marketplace13.vercel.app,"
-        "https://marketplace.co.ke,https://www.marketplace.co.ke",
-    ).split(",")
-    if x.strip()
-]
+CORS_ALLOWED_ORIGINS = [x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8081,https://marketplace.co.ke,https://www.marketplace.co.ke").split(",") if x.strip()]
 CORS_ALLOW_CREDENTIALS = True
 
-# CSRF is separate from CORS. These origins are allowed to submit unsafe
-# requests when Django's CSRF protection is involved.
-CSRF_TRUSTED_ORIGINS = [
-    x.strip().rstrip("/")
-    for x in os.getenv(
-        "CSRF_TRUSTED_ORIGINS",
-        "http://localhost:5173,http://localhost:8081,"
-        "https://marketplace-picpibes-marketplace13.vercel.app,"
-        "https://marketplace-tau-sand.vercel.app,"
-        "https://marketplace-git-main-marketplace13.vercel.app,"
-        "https://marketplace.co.ke,https://www.marketplace.co.ke",
-    ).split(",")
-    if x.strip()
+# Allow Vercel preview/deployment URLs for the Marketplace project.
+# Examples:
+# https://marketplace-er4z50dlm-marketplace13.vercel.app
+# https://marketplace-jzzn04xwj-marketplace13.vercel.app
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://marketplace-[a-zA-Z0-9-]+-marketplace13\.vercel\.app$",
+]
+
+# Allow the same Vercel deployment pattern for Django CSRF protection.
+CSRF_TRUSTED_ORIGIN_REGEXES = [
+    r"^https://marketplace-[a-zA-Z0-9-]+-marketplace13\.vercel\.app$",
 ]
 
 REST_FRAMEWORK = {
