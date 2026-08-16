@@ -72,6 +72,11 @@ module.exports = ({ config }) => {
       ...(config.extra || {}),
       marketplaceWebDomain: domain,
       apiBaseUrl,
+      google: {
+        webClientId: (process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '').trim(),
+        androidClientId: (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || '').trim(),
+        iosClientId: (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || '').trim(),
+      },
       eas: {
         ...(config.extra?.eas || {}),
         projectId: '74068dfe-41f1-4547-8c6d-a8702ed12a25',

@@ -54,6 +54,7 @@ import { ActivityIndicator, Alert, AppState, FlatList, Image, KeyboardAvoidingVi
 import Svg, { Path } from "react-native-svg";
 import * as WebBrowser from "expo-web-browser";
 import { makeRedirectUri, ResponseType } from "expo-auth-session";
+import Constants from "expo-constants";
 import { useAuthRequest as useGoogleAuthRequest } from "expo-auth-session/providers/google";
 import { Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
@@ -1738,19 +1739,30 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
   const [googleToast, setGoogleToast] = useState<string | null>(null);
   const [showPasswordRecovery, setShowPasswordRecovery] = useState(false);
   const [loginSubmitting, setLoginSubmitting] = useState(false);
-  const googleClientId = (process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || "").trim();
-  const androidClientId = (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || "").trim();
-  const iosClientId = (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || "").trim();
+  // Read Google client IDs from Expo public env first, then from app.config.js
+  // extra. The latter makes the values available in standalone/EAS builds even
+  // when Metro does not inline process.env at runtime.
+  const googleExtra = (Constants.expoConfig?.extra?.google || {}) as {
+    webClientId?: string;
+    androidClientId?: string;
+    iosClientId?: string;
+  };
+  const googleClientId = (process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || googleExtra.webClientId || "").trim();
+  const androidClientId = (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || googleExtra.androidClientId || "").trim();
+  const iosClientId = (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || googleExtra.iosClientId || "").trim();
   const googleConfigured = Platform.OS === "android" ? !!androidClientId : Platform.OS === "ios" ? !!iosClientId : !!googleClientId;
   const googleRedirectUri = makeRedirectUri({
     scheme: "marketplace",
     path: "oauthredirect",
   });
   const [googleRequest, googleResponse, promptGoogleAsync] = useGoogleAuthRequest({
-    androidClientId,
-    iosClientId,
-    webClientId: googleClientId,
-    responseType: ResponseType.IdToken,
+    androidClientId: androidClientId || undefined,
+    iosClientId: iosClientId || undefined,
+    webClientId: googleClientId || undefined,
+    // Use Google's authorization-code flow. Expo's Google provider can
+    // exchange the code automatically and return an ID token on native.
+    responseType: ResponseType.Code,
+    shouldAutoExchangeCode: true,
     scopes: ["openid", "profile", "email"],
     selectAccount: true,
     redirectUri: googleRedirectUri,
