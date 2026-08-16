@@ -3,6 +3,10 @@ module.exports = ({ config }) => {
   const apiBaseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL || '').trim().replace(/\/$/, '');
   const packageName = process.env.EXPO_PUBLIC_ANDROID_PACKAGE || 'com.marketplace.mobile';
   const bundleIdentifier = process.env.EXPO_PUBLIC_IOS_BUNDLE_ID || 'com.marketplace.mobile';
+  const googleIosClientId = (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || '').trim();
+  const googleIosUrlScheme = googleIosClientId
+    ? `com.googleusercontent.apps.${googleIosClientId.replace(/\.apps\.googleusercontent\.com$/, '')}`
+    : '';
 
   return {
     ...config,
@@ -23,6 +27,12 @@ module.exports = ({ config }) => {
           ...(((config.ios || {}).infoPlist || {}).LSApplicationQueriesSchemes || []),
           'whatsapp',
         ])),
+        ...(googleIosUrlScheme ? {
+          CFBundleURLTypes: [
+            ...(((config.ios || {}).infoPlist || {}).CFBundleURLTypes || []),
+            { CFBundleURLSchemes: [googleIosUrlScheme] },
+          ],
+        } : {}),
       },
       ...(domain ? { associatedDomains: [`applinks:${domain}`] } : {}),
     },

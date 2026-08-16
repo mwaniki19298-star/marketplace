@@ -53,7 +53,8 @@ import {
 import { ActivityIndicator, Alert, AppState, FlatList, Image, KeyboardAvoidingView, Linking, Share, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text as RNText, TextInput, Modal, useWindowDimensions, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import * as WebBrowser from "expo-web-browser";
-import { makeRedirectUri, ResponseType, useAuthRequest } from "expo-auth-session";
+import { makeRedirectUri, ResponseType } from "expo-auth-session";
+import { useAuthRequest as useGoogleAuthRequest } from "expo-auth-session/providers/google";
 import { Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { File, Paths } from "expo-file-system";
@@ -1737,21 +1738,23 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
   const [googleToast, setGoogleToast] = useState<string | null>(null);
   const [showPasswordRecovery, setShowPasswordRecovery] = useState(false);
   const [loginSubmitting, setLoginSubmitting] = useState(false);
-  const redirectUri = makeRedirectUri({ scheme: "marketplace" });
-  const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || "";
-  const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || googleClientId;
-  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || googleClientId;
-  const clientId = Platform.OS === "android" ? androidClientId : Platform.OS === "ios" ? iosClientId : googleClientId;
-  const [googleRequest, googleResponse, promptGoogleAsync] = useAuthRequest(
-    {
-      clientId,
-      responseType: ResponseType.IdToken,
-      scopes: ["openid", "profile", "email"],
-      redirectUri,
-      extraParams: { prompt: "select_account" },
-    },
-    { authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth" }
-  );
+  const googleClientId = (process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || "").trim();
+  const androidClientId = (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || "").trim();
+  const iosClientId = (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || "").trim();
+  const googleConfigured = Platform.OS === "android" ? !!androidClientId : Platform.OS === "ios" ? !!iosClientId : !!googleClientId;
+  const googleRedirectUri = makeRedirectUri({
+    scheme: "marketplace",
+    path: "oauthredirect",
+  });
+  const [googleRequest, googleResponse, promptGoogleAsync] = useGoogleAuthRequest({
+    androidClientId,
+    iosClientId,
+    webClientId: googleClientId,
+    responseType: ResponseType.IdToken,
+    scopes: ["openid", "profile", "email"],
+    selectAccount: true,
+    redirectUri: googleRedirectUri,
+  });
 
   useEffect(() => {
     WebBrowser.maybeCompleteAuthSession();
@@ -1759,8 +1762,20 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
 
   useEffect(() => {
     const finishGoogleLogin = async () => {
-      if (googleResponse?.type !== "success") return;
-      const idToken = googleResponse.params?.id_token;
+      if (!googleResponse) return;
+      if (googleResponse.type !== "success") {
+        if (googleResponse.type === "error") {
+          const message = googleResponse.params?.error_description || googleResponse.params?.error || "Google sign-in could not be completed.";
+          setGoogleLoading(false);
+          setGoogleError({ title: "Google sign-in failed", message });
+          setGoogleToast(message);
+        } else if (googleResponse.type === "cancel" || googleResponse.type === "dismiss") {
+          setGoogleLoading(false);
+          setGoogleToast("Google sign-in was cancelled.");
+        }
+        return;
+      }
+      const idToken = googleResponse.params?.id_token || googleResponse.authentication?.idToken;
       if (!idToken) {
         setGoogleLoading(false);
         setGoogleError({ title: "Google sign-in could not finish", message: "Google did not return the authentication details Marketplace needs. Please try again." });
@@ -1783,8 +1798,9 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
         onAuthenticated(data as AuthPayload);
       } catch (error) {
         setGoogleLoading(false);
-        setGoogleError({ title: "Google sign-in unavailable", message: "Google authentication is not connected yet. You can continue with email sign-in." });
-        setGoogleToast("Google sign-in is unavailable right now.");
+        const message = error instanceof Error ? error.message : "Google authentication could not be completed.";
+        setGoogleError({ title: "Google sign-in failed", message });
+        setGoogleToast("Google sign-in failed. Please try again.");
       }
     };
     finishGoogleLogin();
@@ -1795,11 +1811,10 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
   const startGoogleLogin = async () => {
     setGoogleError(null);
     setGoogleToast(null);
-    if (!googleRequest || !clientId) {
-      setGoogleError({ title: "Google sign-in isn't connected", message: "Google authentication will be available once the Google OAuth client is configured. For now, use email sign-in." });
-      setGoogleToast("Google sign-in isn't connected yet.");
-      return;
-    }
+    // Do not block the Google flow with a local configuration gate.
+    // Expo/AuthSession will surface the actual OAuth configuration error,
+    // allowing the real Google sign-in flow to run whenever the platform
+    // configuration is available.
     setGoogleLoading(true);
     try {
       const result = await promptGoogleAsync();
@@ -1809,8 +1824,9 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
       }
     } catch (error) {
       setGoogleLoading(false);
-      setGoogleError({ title: "Google sign-in unavailable", message: "We couldn't open Google's sign-in screen. You can continue with email sign-in." });
-      setGoogleToast("Could not open Google sign-in.");
+      const message = error instanceof Error ? error.message : "We couldn't open Google's sign-in screen.";
+      setGoogleError({ title: "Google sign-in failed", message });
+      setGoogleToast("Could not open Google sign-in. Please try again.");
     }
   };
 
@@ -1818,7 +1834,7 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
     if (!autoGoogle || mode !== "login") return;
     const timer = setTimeout(() => { void startGoogleLogin(); }, 120);
     return () => clearTimeout(timer);
-  }, [autoGoogle, mode, googleRequest, clientId]);
+  }, [autoGoogle, mode, googleRequest, googleConfigured]);
 
   const submit = async () => {
     if (loginSubmitting) return;
