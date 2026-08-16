@@ -643,7 +643,10 @@ async function apiRequest(path: string, options: RequestInit = {}, auth?: AuthPa
     }
   };
 
-  let activeAuth = auth;
+  // A token refresh can happen outside React render (for example after a 401).
+  // Prefer the shared session copy so subsequent requests do not keep sending
+  // an expired access token from an older React state snapshot.
+  let activeAuth = globalThis.__MARKETPLACE_AUTH__ || auth;
   let response = await perform(activeAuth);
   if (__DEV__) console.log(`[API] ${options.method || "GET"} ${apiUrl(path)} -> ${response.status}`);
 

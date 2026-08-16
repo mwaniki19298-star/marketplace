@@ -11,7 +11,7 @@ The PythonAnywhere Web app must point to this Marketplace backend, not the defau
 The recommended location is:
 
 ```text
-/home/emilio2026/Marketplace/backend
+/home/emilio2026/Marketplace/marketplace/backend
 ```
 
 This directory must contain:
@@ -34,7 +34,7 @@ requirements.txt
 ## 2. PythonAnywhere Bash console
 
 ```bash
-cd /home/emilio2026/Marketplace/backend
+cd /home/emilio2026/Marketplace/marketplace/backend
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -49,7 +49,7 @@ If the Web tab uses another Python version, create/use the matching version inst
 
 Create:
 
-`/home/emilio2026/Marketplace/backend/.env`
+`/home/emilio2026/Marketplace/marketplace/backend/.env`
 
 At minimum:
 
@@ -70,13 +70,13 @@ Create/reload a Web app using the same Python version as the virtualenv.
 Set **Virtualenv** to:
 
 ```text
-/home/emilio2026/Marketplace/backend/.venv
+/home/emilio2026/Marketplace/marketplace/backend/.venv
 ```
 
 Set the **WSGI configuration file** to:
 
 ```text
-/home/emilio2026/Marketplace/backend/pythonanywhere_wsgi.py
+/home/emilio2026/Marketplace/marketplace/backend/pythonanywhere_wsgi.py
 ```
 
 The complete WSGI file should be:
@@ -85,7 +85,7 @@ The complete WSGI file should be:
 import os
 import sys
 
-PROJECT_DIR = "/home/emilio2026/Marketplace/backend"
+PROJECT_DIR = "/home/emilio2026/Marketplace/marketplace/backend"
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
@@ -108,20 +108,20 @@ In the Web tab:
 
 ```text
 URL: /static/
-Directory: /home/emilio2026/Marketplace/backend/staticfiles/
+Directory: /home/emilio2026/Marketplace/marketplace/backend/staticfiles/
 ```
 
 For uploaded media:
 
 ```text
 URL: /media/
-Directory: /home/emilio2026/Marketplace/backend/media/
+Directory: /home/emilio2026/Marketplace/marketplace/backend/media/
 ```
 
 Then run:
 
 ```bash
-cd /home/emilio2026/Marketplace/backend
+cd /home/emilio2026/Marketplace/marketplace/backend
 source .venv/bin/activate
 python manage.py collectstatic --noinput
 ```
@@ -135,7 +135,7 @@ After changing WSGI/configuration, press **Reload** in PythonAnywhere's Web tab.
 First check Django itself:
 
 ```bash
-cd /home/emilio2026/Marketplace/backend
+cd /home/emilio2026/Marketplace/marketplace/backend
 source .venv/bin/activate
 python manage.py check
 python manage.py shell -c "from django.conf import settings; print(settings.ROOT_URLCONF); print(settings.ALLOWED_HOSTS)"
@@ -166,6 +166,6 @@ python manage.py check
 Then verify the virtualenv contains Django:
 
 ```bash
-source /home/emilio2026/Marketplace/backend/.venv/bin/activate
+source /home/emilio2026/Marketplace/marketplace/backend/.venv/bin/activate
 python -c "import django; print(django.get_version())"
 ```

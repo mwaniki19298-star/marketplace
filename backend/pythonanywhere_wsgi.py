@@ -1,7 +1,7 @@
 """PythonAnywhere WSGI entry point for Marketplace.
 
 PythonAnywhere Web tab should point to this file:
-/home/emilio2026/Marketplace/backend/pythonanywhere_wsgi.py
+/home/emilio2026/Marketplace/marketplace/backend/pythonanywhere_wsgi.py
 
 If your backend is stored somewhere else, change PROJECT_DIR below.
 """
@@ -10,7 +10,7 @@ import os
 import sys
 
 # IMPORTANT: this must be the directory that contains manage.py.
-PROJECT_DIR = "/home/emilio2026/Marketplace/backend"
+PROJECT_DIR = "/home/emilio2026/Marketplace/marketplace/backend"
 
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
