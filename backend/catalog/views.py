@@ -135,7 +135,7 @@ class StoreViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], permission_classes=[AllowAny])
     def listings(self, request, pk=None):
         store = self.get_object()
-        return Response(ListingSerializer(store.listings.filter(is_available=True), many=True, context={"request": request}).data)
+        return Response(ListingSerializer(store.listings.filter(is_draft=False), many=True, context={"request": request}).data)
 
 class ListingViewSet(viewsets.ModelViewSet):
     queryset = Listing.objects.select_related("store", "store__owner", "category").prefetch_related("images")
@@ -292,6 +292,37 @@ def marketplace_feed(request):
     if max_price:
         try: qs = qs.filter(price__lte=float(max_price))
         except ValueError: pass
+
+    # Browse filters narrow the catalog first, then the same smart-feed
+    # ranking runs over the filtered inventory. This keeps personalization,
+    # engagement, freshness and diversity active for every filter.
+    feed_filter = request.query_params.get("feed_filter", "all").strip().lower()
+    if feed_filter == "products":
+        qs = qs.filter(kind=Listing.Kind.PRODUCT)
+    elif feed_filter == "services":
+        qs = qs.filter(kind=Listing.Kind.SERVICE)
+    elif feed_filter == "used":
+        qs = qs.filter(condition=Listing.Condition.USED)
+    elif feed_filter == "new":
+        qs = qs.filter(created_at__gte=now - timedelta(days=14))
+    elif feed_filter == "offer":
+        qs = qs.filter(is_on_offer=True, offer_price__isnull=False)
+    elif feed_filter == "featured":
+        qs = qs.filter(is_featured=True)
+    elif feed_filter == "nearby":
+        # Location-aware filtering uses the user's own store location when
+        # available. Without one, keep locally-described inventory eligible
+        # rather than pretending we have GPS precision.
+        nearby_term = request.query_params.get("location", "").strip()
+        if not nearby_term and request.user.is_authenticated:
+            try:
+                nearby_term = (request.user.stores.filter(is_active=True).exclude(location="").values_list("location", flat=True).first() or "").strip()
+            except Exception:
+                nearby_term = ""
+        if nearby_term:
+            qs = qs.filter(Q(location__icontains=nearby_term) | Q(store__location__icontains=nearby_term))
+        else:
+            qs = qs.exclude(location="").exclude(location__isnull=True)
 
     user = request.user if request.user.is_authenticated else None
     category_affinity = {}

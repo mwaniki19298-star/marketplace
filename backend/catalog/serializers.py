@@ -41,11 +41,21 @@ class StoreSerializer(serializers.ModelSerializer):
     logo = serializers.SerializerMethodField()
     cover = serializers.SerializerMethodField()
     owner_name = serializers.CharField(source="owner.full_name", read_only=True)
+    owner_email = serializers.EmailField(source="owner.email", read_only=True)
+    followers_count = serializers.SerializerMethodField()
+    followed_by_user = serializers.SerializerMethodField()
     def get_logo(self, obj):
         return media_url(self.context.get("request"), obj.logo)
 
     def get_cover(self, obj):
         return media_url(self.context.get("request"), obj.cover)
+
+    def get_followers_count(self, obj):
+        return obj.followers.count()
+
+    def get_followed_by_user(self, obj):
+        request = self.context.get("request")
+        return bool(request and request.user.is_authenticated and obj.followers.filter(user=request.user).exists())
 
     email_verified = serializers.SerializerMethodField()
 
@@ -58,7 +68,7 @@ class StoreSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Store
-        fields = ["id", "owner", "owner_name", "name", "slug", "logo", "cover", "description", "location", "phone", "verification", "is_active", "email_verified", "created_at"]
+        fields = ["id", "owner", "owner_name", "owner_email", "name", "slug", "logo", "cover", "description", "location", "phone", "verification", "is_active", "email_verified", "followers_count", "followed_by_user", "created_at"]
         read_only_fields = ["owner"]
 
 class StoreProfileUpdateSerializer(serializers.ModelSerializer):
@@ -82,11 +92,15 @@ class StoreProfileUpdateSerializer(serializers.ModelSerializer):
 class ListingSerializer(serializers.ModelSerializer):
     store = StoreSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
+    saved_count = serializers.SerializerMethodField()
     liked_by_user = serializers.SerializerMethodField()
     category_name = serializers.CharField(source="category.name", read_only=True)
     images = ListingImageSerializer(many=True, read_only=True)
     def get_likes_count(self, obj):
         return getattr(obj, "_likes_count", obj.liked_by.count())
+
+    def get_saved_count(self, obj):
+        return getattr(obj, "_saved_count", obj.saved_by.count())
 
     def get_liked_by_user(self, obj):
         request = self.context.get("request")
@@ -97,10 +111,14 @@ class ListingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Listing
-        fields = ["id", "store", "category", "category_name", "kind", "title", "slug", "description", "price", "currency", "negotiable", "condition", "stock", "location", "tags", "is_available", "is_featured", "is_draft", "views", "likes_count", "liked_by_user", "images", "created_at", "updated_at"]
+        fields = ["id", "store", "category", "category_name", "kind", "title", "slug", "description", "price", "original_price", "offer_price", "is_on_offer", "currency", "negotiable", "condition", "stock", "location", "tags", "is_available", "is_featured", "is_draft", "views", "likes_count", "saved_count", "liked_by_user", "images", "created_at", "updated_at"]
         read_only_fields = ["views"]
 
 class ListingWriteSerializer(serializers.ModelSerializer):
+    original_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    offer_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    is_on_offer = serializers.BooleanField(required=False)
+
     image_urls = serializers.ListField(
         child=serializers.URLField(max_length=1200),
         write_only=True,
@@ -178,6 +196,16 @@ class ListingWriteSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"image_public_ids": "Provide one public_id for each image URL."})
         if "category_name" in validated_data or "category" in validated_data:
             self._resolve_category(validated_data)
+
+        # Offer pricing is persisted on the Listing itself. Keep the regular
+        # price as the base price and never replace it with the offer price.
+        if "price" in validated_data and "original_price" not in validated_data:
+            validated_data["original_price"] = validated_data["price"]
+        if validated_data.get("is_on_offer") is False:
+            validated_data["offer_price"] = None
+        elif validated_data.get("is_on_offer") is True and "offer_price" not in validated_data:
+            validated_data["offer_price"] = instance.offer_price
+
         listing = super().update(instance, validated_data)
         if image_urls is not None:
             listing.images.all().delete()
@@ -188,6 +216,9 @@ class ListingWriteSerializer(serializers.ModelSerializer):
                     public_id=(image_public_ids[index] if image_public_ids is not None and index < len(image_public_ids) else ""),
                     sort_order=index,
                 )
+        # Explicit save makes the offer fields durable even when the PATCH only
+        # changes pricing/offer state and gives callers the latest DB values.
+        listing.save(update_fields=["price", "original_price", "offer_price", "is_on_offer", "updated_at"])
         return listing
 
 class SavedItemSerializer(serializers.ModelSerializer):

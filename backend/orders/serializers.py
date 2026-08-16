@@ -22,5 +22,5 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseRequest
-        fields = ["id", "buyer", "seller", "store", "listing", "listing_detail", "store_detail", "quantity", "message", "fulfillment", "status", "buyer_confirmed", "seller_confirmed", "created_at", "updated_at"]
-        read_only_fields = ["buyer", "seller", "store", "status"]
+        fields = ["id", "buyer", "seller", "store", "listing", "listing_detail", "store_detail", "quantity", "unit_price", "currency", "message", "fulfillment", "status", "buyer_confirmed", "seller_confirmed", "created_at", "updated_at"]
+        read_only_fields = ["buyer", "seller", "store", "status", "unit_price", "currency"]

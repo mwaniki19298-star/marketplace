@@ -32,6 +32,8 @@ import {
   Plus,
   Search,
   Settings,
+  ShieldCheck,
+  CircleHelp,
   Share2,
   ShoppingBag,
   ShoppingCart,
@@ -46,8 +48,9 @@ import {
   Phone,
   Flag,
   CheckCircle2,
+  Mail,
 } from "lucide-react-native";
-import { ActivityIndicator, Alert, AppState, FlatList, Image, KeyboardAvoidingView, Linking, Share, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, Modal, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, FlatList, Image, KeyboardAvoidingView, Linking, Share, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text as RNText, TextInput, Modal, useWindowDimensions, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import * as WebBrowser from "expo-web-browser";
 import { makeRedirectUri, ResponseType, useAuthRequest } from "expo-auth-session";
@@ -64,6 +67,40 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiUrl, API_BASE_URL } from "./src/apiConfig";
 
 const BUTTON_BLUE = "#2563EB";
+
+// Global in-app translation layer.  The selected language is persisted in the
+// existing Marketplace settings and drives shared UI text everywhere in the app.
+let ACTIVE_LANGUAGE = "English";
+let REQUEST_LANGUAGE_RENDER: (() => void) | null = null;
+
+const TRANSLATIONS: Record<string, Record<string, string>> = {
+  "Swahili": {
+    "Marketplace":"Soko","Browse":"Vinjari","Search":"Tafuta","Home":"Nyumbani","Sell":"Uza","Cart":"Kikapu","Profile":"Wasifu","Settings":"Mipangilio","Settings & Preferences":"Mipangilio na Mapendeleo","My Orders":"Maagizo Yangu","Notifications":"Arifa","Messages":"Ujumbe","Help & Support":"Msaada na Usaidizi","Security & Privacy":"Usalama na Faragha","Search products, services and stores...":"Tafuta bidhaa, huduma na maduka...","Recent searches":"Utafutaji wa hivi karibuni","Clear all":"Futa yote","No suggestions found. Try another keyword.":"Hakuna mapendekezo. Jaribu neno lingine.","Your cart":"Kikapu chako","Order summary":"Muhtasari wa agizo","Delivery":"Uwasilishaji","Free":"Bure","Total":"Jumla","Description":"Maelezo","Reviews":"Maoni","No reviews yet.":"Hakuna maoni bado.","Message seller":"Tuma ujumbe kwa muuzaji","Report listing":"Ripoti tangazo","Cancel":"Ghairi","Submit report":"Tuma ripoti","Create listing":"Unda tangazo","Listing type":"Aina ya tangazo","Photos":"Picha","Listing details":"Maelezo ya tangazo","Category":"Kategoria","Condition":"Hali","Location":"Mahali","Draft":"Rasimu","Browse marketplace":"Vinjari soko","Go home":"Nenda nyumbani","Welcome to Marketplace":"Karibu kwenye Soko","Sign In":"Ingia","Create Account":"Unda Akaunti","Forgot Password?":"Umesahau nenosiri?","Buyer":"Mnunuzi","Seller":"Muuzaji","Account":"Akaunti","Preferences, privacy and support.":"Mapendeleo, faragha na msaada.","Edit profile":"Hariri wasifu","Personal profile":"Wasifu binafsi","Email address":"Barua pepe","Phone":"Simu","Choose country":"Chagua nchi","My orders":"Maagizo yangu","QUANTITY":"IDADI","FULFILMENT":"UWASILISHAJI","ROLE":"JUKUMU","ORDER NOTE":"MAELEZO YA AGIZO","STOCK UPDATE":"SASISHA HIFADHI","Confirm received":"Thibitisha umepokea","Cancel order":"Ghairi agizo","Mark all read":"Weka zote kuwa zimesomwa","Clear cached data":"Futa data iliyohifadhiwa","Reset app preferences":"Weka upya mapendeleo ya programu","Marketplace Safety":"Usalama wa Soko","Important":"Muhimu","Personalize your marketplace experience.":"Binafsisha matumizi yako ya soko.","All items":"Bidhaa zote","Out of stock":"Imeisha","All products from this store":"Bidhaa zote kutoka duka hili","No products yet":"Hakuna bidhaa bado","Store":"Duka","Identity":"Utambulisho","Rating":"Ukadiriaji","View store":"Tazama duka","About this seller":"Kuhusu muuzaji huyu","Manage store":"Simamia duka","Share":"Shiriki","My listings":"Matangazo yangu","Orders received":"Maagizo yaliyopokelewa","Earnings":"Mapato","Pending / active orders":"Maagizo yanayosubiri / yanayoendelea","Total earnings":"Jumla ya mapato","Completed orders":"Maagizo yaliyokamilika","Edit listing":"Hariri tangazo","Special offer":"Ofa maalum","Delete":"Futa","OFFER":"OFA","No listings available yet.":"Hakuna matangazo yanayopatikana bado.","Retry":"Jaribu tena","Log in":"Ingia","Create account":"Unda akaunti","Password quality":"Ubora wa nenosiri","Forgot password?":"Umesahau nenosiri?","Send reset link":"Tuma kiungo cha kuweka upya","Back to log in":"Rudi kwenye kuingia","Check your email":"Angalia barua pepe yako","Return to log in":"Rudi kwenye kuingia","Reset your password.":"Weka upya nenosiri lako.","Store Details":"Maelezo ya Duka","Follow":"Fuata","Following":"Unafuata","followers":"wafuasi"
+  },
+  "French": {"Home":"Accueil","Browse":"Parcourir","Search":"Rechercher","Sell":"Vendre","Cart":"Panier","Profile":"Profil","Settings":"Paramètres","My Orders":"Mes commandes","Notifications":"Notifications","Messages":"Messages","Help & Support":"Aide et assistance","Store Details":"Détails de la boutique","Follow":"Suivre","Following":"Suivi","Description":"Description","Reviews":"Avis","Cancel":"Annuler","Delete":"Supprimer","Share":"Partager","Total":"Total","Delivery":"Livraison","Free":"Gratuit","Out of stock":"Rupture de stock"},
+  "Spanish": {"Home":"Inicio","Browse":"Explorar","Search":"Buscar","Sell":"Vender","Cart":"Carrito","Profile":"Perfil","Settings":"Configuración","My Orders":"Mis pedidos","Notifications":"Notificaciones","Messages":"Mensajes","Help & Support":"Ayuda y soporte","Store Details":"Detalles de la tienda","Follow":"Seguir","Following":"Siguiendo","Description":"Descripción","Reviews":"Reseñas","Cancel":"Cancelar","Delete":"Eliminar","Share":"Compartir","Total":"Total","Delivery":"Entrega","Free":"Gratis","Out of stock":"Agotado"},
+  "Portuguese": {"Home":"Início","Browse":"Explorar","Search":"Pesquisar","Sell":"Vender","Cart":"Carrinho","Profile":"Perfil","Settings":"Configurações","My Orders":"Meus pedidos","Notifications":"Notificações","Messages":"Mensagens","Help & Support":"Ajuda e suporte","Store Details":"Detalhes da loja","Follow":"Seguir","Following":"Seguindo","Description":"Descrição","Reviews":"Avaliações","Cancel":"Cancelar","Delete":"Excluir","Share":"Compartilhar","Total":"Total","Delivery":"Entrega","Free":"Grátis","Out of stock":"Esgotado"},
+  "German": {"Home":"Startseite","Browse":"Durchsuchen","Search":"Suchen","Sell":"Verkaufen","Cart":"Warenkorb","Profile":"Profil","Settings":"Einstellungen","My Orders":"Meine Bestellungen","Notifications":"Benachrichtigungen","Messages":"Nachrichten","Help & Support":"Hilfe & Support","Store Details":"Shop-Details","Follow":"Folgen","Following":"Gefolgt","Description":"Beschreibung","Reviews":"Bewertungen","Cancel":"Abbrechen","Delete":"Löschen","Share":"Teilen","Total":"Gesamt","Delivery":"Lieferung","Free":"Kostenlos","Out of stock":"Nicht vorrätig"},
+  "Arabic": {"Home":"الرئيسية","Browse":"تصفح","Search":"بحث","Sell":"بيع","Cart":"السلة","Profile":"الملف الشخصي","Settings":"الإعدادات","My Orders":"طلباتي","Notifications":"الإشعارات","Messages":"الرسائل","Help & Support":"المساعدة والدعم","Store Details":"تفاصيل المتجر","Follow":"متابعة","Following":"تتابعه","Description":"الوصف","Reviews":"التقييمات","Cancel":"إلغاء","Delete":"حذف","Share":"مشاركة","Total":"الإجمالي","Delivery":"التوصيل","Free":"مجاني","Out of stock":"غير متوفر"},
+  "Italian": {"Home":"Home","Browse":"Esplora","Search":"Cerca","Sell":"Vendi","Cart":"Carrello","Profile":"Profilo","Settings":"Impostazioni","My Orders":"I miei ordini","Notifications":"Notifiche","Messages":"Messaggi","Help & Support":"Assistenza","Store Details":"Dettagli negozio","Follow":"Segui","Following":"Seguito","Description":"Descrizione","Reviews":"Recensioni","Cancel":"Annulla","Delete":"Elimina","Share":"Condividi","Total":"Totale","Delivery":"Consegna","Free":"Gratis","Out of stock":"Esaurito"},
+  "Chinese (Simplified)": {"Home":"首页","Browse":"浏览","Search":"搜索","Sell":"出售","Cart":"购物车","Profile":"个人资料","Settings":"设置","My Orders":"我的订单","Notifications":"通知","Messages":"消息","Help & Support":"帮助与支持","Store Details":"商店详情","Follow":"关注","Following":"已关注","Description":"描述","Reviews":"评价","Cancel":"取消","Delete":"删除","Share":"分享","Total":"总计","Delivery":"配送","Free":"免费","Out of stock":"缺货"},
+  "Japanese": {"Home":"ホーム","Browse":"閲覧","Search":"検索","Sell":"出品","Cart":"カート","Profile":"プロフィール","Settings":"設定","My Orders":"注文履歴","Notifications":"通知","Messages":"メッセージ","Help & Support":"ヘルプとサポート","Store Details":"ストア詳細","Follow":"フォロー","Following":"フォロー中","Description":"説明","Reviews":"レビュー","Cancel":"キャンセル","Delete":"削除","Share":"共有","Total":"合計","Delivery":"配送","Free":"無料","Out of stock":"在庫切れ"},
+  "Korean": {"Home":"홈","Browse":"둘러보기","Search":"검색","Sell":"판매","Cart":"장바구니","Profile":"프로필","Settings":"설정","My Orders":"내 주문","Notifications":"알림","Messages":"메시지","Help & Support":"도움말 및 지원","Store Details":"스토어 정보","Follow":"팔로우","Following":"팔로잉","Description":"설명","Reviews":"리뷰","Cancel":"취소","Delete":"삭제","Share":"공유","Total":"합계","Delivery":"배송","Free":"무료","Out of stock":"품절"},
+  "Hindi": {"Home":"होम","Browse":"ब्राउज़ करें","Search":"खोजें","Sell":"बेचें","Cart":"कार्ट","Profile":"प्रोफ़ाइल","Settings":"सेटिंग्स","My Orders":"मेरे ऑर्डर","Notifications":"सूचनाएँ","Messages":"संदेश","Help & Support":"सहायता और समर्थन","Store Details":"स्टोर विवरण","Follow":"फ़ॉलो करें","Following":"फ़ॉलो कर रहे हैं","Description":"विवरण","Reviews":"समीक्षाएँ","Cancel":"रद्द करें","Delete":"हटाएँ","Share":"साझा करें","Total":"कुल","Delivery":"डिलीवरी","Free":"मुफ़्त","Out of stock":"स्टॉक में नहीं"}
+  
+};
+function translateMarketplaceText(value: string) {
+  return TRANSLATIONS[ACTIVE_LANGUAGE]?.[value] ?? value;
+}
+function Text(props: React.ComponentProps<typeof RNText>) {
+  const children = props.children;
+  const translated = typeof children === "string" ? translateMarketplaceText(children) : children;
+  return <RNText {...props}>{translated}</RNText>;
+}
+function setMarketplaceLanguage(language: string) {
+  ACTIVE_LANGUAGE = language || "English";
+  REQUEST_LANGUAGE_RENDER?.();
+}
 
 const FEED_SESSION_KEY = "marketplace_feed_session";
 const FEED_PREFS_KEY = "marketplace_feed_preferences";
@@ -125,7 +162,7 @@ function shuffledMarketplaceItems(items: any[], preferredCategories: Record<stri
     .map(({ item }) => item);
 }
 
-const filters = ["All", "Products", "Services", "New", "Used", "Nearby"];
+const filters = ["All", "Products", "Services", "New", "Used", "Offer", "Featured", "Nearby"];
 
 const PHONE_COUNTRIES: Array<{ code: string; name: string; dial: string }> = [
   { code: "AF", name: "Afghanistan", dial: "+93" },
@@ -391,6 +428,7 @@ type Listing = {
   storeId: string;
   sellerId?: string;
   storeLogo?: string | null;
+  storeVerified?: boolean;
   type: "Product" | "Service";
   category: string;
   categoryId?: number;
@@ -407,6 +445,8 @@ type Listing = {
   offerPrice?: number | null;
   images?: string[];
   likesCount?: number;
+  savedCount?: number;
+  viewsCount?: number;
   liked?: boolean;
 };
 
@@ -420,7 +460,7 @@ type AuthPayload = { access: string; refresh: string; user: ApiUser };
 type MessageItem = { id: number; conversation: number; sender: number; sender_name?: string; sender_avatar?: string | null; body: string; is_read?: boolean; created_at: string };
 type ConversationItem = {
   id: number; buyer: number; seller: number; buyer_name?: string; seller_name?: string;
-  buyer_avatar?: string | null; seller_avatar?: string | null; store?: number | null; store_name?: string | null; store_logo?: string | null;
+  buyer_avatar?: string | null; seller_avatar?: string | null; store?: number | null; store_name?: string | null; store_logo?: string | null; store_verified?: boolean;
   messages?: MessageItem[]; last_message?: { id: number; sender: number; sender_name?: string; body: string; created_at: string } | null;
   unread_count?: number; updated_at: string;
 };
@@ -434,6 +474,8 @@ type OrderItem = {
   listing_detail?: any;
   store_detail?: any;
   quantity: number;
+  unit_price: number | string;
+  currency: string;
   message?: string;
   fulfillment: string;
   status: "pending" | "accepted" | "declined" | "preparing" | "ready" | "completed" | "cancelled";
@@ -739,9 +781,22 @@ function DisplayText({ value, fallback = "", style, numberOfLines }: { value: an
   return <Text style={style} numberOfLines={numberOfLines}>{safeDisplayText(value, fallback)}</Text>;
 }
 
+function PriceDisplay({ listing, theme, style, oldStyle, compact = false }: { listing: Listing; theme: Theme; style?: any; oldStyle?: any; compact?: boolean }) {
+  const hasOffer = !!listing.isOnOffer && listing.offerPrice != null && listing.originalPrice != null;
+  const currency = listing.currency || "KES";
+  const format = (value: number) => `${currency} ${value.toLocaleString("en-KE")}`;
+  if (!hasOffer) return <Text style={style}>{safeDisplayText(listing.price, "Price on request")}</Text>;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "baseline", flexWrap: "wrap", gap: 7 }}>
+      <Text style={[style, { color: "#16A34A", fontWeight: "900" }]}>{format(Number(listing.offerPrice))}</Text>
+      <Text style={[oldStyle || style, { textDecorationLine: "line-through", opacity: 0.65, fontSize: compact ? 10 : undefined }]}>{format(Number(listing.originalPrice))}</Text>
+    </View>
+  );
+}
+
 function mapApiListing(item: any): Listing {
   const firstImage = item?.images?.[0]?.image || "";
-  const regularPrice = item?.price == null ? null : Number(item.price);
+  const regularPrice = item?.original_price != null ? Number(item.original_price) : (item?.price == null ? null : Number(item.price));
   const displayPrice = item?.is_on_offer && item?.offer_price != null ? Number(item.offer_price) : regularPrice;
   const price = displayPrice == null ? "Price on request" : `${item.currency || "KES"} ${displayPrice.toLocaleString("en-KE")}`;
   return {
@@ -749,12 +804,13 @@ function mapApiListing(item: any): Listing {
     location: safeDisplayText(item.location || item.store?.location), image: safeDisplayText(firstImage),
     store: safeDisplayText(item.store?.name, "Marketplace seller"), storeId: String(item.store?.id || ""), sellerId: item.store?.owner ? String(item.store.owner) : undefined,
     storeLogo: item.store?.logo || null,
+    storeVerified: !!item.store?.email_verified,
     type: item.kind === "service" ? "Service" : "Product", category: safeDisplayText(item.category_name, "Uncategorized"),
     categoryId: typeof item.category === "object" ? item.category?.id : item.category, rating: safeDisplayText(item.rating, "0.0"), reviews: Number(item.reviews || item.review_count || 0), description: safeDisplayText(item.description),
     currency: item.currency || "KES", negotiable: !!item.negotiable, condition: item.condition || "na",
     stock: item.stock || 0, isFeatured: !!item.is_featured,
     isOnOffer: !!item.is_on_offer, originalPrice: item.original_price == null ? null : Number(item.original_price),
-    offerPrice: item.offer_price == null ? null : Number(item.offer_price), likesCount: Number(item.likes_count || 0), liked: !!item.liked_by_user, images: Array.isArray(item.images) ? item.images.map((x: any) => x.image).filter(Boolean) : (firstImage ? [firstImage] : []),
+    offerPrice: item.offer_price == null ? null : Number(item.offer_price), likesCount: Number(item.likes_count || 0), savedCount: Number(item.saved_count || 0), viewsCount: Number(item.views || item.views_count || 0), liked: !!item.liked_by_user, images: Array.isArray(item.images) ? item.images.map((x: any) => x.image).filter(Boolean) : (firstImage ? [firstImage] : []),
   };
 }
 
@@ -763,14 +819,28 @@ let categoryTiles: Array<[string, string, number]> = [];
 
 declare global { var __MARKETPLACE_AUTH__: AuthPayload | null | undefined; var __MARKETPLACE_NAVIGATE_STORE__: ((listing: Listing) => void) | undefined; var __MARKETPLACE_NAVIGATE_SELLER__: ((listing: Listing) => void) | undefined; }
 
-type Screen = "home" | "browse" | "create" | "publishSuccess" | "cart" | "profile" | "product" | "orders" | "notifications" | "messages" | "settings" | "settingsPreferences" | "securityPrivacy" | "notificationPreferences" | "helpSupport" | "faq" | "reportProblem" | "safetyTips" | "terms" | "privacyPolicy" | "store" | "publicStore" | "sellerProfile" | "login";
+type Screen = "home" | "browse" | "search" | "create" | "publishSuccess" | "cart" | "profile" | "product" | "orders" | "notifications" | "messages" | "settings" | "settingsPreferences" | "securityPrivacy" | "notificationPreferences" | "helpSupport" | "faq" | "reportProblem" | "safetyTips" | "terms" | "privacyPolicy" | "store" | "publicStore" | "sellerProfile" | "login";
 type RouteEntry = { screen: Screen; selectedId: string | null };
 
-async function fetchMarketplaceFeed(auth: AuthPayload | null, seed: number, page = 1, pageSize = 60, filters: { search?: string; category?: string; store?: string } = {}) {
+function applyBrowseFilter(items: Listing[], mode: string) {
+  const normalized = String(mode || "All").toLowerCase();
+  if (normalized === "all") return items;
+  if (normalized === "products") return items.filter((item) => String(item.kind || "product").toLowerCase() === "product");
+  if (normalized === "services") return items.filter((item) => String(item.kind || "").toLowerCase() === "service");
+  if (normalized === "new") return items.filter((item) => String(item.condition || "new").toLowerCase() === "new");
+  if (normalized === "used") return items.filter((item) => String(item.condition || "").toLowerCase() === "used");
+  if (normalized === "offer") return items.filter((item) => Boolean(item.isOnOffer) && item.offerPrice != null);
+  if (normalized === "featured") return items.filter((item) => Boolean(item.isFeatured));
+  if (normalized === "nearby") return items.filter((item) => Boolean(String(item.location || "").trim()));
+  return items;
+}
+
+async function fetchMarketplaceFeed(auth: AuthPayload | null, seed: number, page = 1, pageSize = 60, filters: { search?: string; category?: string; store?: string; mode?: string } = {}) {
   const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), seed: String(seed) });
   if (filters.search?.trim()) params.set("search", filters.search.trim());
   if (filters.category) params.set("category", filters.category);
   if (filters.store) params.set("store", filters.store);
+  if (filters.mode && filters.mode !== "All") params.set("feed_filter", filters.mode.toLowerCase());
   return apiRequest(`/api/marketplace/feed/?${params.toString()}`, { method: "GET" }, auth);
 }
 
@@ -816,7 +886,7 @@ function MarketplaceApp() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [screen, setScreen] = useState<Screen>("home");
-  const [feedSessionSeed] = useState(() => Date.now() ^ Math.floor(Math.random() * 0x7fffffff));
+  const [feedSessionSeed, setFeedSessionSeed] = useState(() => Date.now() ^ Math.floor(Math.random() * 0x7fffffff));
   const [feedPreferences, setFeedPreferences] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState<Listing | null>(null);
   const navigationStack = useRef<RouteEntry[]>([]);
@@ -824,7 +894,10 @@ function MarketplaceApp() {
   const cartIds = useMemo(() => cartItems.map((x) => String(x.listing)), [cartItems]);
   const [likedIds, setLikedIds] = useState<string[]>([]);
   const [dark, setDark] = useState(false);
+  const [, setLanguageVersion] = useState(0);
+  REQUEST_LANGUAGE_RENDER = () => setLanguageVersion((v) => v + 1);
   const [search, setSearch] = useState("");
+  const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<ApiUser | null>(null);
@@ -834,39 +907,157 @@ function MarketplaceApp() {
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedPage, setFeedPage] = useState(1);
   const [feedHasMore, setFeedHasMore] = useState(true);
+  const [homeListings, setHomeListings] = useState<Listing[]>([]);
+  const [homeFeedLoading, setHomeFeedLoading] = useState(false);
+  const [homeFeedHasMore, setHomeFeedHasMore] = useState(true);
+  const [homeFeedPage, setHomeFeedPage] = useState(1);
+  const [browseFilter, setBrowseFilter] = useState("All");
   const [, setListingsVersion] = useState(0);
   const setListings = (next: Listing[] | ((current: Listing[]) => Listing[])) => {
     listings = typeof next === "function" ? next(listings) : next;
     setListingsVersion((v) => v + 1);
   };
 
-  const loadFeed = useCallback(async (page = 1, append = false) => {
+  const loadFeed = useCallback(async (page = 1, append = false, mode = "All", searchQuery = "") => {
     if (feedLoading && append) return;
     setFeedLoading(true);
     try {
-      const response = await fetchMarketplaceFeed(auth, feedSessionSeed, page, 60);
-      const results = Array.isArray(response?.results) ? response.results.map(mapApiListing) : [];
+      // Always request the selected filter from the smart-feed endpoint.
+      // The local filter is also applied as a safety net so the chips remain
+      // functional even when an older backend is still deployed.
+      const response = await fetchMarketplaceFeed(auth, feedSessionSeed, page, 60, { mode, search: searchQuery.trim() || undefined });
+      const rawResults = Array.isArray(response?.results) ? response.results : [];
+      const serverResults = rawResults.map(mapApiListing);
+      if (auth?.access) {
+        const feedLikedIds = rawResults.filter((item: any) => item?.liked_by_user).map((item: any) => String(item.id));
+        setLikedIds((current) => {
+          const visibleIds = new Set(serverResults.map((item) => String(item.id)));
+          const preserved = current.filter((id) => !visibleIds.has(id));
+          return Array.from(new Set([...preserved, ...feedLikedIds]));
+        });
+      }
+      const results = applyBrowseFilter(serverResults, mode);
       setListings((current) => {
         if (!append) return results;
         const existing = new Set(current.map((x) => String(x.id)));
         return [...current, ...results.filter((x) => !existing.has(String(x.id)))];
       });
       setFeedPage(page);
+      // If the server returned a page that became empty after the local
+      // fallback filter, keep paging available while the backend has more.
       setFeedHasMore(Boolean(response?.next));
       return true;
     } catch {
+      const fallbackBase = homeListings.length ? homeListings : listings;
+      if (fallbackBase.length) {
+        const fallback = applyBrowseFilter(
+          shuffledMarketplaceItems(fallbackBase, feedPreferences, Date.now() ^ feedSessionSeed ^ page),
+          mode,
+        ).filter((item) => !searchQuery.trim() || `${item.title} ${item.store} ${item.category}`.toLowerCase().includes(searchQuery.trim().toLowerCase()));
+        setListings(fallback);
+        setFeedPage(page);
+        setFeedHasMore(false);
+        return true;
+      }
       return false;
     } finally {
       setFeedLoading(false);
     }
-  }, [auth, feedSessionSeed, feedLoading]);
+  }, [auth, feedSessionSeed, feedLoading, homeListings, feedPreferences]);
 
-  useEffect(() => { void loadFeed(1, false); }, [auth, feedSessionSeed]);
+  const loadHomeFeed = useCallback(async (page = 1, append = false) => {
+    if (homeFeedLoading && append) return;
+    setHomeFeedLoading(true);
+    try {
+      const response = await fetchMarketplaceFeed(auth, feedSessionSeed, page, 60, {});
+      const incoming = (Array.isArray(response?.results) ? response.results : []).map(mapApiListing);
+      setHomeListings((current) => {
+        if (!append) return incoming;
+        const existing = new Set(current.map((x) => String(x.id)));
+        return [...current, ...incoming.filter((x) => !existing.has(String(x.id)))];
+      });
+      setHomeFeedPage(page);
+      setHomeFeedHasMore(Boolean(response?.next));
+      if (auth?.access) {
+        const liked = (Array.isArray(response?.results) ? response.results : []).filter((x: any) => x?.liked_by_user).map((x: any) => String(x.id));
+        setLikedIds((current) => Array.from(new Set([...current, ...liked])));
+      }
+    } catch {
+      const fallbackBase = homeListings.length ? homeListings : listings;
+      if (fallbackBase.length) {
+        const fallback = shuffledMarketplaceItems(fallbackBase, feedPreferences, Date.now() ^ feedSessionSeed ^ page);
+        setHomeListings((current) => append && current.length ? current : fallback);
+        setHomeFeedPage(page);
+        setHomeFeedHasMore(false);
+      }
+    } finally {
+      setHomeFeedLoading(false);
+    }
+  }, [auth, feedSessionSeed, homeFeedLoading, homeListings, feedPreferences]);
 
-  const loadMoreFeed = useCallback(() => {
+  useEffect(() => { void loadHomeFeed(1, false); }, [auth, feedSessionSeed]);
+  useEffect(() => { void loadFeed(1, false, "All", ""); }, [auth, feedSessionSeed]);
+
+  const refreshHomeFeed = useCallback(async () => {
+    setHomeFeedPage(1);
+    setHomeFeedHasMore(true);
+    await loadHomeFeed(1, false);
+  }, [loadHomeFeed]);
+
+  const refreshBrowseFeed = useCallback(async () => {
+    await loadFeed(1, false, browseFilter, search);
+  }, [loadFeed, browseFilter, search]);
+
+  const loadMoreFeed = useCallback((mode = browseFilter) => {
     if (!feedHasMore || feedLoading) return;
-    void loadFeed(feedPage + 1, true);
-  }, [feedHasMore, feedLoading, feedPage, loadFeed]);
+    void loadFeed(feedPage + 1, true, mode, search);
+  }, [feedHasMore, feedLoading, feedPage, loadFeed, browseFilter, search]);
+
+  const loadMoreHomeFeed = useCallback(() => {
+    if (!homeFeedHasMore || homeFeedLoading) return;
+    void loadHomeFeed(homeFeedPage + 1, true);
+  }, [homeFeedHasMore, homeFeedLoading, homeFeedPage, loadHomeFeed]);
+
+  const searchHistoryKey = useMemo(() => {
+    const identity = currentUser?.id ?? currentUser?.email ?? "guest";
+    return `marketplace_search_history_${String(identity)}`;
+  }, [currentUser]);
+
+  useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem(searchHistoryKey).then((raw) => {
+      if (!active) return;
+      try {
+        const parsed = raw ? JSON.parse(raw) : [];
+        setSearchHistory(Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string").slice(0, 12) : []);
+      } catch { setSearchHistory([]); }
+    });
+    return () => { active = false; };
+  }, [searchHistoryKey]);
+
+  const saveSearchQuery = useCallback(async (value: string) => {
+    const query = value.trim().replace(/\s+/g, " ");
+    if (!query) return;
+    setSearch(query);
+    setSearchHistory((current) => {
+      const next = [query, ...current.filter((item) => item.toLowerCase() !== query.toLowerCase())].slice(0, 12);
+      void AsyncStorage.setItem(searchHistoryKey, JSON.stringify(next));
+      return next;
+    });
+  }, [searchHistoryKey]);
+
+  const removeSearchHistoryItem = useCallback((value: string) => {
+    setSearchHistory((current) => {
+      const next = current.filter((item) => item !== value);
+      void AsyncStorage.setItem(searchHistoryKey, JSON.stringify(next));
+      return next;
+    });
+  }, [searchHistoryKey]);
+
+  const clearSearchHistory = useCallback(async () => {
+    setSearchHistory([]);
+    await AsyncStorage.removeItem(searchHistoryKey);
+  }, [searchHistoryKey]);
 
   useEffect(() => {
     const q = search.trim();
@@ -892,7 +1083,10 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         apiRequest("/api/listings/?is_available=true"),
         apiRequest("/api/categories/"),
       ]);
-      listings = apiResults(listingData).map(mapApiListing);
+      const allListings = apiResults(listingData).map(mapApiListing);
+      // Home is intentionally independent from Browse filters/searches.
+      setHomeListings(allListings);
+      listings = allListings;
       categoryTiles = apiResults(categoryData).map((c: any) => [c.name, c.icon || "•", Number(c.id)]);
       if (authState?.access) {
         try {
@@ -914,6 +1108,8 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
   useEffect(() => {
     const bootstrap = async () => {
       try {
+        const settingsRaw = await AsyncStorage.getItem("marketplace_settings");
+        if (settingsRaw) { try { setMarketplaceLanguage(JSON.parse(settingsRaw)?.language || "English"); } catch {} }
         const raw = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
         if (raw) {
           const savedAuth = JSON.parse(raw) as AuthPayload;
@@ -1106,6 +1302,19 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
     catch(error) { setCartItems(previous); Alert.alert("Couldn't update cart", error instanceof Error ? error.message : "Please try again."); }
   };
 
+  const placeCartOrder = async (cartItemIds?: number[]) => {
+    const ids = cartItemIds || cartItems.map(item => item.id);
+    if (!auth?.access || ids.length === 0) return;
+    try {
+      const result = await apiRequest("/api/cart/checkout/", { method: "POST", body: JSON.stringify({ cart_item_ids: ids }) }, auth) as { detail?: string; count?: number; orders?: number[] };
+      setCartItems(current => current.filter(item => !ids.includes(item.id)));
+      Alert.alert("Order placed", `${result.count || ids.length} ${result.count === 1 ? "order has" : "orders have"} been placed successfully.`);
+      go("orders");
+    } catch (error) {
+      Alert.alert("Couldn't place order", error instanceof Error ? error.message : "Please review your selected items and try again.");
+    }
+  };
+
   const toggleLike = async (id: string) => {
     if (!auth?.access) { go("login"); return; }
     // Prevent double taps from sending two POSTs before the first response arrives.
@@ -1273,6 +1482,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
     const titles: Record<Screen, string> = {
       home: "Marketplace",
       browse: "Browse",
+      search: "Search",
       login: "Welcome",
       create: "Sell Something",
       publishSuccess: "Published",
@@ -1293,6 +1503,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
       terms: "Terms of Service",
       privacyPolicy: "Privacy Policy",
       store: "Store",
+      publicStore: "Store Details",
     };
     return titles[screen];
   }, [screen, selected]);
@@ -1302,7 +1513,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
       <StatusBar style={dark ? "light" : "dark"} backgroundColor={theme.background} translucent={false} />
 
       <View style={[styles.shell, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}> 
-        {screen !== "login" && screen !== "messages" && (
+        {screen !== "login" && screen !== "messages" && screen !== "search" && (
         <View style={styles.topBar}>
           {screen !== "home" && screen !== "browse" ? (
             <Pressable onPress={goBack} style={styles.topIcon}>
@@ -1325,16 +1536,22 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
                 </View>
               )}
             </Pressable>
+            <Pressable onPress={() => setDark((v) => !v)} style={styles.topIcon} accessibilityRole="button" accessibilityLabel={dark ? "Switch to light mode" : "Switch to dark mode"}>
+              {dark ? <Sun size={20} color={theme.text} /> : <Moon size={20} color={theme.text} />}
+            </Pressable>
           </View>
         </View>
         )}
 
-        {menuOpen && screen !== "login" && screen !== "messages" && (
+        {menuOpen && screen !== "login" && screen !== "messages" && screen !== "search" && (
           <View style={[styles.menu, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <MenuItem label="Home" icon={<HomeIcon size={18} color={theme.text} />} onPress={() => go("home")} theme={theme} />
-            <MenuItem label="Orders" icon={<ShoppingBag size={18} color={theme.text} />} onPress={() => go("orders")} theme={theme} />
+            <MenuItem label="My Orders" icon={<ShoppingBag size={18} color={theme.text} />} onPress={() => go("orders")} theme={theme} />
+            <MenuItem label="Notifications" icon={<Bell size={18} color={theme.text} />} onPress={() => go("notifications")} theme={theme} />
             <MenuItem label="Messages" icon={<MessageCircle size={18} color={theme.text} />} onPress={() => go("messages")} theme={theme} />
-            <MenuItem label="Settings" icon={<Settings size={18} color={theme.text} />} onPress={() => go("settingsPreferences")} theme={theme} />
+            <MenuItem label="Settings & Preferences" icon={<Settings size={18} color={theme.text} />} onPress={() => go("settingsPreferences")} theme={theme} />
+            <MenuItem label="Security & Privacy" icon={<ShieldCheck size={18} color={theme.text} />} onPress={() => go("securityPrivacy")} theme={theme} />
+            <MenuItem label="Help & Support" icon={<CircleHelp size={18} color={theme.text} />} onPress={() => go("helpSupport")} theme={theme} />
           </View>
         )}
 
@@ -1348,8 +1565,23 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
           </View>
         )}
         {screen === "home" && (
-          <HomeScreen theme={theme} isLoggedIn={isLoggedIn} currentUser={currentUser} dataLoading={dataLoading} dataError={dataError} onBrowse={() => go("browse")} onCreate={openSell} onOpenProduct={openProduct} onLoadMore={loadMoreFeed} feedLoading={feedLoading} feedHasMore={feedHasMore} />
+          <HomeScreen theme={theme} dataLoading={dataLoading} dataError={dataError} homeListings={homeListings} onOpenProduct={openProduct} onOpenSearch={() => go("search")} onLoadMore={loadMoreHomeFeed} feedLoading={homeFeedLoading} feedHasMore={homeFeedHasMore} refreshing={homeFeedLoading} onRefresh={refreshHomeFeed} />
         )}
+        {screen === "search" && <SearchScreen
+          theme={theme}
+          value={search}
+          history={searchHistory}
+          listings={listings}
+          onBack={goBack}
+          onSearch={async (query) => {
+            await saveSearchQuery(query);
+            setBrowseFilter("All");
+            await loadFeed(1, false, "All", query);
+            go("browse");
+          }}
+          onRemoveHistory={removeSearchHistoryItem}
+          onClearHistory={clearSearchHistory}
+        />}
         {screen === "browse" && (
           <BrowseScreen
             theme={theme}
@@ -1357,6 +1589,11 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
             dataError={dataError}
             search={search}
             setSearch={setSearch}
+            onOpenSearch={() => go("search")}
+            onClearSearch={async () => {
+              setSearch("");
+              await loadFeed(1, false, browseFilter, "");
+            }}
             cartIds={cartIds}
             addToCart={addToCart}
             likedIds={likedIds}
@@ -1365,20 +1602,27 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
             onContactSeller={openConversationForListing}
             shareListing={shareListing}
             shareToWhatsApp={shareToWhatsApp}
-            onLoadMore={loadMoreFeed}
+            activeFilter={browseFilter}
+            onFilterChange={async (nextFilter) => {
+              setBrowseFilter(nextFilter);
+              await loadFeed(1, false, nextFilter);
+            }}
+            onLoadMore={() => loadMoreFeed(browseFilter)}
             feedLoading={feedLoading}
             feedHasMore={feedHasMore}
+            refreshing={feedLoading}
+            onRefresh={refreshBrowseFeed}
           />
         )}
         {screen === "cart" && (
-          <CartScreen theme={theme} auth={auth} cartItems={cartItems} onOpenProduct={openProduct} onRemove={removeFromCart} onQuantityChange={updateCartQuantity} onRefresh={async () => { try { setCartItems(apiResults<CartItem>(await apiRequest("/api/cart/", {}, auth))); } catch {} }} />
+          <CartScreen theme={theme} auth={auth} cartItems={cartItems} onOpenProduct={openProduct} onRemove={removeFromCart} onQuantityChange={updateCartQuantity} onCheckout={placeCartOrder} onRefresh={async () => { try { setCartItems(apiResults<CartItem>(await apiRequest("/api/cart/", {}, auth))); } catch {} }} />
         )}
         {screen === "login" && <LoginScreen theme={theme} onBack={goBack} initialMode={loginMode} autoGoogle={autoGoogleLogin} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); go("profile"); }} />}
         {screen === "create" && <CreateScreen theme={theme} auth={auth} onDone={async () => { await refreshMarketplaceData(auth); go("publishSuccess"); }} />}
         {screen === "publishSuccess" && <PublishSuccessScreen theme={theme} onBrowse={() => go("browse")} onHome={() => go("home")} />}
         {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onStore={() => go("store")} onMessages={() => go("messages")} onCart={() => go("cart")} cartCount={cartItems.length} />}
         {screen === "product" && selected && <ProductScreen theme={theme} listing={selected} inCart={cartIds.includes(selected.id)} liked={likedIds.includes(selected.id)} onAddToCart={() => addToCart(selected.id)} onToggleLike={() => toggleLike(selected.id)} onContactSeller={() => openConversationForListing(selected)} onOpenProduct={(item) => { setSelected(item); go("product"); }} onBack={goBack} auth={auth} />}
-        {screen === "orders" && <OrdersScreen theme={theme} auth={auth} currentUser={currentUser} />}
+        {screen === "orders" && <OrdersScreen theme={theme} auth={auth} currentUser={currentUser} onRestock={() => go("store")} />}
         {screen === "notifications" && <NotificationsScreen theme={theme} auth={auth} />}
         {screen === "messages" && <MessagesScreen theme={theme} auth={auth} currentUser={currentUser} />}
         {screen === "settings" && <SettingsScreen theme={theme} dark={dark} setDark={setDark} />}
@@ -1395,7 +1639,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         {screen === "publicStore" && selected && <PublicStoreScreen theme={theme} auth={auth} listing={selected} onOpenProduct={openProduct} />}
         {screen === "sellerProfile" && selected && <SellerProfileScreen theme={theme} auth={auth} listing={selected} onOpenStore={() => go("publicStore")} />}
 
-        {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && screen !== "messages" && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
+        {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && screen !== "messages" && screen !== "search" && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
           {[
             [HomeIcon, "Home", "home" as Screen],
             [Compass, "Browse", "browse" as Screen],
@@ -1406,7 +1650,22 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
             const active = screen === target || (target === "browse" && screen === "product");
             const IconComponent = Icon as typeof HomeIcon;
             return (
-              <Pressable key={label as string} style={styles.navItem} onPress={() => target === "create" ? openSell() : go(target as Screen)}>
+              <Pressable key={label as string} style={styles.navItem} onPress={() => {
+              if (target === "create") { openSell(); return; }
+              if (target === "home") {
+                go("home");
+                void refreshHomeFeed();
+                return;
+              }
+              if (target === "browse") {
+                setSearch("");
+                setBrowseFilter("All");
+                go("browse");
+                void loadFeed(1, false, "All", "");
+                return;
+              }
+              go(target as Screen);
+            }}>
                 {target === "create" ? (
                   <View style={[styles.navIconCreate, { backgroundColor: dark ? "#3B82F6" : "#2563EB" }]}><IconComponent size={21} color="#FFFFFF" /></View>
                 ) : (
@@ -1873,21 +2132,22 @@ function MenuItem({ label, icon, onPress, theme }: { label: string; icon: React.
   );
 }
 
-function ScreenScroll({ children, theme, contentStyle }: { children: React.ReactNode; theme: Theme; contentStyle?: any }) {
+function ScreenScroll({ children, theme, contentStyle, refreshing = false, onRefresh }: { children: React.ReactNode; theme: Theme; contentStyle?: any; refreshing?: boolean; onRefresh?: () => Promise<void> | void }) {
   return (
     <ScrollView
       contentContainerStyle={[styles.scrollContent, contentStyle]}
       showsVerticalScrollIndicator={false}
       removeClippedSubviews={Platform.OS === "android"}
       scrollEventThrottle={16}
+      refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={BUTTON_BLUE} colors={[BUTTON_BLUE]} progressBackgroundColor={theme.card} /> : undefined}
     >
       {children}
     </ScrollView>
   );
 }
 
-function HomeScreen({ theme, dataLoading, dataError, onOpenProduct, onLoadMore, feedLoading, feedHasMore }: { theme: Theme; isLoggedIn: boolean; currentUser: ApiUser | null; dataLoading: boolean; dataError: string | null; onBrowse: () => void; onCreate: () => void; onOpenProduct: (l: Listing) => void; onLoadMore: () => void; feedLoading: boolean; feedHasMore: boolean }) {
-  const homeProducts = useMemo(() => listings, [listings.length, listings]);
+function HomeScreen({ theme, dataLoading, dataError, homeListings, onOpenProduct, onOpenSearch, onLoadMore, feedLoading, feedHasMore, refreshing, onRefresh }: { theme: Theme; dataLoading: boolean; dataError: string | null; homeListings: Listing[]; onOpenProduct: (l: Listing) => void; onOpenSearch: () => void; onLoadMore: () => void; feedLoading: boolean; feedHasMore: boolean; refreshing: boolean; onRefresh: () => Promise<void> | void }) {
+  const homeProducts = homeListings;
 
   const renderProduct = useCallback(
     ({ item }: { item: Listing }) => (
@@ -1901,14 +2161,13 @@ function HomeScreen({ theme, dataLoading, dataError, onOpenProduct, onLoadMore, 
   if (dataLoading) {
     return (
       <ScreenScroll theme={theme}>
-        <View style={styles.homeShopHeader}>
-          <View>
-<Text style={[styles.homeShopSub, { color: theme.muted }]}>Shop</Text>
+        <Pressable onPress={onOpenSearch} style={[styles.homeSearchBar, { backgroundColor: theme.card, borderColor: theme.border }]} accessibilityRole="button" accessibilityLabel="Search Marketplace">
+          <Search size={19} color={theme.muted} />
+          <Text style={[styles.homeSearchPlaceholder, { color: theme.muted }]} numberOfLines={1}>Search products, services and stores...</Text>
+          <View style={[styles.homeSearchAction, { backgroundColor: theme.accent + "12" }]}>
+            <Search size={15} color={theme.accent} />
           </View>
-          <View style={[styles.homeShopIcon, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <ShoppingBag size={20} color={theme.text} />
-          </View>
-        </View>
+        </Pressable>
         <View style={styles.homeProductGrid}>
           {[1, 2, 3, 4, 5, 6].map((id) => (
             <View key={id} style={[styles.homeProductSkeleton, { backgroundColor: theme.card, borderColor: theme.border }]} />
@@ -1921,19 +2180,21 @@ function HomeScreen({ theme, dataLoading, dataError, onOpenProduct, onLoadMore, 
   return (
     <FlatList
       data={homeProducts}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={BUTTON_BLUE} colors={[BUTTON_BLUE]} progressBackgroundColor={theme.card} />}
       keyExtractor={keyExtractor}
       renderItem={renderProduct}
       numColumns={2}
       columnWrapperStyle={styles.homeProductGrid}
       contentContainerStyle={styles.homeFlatListContent}
       ListHeaderComponent={
-        <View style={styles.homeShopHeader}>
-          <View>
-<Text style={[styles.homeShopSub, { color: theme.muted }]}>Shop</Text>
-          </View>
-          <View style={[styles.homeShopIcon, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <ShoppingBag size={20} color={theme.text} />
-          </View>
+        <View>
+          <Pressable onPress={onOpenSearch} style={[styles.homeSearchBar, { backgroundColor: theme.card, borderColor: theme.border }]} accessibilityRole="button" accessibilityLabel="Search Marketplace">
+            <Search size={19} color={theme.muted} />
+            <Text style={[styles.homeSearchPlaceholder, { color: theme.muted }]} numberOfLines={1}>Search products, services and stores...</Text>
+            <View style={[styles.homeSearchAction, { backgroundColor: theme.accent + "12" }]}>
+              <Search size={15} color={theme.accent} />
+            </View>
+          </Pressable>
         </View>
       }
       ListEmptyComponent={
@@ -1987,18 +2248,114 @@ const HomeProductTile = memo(function HomeProductTile({ listing, theme, onPress 
         <Text numberOfLines={1} style={[styles.homeProductTitle, { color: theme.text }]}>
           {listing.title}
         </Text>
-        <Text numberOfLines={1} style={[styles.homeProductStore, { color: theme.muted }]}>
-          {listing.store}
-        </Text>
-        <Text style={[styles.homeProductPrice, { color: theme.text }]}>
-          {listing.price}
-        </Text>
+        <StoreNameWithBadge name={listing.store} verified={!!listing.storeVerified} style={[styles.homeProductStore, { color: theme.muted }]} />
+        <PriceDisplay listing={listing} theme={theme} style={[styles.homeProductPrice, { color: theme.text }]} oldStyle={[styles.homeProductPrice, { color: theme.muted, fontWeight: "700" }]} />
       </View>
     </Pressable>
   );
 });
 
-function BrowseScreen({ theme, search, setSearch, cartIds, addToCart, likedIds, toggleLike, onOpenProduct, onContactSeller, shareListing, shareToWhatsApp, dataLoading, dataError, onLoadMore, feedLoading, feedHasMore }: { theme: Theme; search: string; setSearch: (v: string) => void; cartIds: string[]; addToCart: (id: string, quantity?: number) => void; likedIds: string[]; toggleLike: (id: string) => void; onOpenProduct: (l: Listing) => void; onContactSeller: (l: Listing) => void; shareListing: (l: Listing) => void; shareToWhatsApp: (l: Listing) => void; dataLoading: boolean; dataError: string | null; onLoadMore: () => void; feedLoading: boolean; feedHasMore: boolean }) {
+
+function SearchScreen({ theme, value, history, listings, onBack, onSearch, onRemoveHistory, onClearHistory }: { theme: Theme; value: string; history: string[]; listings: Listing[]; onBack: () => boolean; onSearch: (query: string) => Promise<void> | void; onRemoveHistory: (query: string) => void; onClearHistory: () => Promise<void> | void }) {
+  const [query, setQuery] = useState(value);
+  const inputRef = useRef<TextInput>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => inputRef.current?.focus(), 120);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const suggestions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const values: string[] = [];
+    const push = (v: string) => {
+      const clean = String(v || "").trim();
+      if (!clean || values.some((x) => x.toLowerCase() === clean.toLowerCase())) return;
+      values.push(clean);
+    };
+
+    if (!q) {
+      history.slice(0, 6).forEach(push);
+      listings.slice().sort((a, b) => (b.viewsCount + b.likesCount * 3 + (b.isFeatured ? 20 : 0)) - (a.viewsCount + a.likesCount * 3 + (a.isFeatured ? 20 : 0))).slice(0, 8).forEach((item) => push(item.title));
+      listings.slice().sort((a, b) => b.likesCount - a.likesCount).slice(0, 6).forEach((item) => push(item.category));
+    } else {
+      listings.forEach((item) => {
+        const title = item.title.toLowerCase();
+        const store = item.store.toLowerCase();
+        const category = item.category.toLowerCase();
+        const location = item.location.toLowerCase();
+        const haystack = `${title} ${store} ${category} ${location}`;
+        if (!haystack.includes(q)) return;
+        if (title.includes(q)) push(item.title);
+        if (store.includes(q)) push(item.store);
+        if (category.includes(q)) push(item.category);
+      });
+      history.forEach((item) => { if (item.toLowerCase().includes(q)) push(item); });
+    }
+    return values.slice(0, 10);
+  }, [query, history, listings]);
+
+  const submit = async (text = query) => {
+    const clean = text.trim();
+    if (!clean) return;
+    await onSearch(clean);
+  };
+
+  return (
+    <View style={{ flex: 1 }}>
+      <ScreenScroll theme={theme} contentStyle={{ paddingTop: 8 }}>
+        <View style={styles.searchPageHeader}>
+          <Pressable onPress={onBack} style={[styles.iconButton, { borderColor: theme.border, backgroundColor: theme.card }]}><ArrowLeft size={19} color={theme.text} /></Pressable>
+          <Text style={[styles.searchPageTitle, { color: theme.text }]}>Search</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        <View style={[styles.searchPageInput, { backgroundColor: theme.card, borderColor: theme.border }]}> 
+          <Search size={19} color={theme.muted} />
+          <TextInput ref={inputRef} value={query} onChangeText={setQuery} onSubmitEditing={() => void submit()} returnKeyType="search" placeholder="Search products, services, stores..." placeholderTextColor={theme.muted} style={[styles.searchInput, { color: theme.text }]} autoCorrect={false} />
+          {query ? <Pressable onPress={() => setQuery("")}><X size={18} color={theme.muted} /></Pressable> : null}
+        </View>
+
+        {!query.trim() && history.length > 0 ? (
+          <View style={{ marginTop: 20 }}>
+            <View style={styles.searchSectionHeader}>
+              <Text style={[styles.searchSectionTitle, { color: theme.text }]}>Recent searches</Text>
+              <Pressable onPress={() => void onClearHistory()}><Text style={[styles.searchClearText, { color: BUTTON_BLUE }]}>Clear all</Text></Pressable>
+            </View>
+            <View style={{ gap: 2 }}>
+              {history.map((item) => (
+                <Pressable key={item} onPress={() => void submit(item)} style={[styles.searchHistoryRow, { borderBottomColor: theme.border }]}>
+                  <RotateCcw size={17} color={theme.muted} />
+                  <Text numberOfLines={1} style={[styles.searchHistoryText, { color: theme.text }]}>{item}</Text>
+                  <Pressable hitSlop={10} onPress={(e) => { e.stopPropagation(); onRemoveHistory(item); }}><X size={16} color={theme.muted} /></Pressable>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        <View style={{ marginTop: 20 }}>
+          <View style={styles.searchSectionHeader}>
+            <Text style={[styles.searchSectionTitle, { color: theme.text }]}>{query.trim() ? "Suggestions" : "Popular searches"}</Text>
+          </View>
+          {suggestions.length ? suggestions.map((item) => (
+            <Pressable key={item} onPress={() => void submit(item)} style={[styles.searchSuggestionRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <View style={[styles.searchSuggestionIcon, { backgroundColor: theme.accent + "12" }]}><Search size={16} color={theme.accent} /></View>
+              <Text numberOfLines={1} style={[styles.searchSuggestionText, { color: theme.text }]}>{item}</Text>
+              <ChevronRight size={17} color={theme.muted} />
+            </Pressable>
+          )) : (
+            <View style={[styles.searchNoSuggestions, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <Search size={22} color={theme.muted} />
+              <Text style={[styles.subtle, { color: theme.muted, textAlign: "center" }]}>No suggestions found. Try another keyword.</Text>
+            </View>
+          )}
+        </View>
+      </ScreenScroll>
+    </View>
+  );
+}
+
+function BrowseScreen({ theme, search, setSearch, onOpenSearch, onClearSearch, cartIds, addToCart, likedIds, toggleLike, onOpenProduct, onContactSeller, shareListing, shareToWhatsApp, dataLoading, dataError, activeFilter, onFilterChange, onLoadMore, feedLoading, feedHasMore, refreshing, onRefresh }: { theme: Theme; search: string; setSearch: (v: string) => void; onOpenSearch: () => void; onClearSearch: () => void | Promise<void>; cartIds: string[]; addToCart: (id: string, quantity?: number) => void; likedIds: string[]; toggleLike: (id: string) => void; onOpenProduct: (l: Listing) => void; onContactSeller: (l: Listing) => void; shareListing: (l: Listing) => void; shareToWhatsApp: (l: Listing) => void; dataLoading: boolean; dataError: string | null; activeFilter: string; onFilterChange: (filter: string) => void | Promise<void>; onLoadMore: () => void; feedLoading: boolean; feedHasMore: boolean; refreshing: boolean; onRefresh: () => Promise<void> | void }) {
   const filtered = useMemo(
     () => listings.filter((listing) => !search.trim() || `${listing.title} ${listing.store} ${listing.category}`.toLowerCase().includes(search.toLowerCase())),
     [search, listings.length, listings]
@@ -2010,7 +2367,7 @@ function BrowseScreen({ theme, search, setSearch, cartIds, addToCart, likedIds, 
         listing={item}
         theme={theme}
         inCart={cartIds.includes(item.id)}
-        liked={likedIds.includes(item.id)}
+        liked={likedIds.includes(item.id) || Boolean(item.liked)}
         onAddToCart={() => addToCart(item.id)}
         onToggleLike={() => toggleLike(item.id)}
         onChat={() => onContactSeller(item)}
@@ -2027,32 +2384,37 @@ function BrowseScreen({ theme, search, setSearch, cartIds, addToCart, likedIds, 
   const listHeader = useMemo(
     () => (
       <>
-        <View style={[styles.searchBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
+        <Pressable onPress={onOpenSearch} style={[styles.searchBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <Search size={18} color={theme.muted} />
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Search products, services and stores..."
-            placeholderTextColor={theme.muted}
-            style={[styles.searchInput, { color: theme.text }]}
-          />
-        </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-          {filters.map((filter, index) => (
-            <Pressable key={filter} style={[styles.filterChip, { borderColor: theme.border, backgroundColor: theme.card }, index === 0 && { backgroundColor: theme.accent, borderColor: theme.accent }]}>
-              <Text style={[styles.filterText, { color: index === 0 ? "#fff" : theme.text }]}>{filter}</Text>
+          <Text style={[styles.searchInputPlaceholder, { color: search.trim() ? theme.text : theme.muted }]} numberOfLines={1}>
+            {search.trim() || "Search products, services and stores..."}
+          </Text>
+          {search.trim() ? (
+            <Pressable hitSlop={10} onPress={(event) => { event.stopPropagation(); void onClearSearch(); }}>
+              <X size={17} color={theme.muted} />
             </Pressable>
-          ))}
+          ) : null}
+        </Pressable>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+          {filters.map((filter) => {
+            const active = activeFilter === filter;
+            return (
+              <Pressable key={filter} onPress={() => onFilterChange(filter)} disabled={feedLoading && active} style={[styles.filterChip, { borderColor: active ? theme.accent : theme.border, backgroundColor: active ? theme.accent : theme.card }, feedLoading && active && { opacity: 0.7 }]}>
+                <Text style={[styles.filterText, { color: active ? "#fff" : theme.text }]}>{filter}</Text>
+              </Pressable>
+            );
+          })}
         </ScrollView>
 <Text style={[styles.subtle, { color: theme.muted }]}>{filtered.length} listings near you</Text>
       </>
     ),
-    [theme, search, setSearch, filtered.length]
+    [theme, search, onOpenSearch, filtered.length, activeFilter, onFilterChange, feedLoading]
   );
 
   return (
     <FlatList
       data={dataLoading ? [] : filtered}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={BUTTON_BLUE} colors={[BUTTON_BLUE]} progressBackgroundColor={theme.card} />}
       keyExtractor={keyExtractor}
       renderItem={renderItem}
       ListHeaderComponent={listHeader}
@@ -2084,6 +2446,7 @@ function BrowseScreen({ theme, search, setSearch, cartIds, addToCart, likedIds, 
 }
 
 function ListingCard({ listing, theme, inCart, liked, onAddToCart, onToggleLike, onChat, onShare, onWhatsAppShare, onPress }: { listing: Listing; theme: Theme; inCart: boolean; liked?: boolean; onAddToCart: () => void; onToggleLike?: () => void; onChat?: () => void; onShare?: () => void; onWhatsAppShare?: () => void; onPress: () => void }) {
+  const isLikedByCurrentUser = liked ?? listing.liked ?? false;
   const { width } = useWindowDimensions();
   const [activeImage, setActiveImage] = useState(0);
   const images = listing.images?.length ? listing.images : (listing.image ? [listing.image] : []);
@@ -2101,7 +2464,7 @@ function ListingCard({ listing, theme, inCart, liked, onAddToCart, onToggleLike,
             )}
           </View>
           <View style={styles.storeTextWrap}>
-            <Text style={[styles.storeName, { color: theme.text }]} numberOfLines={1}>{listing.store}</Text>
+            <StoreNameWithBadge name={listing.store} verified={!!listing.storeVerified} style={[styles.storeName, { color: theme.text }]} />
             <Text style={[styles.location, { color: theme.muted }]}>{listing.location}</Text>
           </View>
         </View>
@@ -2152,9 +2515,9 @@ function ListingCard({ listing, theme, inCart, liked, onAddToCart, onToggleLike,
 
       <View style={styles.cardBody}>
         <View style={styles.actionRow}>
-          <Pressable onPress={() => onToggleLike?.()} hitSlop={8} accessibilityRole="button" accessibilityLabel={liked ? "Unlike product" : "Like product"} style={styles.actionButton}>
-            <Heart size={20} color={liked ? "#EF4444" : theme.text} fill={liked ? "#EF4444" : "transparent"} />
-            <Text style={[styles.actionCount, { color: theme.muted }]}>{listing.likesCount || 0}</Text>
+          <Pressable onPress={() => onToggleLike?.()} hitSlop={8} accessibilityRole="button" accessibilityLabel={isLikedByCurrentUser ? "Unlike product" : "Like product"} style={styles.actionButton}>
+            <Heart size={20} color={isLikedByCurrentUser ? "#EF4444" : theme.text} fill={isLikedByCurrentUser ? "#EF4444" : "transparent"} />
+            <Text style={[styles.actionCount, { color: isLikedByCurrentUser ? "#EF4444" : theme.muted, fontWeight: isLikedByCurrentUser ? "700" : "500" }]}>{listing.likesCount || 0}</Text>
           </Pressable>
           <Pressable onPress={() => onChat?.()} hitSlop={8} accessibilityRole="button" accessibilityLabel="Chat with seller" style={styles.actionButton}>
             <MessageCircle size={20} color={theme.text} />
@@ -2173,29 +2536,124 @@ function ListingCard({ listing, theme, inCart, liked, onAddToCart, onToggleLike,
           </Pressable>
         </View>
         <Text style={[styles.metaText, { color: theme.muted }]}>{listing.likesCount || 0} people liked this</Text>
-        <Pressable onPress={onPress}><Text style={[styles.itemText, { color: theme.text }]}><Text style={styles.itemStore}>{listing.store}</Text> {listing.title}</Text></Pressable>
-        <Text style={[styles.price, { color: theme.text }]}>{listing.price}</Text>
+        <Pressable onPress={onPress}><View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 }}><StoreNameWithBadge name={listing.store} verified={!!listing.storeVerified} style={styles.itemStore} /><Text style={[styles.itemText, { color: theme.text }]}>{listing.title}</Text></View></Pressable>
+        <PriceDisplay listing={listing} theme={theme} style={[styles.price, { color: theme.text }]} oldStyle={[styles.price, { color: theme.muted, fontWeight: "700" }]} />
         <DisplayText style={[styles.itemMeta, { color: theme.muted }]} value={`${safeDisplayText(listing.rating, "0.0")} ★ ${Number(listing.reviews || 0)} reviews • ${safeDisplayText(listing.category, "Uncategorized")}`} />
       </View>
     </View>
   );
 }
 
-function CartScreen({ theme, auth, cartItems, onOpenProduct, onRemove, onQuantityChange, onRefresh }: { theme: Theme; auth: AuthPayload | null; cartItems: CartItem[]; onOpenProduct: (l: Listing) => void; onRemove: (id: number) => void; onQuantityChange: (id: number, quantity: number) => void; onRefresh: () => Promise<void> | void }) {
-  if (!auth?.access) return <ScreenScroll theme={theme}><EmptyState theme={theme} title="Your cart is waiting" text="Add products to your cart and they will appear here." icon="orders" /></ScreenScroll>;
+function CartScreen({ theme, auth, cartItems, onOpenProduct, onRemove, onQuantityChange, onCheckout, onRefresh }: { theme: Theme; auth: AuthPayload | null; cartItems: CartItem[]; onOpenProduct: (l: Listing) => void; onRemove: (id: number) => void; onQuantityChange: (id: number, quantity: number) => void; onCheckout: (cartItemIds: number[]) => Promise<void> | void; onRefresh: () => Promise<void> | void }) {
+  const [checkingOut, setCheckingOut] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const authUserId = auth?.user?.id;
   const items = cartItems.map(item => ({item, listing: item.listing_detail ? mapApiListing(item.listing_detail) : listings.find(l=>String(l.id)===String(item.listing))})).filter((x): x is {item:CartItem;listing:Listing} => !!x.listing);
-  const total = items.reduce((sum,x)=>sum+Number(x.item.line_total||0),0);
-  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:140}}>
-    <View style={styles.pageIntro}><Text style={[styles.pageTitle,{color:theme.text}]}>Cart</Text><Text style={[styles.subtle,{color:theme.muted}]}>{items.length} {items.length===1?"item":"items"} ready for checkout.</Text></View>
-    {items.length===0 ? <EmptyState theme={theme} title="Your cart is empty" text="Tap the cart icon on any product to add it here." icon="orders"/> : <View style={{gap:12}}>{items.map(({item,listing})=><View key={item.id} style={[styles.orderCard,{backgroundColor:theme.card,borderColor:theme.border}]}>
-      <Pressable onPress={()=>onOpenProduct(listing)} style={{flexDirection:"row",gap:12,alignItems:"center"}}>{listing.image?<Image source={{uri:optimizedImageUrl(listing.image,220)}} style={{width:78,height:78,borderRadius:14}}/>:<View style={{width:78,height:78,borderRadius:14,backgroundColor:theme.background,alignItems:"center",justifyContent:"center"}}><ImageIcon size={24} color={theme.muted}/></View>}<View style={{flex:1}}><Text style={[styles.cardTitle,{color:theme.text}]} numberOfLines={2}>{listing.title}</Text><Text style={[styles.subtle,{color:theme.muted}]}>{listing.store}</Text><Text style={[styles.homeProductPrice,{color:theme.accent,marginTop:4}]}>{listing.price}</Text></View></Pressable>
-      <View style={{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:12}}><View style={{flexDirection:"row",alignItems:"center",gap:8}}><Pressable onPress={()=>onQuantityChange(item.id,item.quantity-1)} style={[styles.smallAction,{backgroundColor:theme.background,borderWidth:1,borderColor:theme.border,width:38,alignItems:"center"}]}><Text style={[styles.smallActionText,{color:theme.text}]}>−</Text></Pressable><Text style={{color:theme.text,fontWeight:"800",minWidth:24,textAlign:"center"}}>{item.quantity}</Text><Pressable onPress={()=>onQuantityChange(item.id,item.quantity+1)} style={[styles.smallAction,{backgroundColor:BUTTON_BLUE,width:38,alignItems:"center"}]}><Text style={styles.smallActionText}>+</Text></Pressable></View><View style={{flexDirection:"row",gap:10,alignItems:"center"}}><Text style={{color:theme.text,fontWeight:"800"}}>KES {Number(item.line_total||0).toLocaleString("en-KE")}</Text><Pressable onPress={()=>onRemove(item.id)}><Trash2 size={18} color="#DC2626"/></Pressable></View></View>
-    </View>)}</View>}
-    {items.length>0 && <View style={[styles.orderCard,{backgroundColor:theme.card,borderColor:theme.border,marginTop:12}]}><View style={styles.rowBetween}><Text style={[styles.cardTitle,{color:theme.text}]}>Cart total</Text><Text style={[styles.bigPrice,{color:theme.accent,fontSize:24}]}>KES {total.toLocaleString("en-KE")}</Text></View><Pressable onPress={()=>Alert.alert("Order now","Select a product and use Order now to submit its purchase request. Multi-item checkout can be connected to the order API next.")} style={[styles.primaryButton,{backgroundColor:BUTTON_BLUE,marginTop:12}]}><ShoppingBag size={18} color="#fff"/><Text style={styles.primaryButtonText}>Order now</Text></Pressable></View>}
-    <Pressable onPress={()=>void onRefresh()} style={{alignSelf:"center",padding:12,marginTop:12}}><Text style={{color:BUTTON_BLUE,fontWeight:"700"}}>Refresh cart</Text></Pressable>
-  </ScreenScroll>;
-}
+  const isOwnStore = (listing: Listing) => String(listing.sellerId || "") === String(authUserId || "");
+  const selectableItems = items.filter(({listing}) => !isOwnStore(listing));
+  const selectedItems = items.filter(({item,listing}) => selectedIds.has(item.id) && !isOwnStore(listing));
+  const total = selectedItems.reduce((sum,x)=>sum+Number(x.item.line_total||0),0);
+  const cartItemCount = items.reduce((sum,x)=>sum+x.item.quantity,0);
+  const selectedItemCount = selectedItems.reduce((sum,x)=>sum+x.item.quantity,0);
 
+  useEffect(() => {
+    setSelectedIds(current => {
+      const valid = new Set(selectableItems.map(({item}) => item.id));
+      const next = new Set<number>();
+      valid.forEach(id => { if (current.has(id) || current.size === 0) next.add(id); });
+      if (next.size === current.size && [...next].every(id => current.has(id))) return current;
+      return next;
+    });
+  }, [cartItems.length, cartItems.map(x => `${x.id}:${x.quantity}`).join(","), authUserId]);
+
+  if (!auth?.access) return <ScreenScroll theme={theme}><EmptyState theme={theme} title="Your cart is waiting" text="Add products to your cart and they will appear here." icon="cart" /></ScreenScroll>;
+
+  const toggleSelected = (id: number) => {
+    setSelectedIds(current => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const selectAll = () => setSelectedIds(new Set(selectableItems.map(({item}) => item.id)));
+  const clearSelection = () => setSelectedIds(new Set());
+  const submitCheckout = async () => {
+    if (!selectedItems.length || checkingOut) return;
+    setCheckingOut(true);
+    try { await onCheckout(selectedItems.map(({item}) => item.id)); } finally { setCheckingOut(false); }
+  };
+  const pullToRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await onRefresh(); } finally { setRefreshing(false); }
+  };
+  return <View style={{flex:1,position:"relative"}}>
+    <ScreenScroll theme={theme} contentStyle={{paddingBottom:190}} refreshing={refreshing} onRefresh={pullToRefresh}>
+    <View style={{paddingTop:6,paddingBottom:18}}>
+      <View style={{flexDirection:"row",alignItems:"center",gap:14}}>
+        <View style={{width:58,height:58,borderRadius:20,backgroundColor:theme.isDark?"rgba(37,99,235,.16)":"#EEF4FF",alignItems:"center",justifyContent:"center"}}><ShoppingCart size={28} color={BUTTON_BLUE}/></View>
+        <View style={{flex:1}}><Text style={[styles.pageTitle,{color:theme.text,fontSize:30}]}>Your cart</Text><Text style={[styles.subtle,{color:theme.muted,marginTop:3}]}>{cartItemCount} {cartItemCount===1?"item":"items"} in your cart</Text></View>
+        <View style={{minWidth:34,height:34,paddingHorizontal:9,borderRadius:17,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"}}><Text style={{color:"#fff",fontWeight:"900"}}>{cartItemCount}</Text></View>
+      </View>
+    </View>
+    {items.length===0 ? <View style={{marginTop:20}}><EmptyState theme={theme} title="Your cart is empty" text="Add products from Browse and they will appear here ready to order." icon="cart"/></View> : <View style={{gap:14}}>
+      <View style={{flexDirection:"row",alignItems:"center",justifyContent:"space-between",paddingHorizontal:2}}>
+        <Text style={{fontSize:13,fontWeight:"900",color:theme.text}}>{selectedItemCount} selected for checkout</Text>
+        <Pressable onPress={selectedItems.length === selectableItems.length ? clearSelection : selectAll} disabled={!selectableItems.length} style={{paddingHorizontal:10,paddingVertical:7,borderRadius:10,backgroundColor:theme.isDark?"rgba(37,99,235,.14)":"#EEF4FF",opacity:selectableItems.length?1:.5}}>
+          <Text style={{fontSize:11,fontWeight:"900",color:BUTTON_BLUE}}>{selectedItems.length === selectableItems.length && selectableItems.length ? "Clear selection" : "Select all"}</Text>
+        </Pressable>
+      </View>
+      {items.map(({item,listing})=>{
+        const offer = listing.isOnOffer && listing.offerPrice != null;
+        const ownStore = isOwnStore(listing);
+        const selected = selectedIds.has(item.id) && !ownStore;
+        return <View key={item.id} style={{backgroundColor:theme.card,borderColor:selected?BUTTON_BLUE:theme.border,borderWidth:selected?1.5:1,borderRadius:24,padding:12,shadowColor:"#000",shadowOpacity:theme.isDark?0.12:0.05,shadowRadius:14,shadowOffset:{width:0,height:5},elevation:2,opacity:ownStore?0.78:1}}>
+          <View style={{flexDirection:"row",gap:13}}>
+            <Pressable onPress={()=>onOpenProduct(listing)} style={{position:"relative"}}>
+              {listing.image?<Image source={{uri:optimizedImageUrl(listing.image,320)}} style={{width:106,height:106,borderRadius:19}}/>:<View style={{width:106,height:106,borderRadius:19,backgroundColor:theme.background,alignItems:"center",justifyContent:"center"}}><ImageIcon size={28} color={theme.muted}/></View>}
+              <Pressable disabled={ownStore} onPress={()=>toggleSelected(item.id)} style={{position:"absolute",top:7,left:7,width:29,height:29,borderRadius:15,backgroundColor:ownStore?theme.muted:(selected?BUTTON_BLUE:theme.card),borderWidth:2,borderColor:"#fff",alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.12,shadowRadius:4,elevation:2}}>
+                {ownStore ? <LockKeyhole size={14} color="#fff"/> : selected ? <Check size={17} color="#fff" strokeWidth={3}/> : null}
+              </Pressable>
+            </Pressable>
+            <View style={{flex:1,minWidth:0}}>
+              <View style={{flexDirection:"row",alignItems:"flex-start",gap:8}}><View style={{flex:1}}><Text style={[styles.cardTitle,{color:theme.text,fontSize:17}]} numberOfLines={2}>{listing.title}</Text><StoreNameWithBadge name={listing.store} verified={!!listing.storeVerified} style={[styles.subtle,{color:theme.muted,marginTop:3}]}/></View><Pressable onPress={()=>onRemove(item.id)} style={{width:38,height:38,borderRadius:13,backgroundColor:theme.background,alignItems:"center",justifyContent:"center"}}><Trash2 size={18} color={theme.muted}/></Pressable></View>
+              <PriceDisplay listing={listing} theme={theme} style={{fontSize:20,fontWeight:"900",color:offer?"#16A34A":BUTTON_BLUE,marginTop:10}} oldStyle={{fontSize:13,fontWeight:"700",color:theme.muted,marginTop:3}}/>
+              {offer && <View style={{alignSelf:"flex-start",marginTop:6,paddingHorizontal:8,paddingVertical:4,borderRadius:8,backgroundColor:theme.isDark?"rgba(22,163,74,.14)":"#ECFDF3"}}><Text style={{fontSize:11,fontWeight:"900",color:"#16A34A"}}>SPECIAL OFFER</Text></View>}
+              {ownStore && <View style={{marginTop:7,paddingHorizontal:9,paddingVertical:6,borderRadius:10,backgroundColor:theme.isDark?"rgba(245,158,11,.13)":"#FFF7ED",alignSelf:"flex-start"}}><Text style={{fontSize:10,fontWeight:"900",color:"#D97706"}}>YOUR STORE • CANNOT CHECK OUT</Text></View>}
+              {!ownStore && <Text style={{fontSize:10,color:selected?BUTTON_BLUE:theme.muted,fontWeight:"800",marginTop:7}}>{selected ? "Included in this order" : "Not selected — remains in cart"}</Text>}
+            </View>
+          </View>
+          <View style={{marginTop:12,paddingTop:12,borderTopWidth:1,borderTopColor:theme.border,flexDirection:"row",alignItems:"center",justifyContent:"space-between"}}>
+            <View style={{flexDirection:"row",alignItems:"center",backgroundColor:theme.background,borderWidth:1,borderColor:theme.border,borderRadius:14,overflow:"hidden"}}>
+              <Pressable onPress={()=>onQuantityChange(item.id,item.quantity-1)} style={{width:38,height:38,alignItems:"center",justifyContent:"center"}}><Text style={{fontSize:21,color:theme.text}}>−</Text></Pressable>
+              <Text style={{minWidth:30,textAlign:"center",fontWeight:"900",color:theme.text}}>{item.quantity}</Text>
+              <Pressable onPress={()=>onQuantityChange(item.id,item.quantity+1)} style={{width:38,height:38,alignItems:"center",justifyContent:"center",backgroundColor:theme.isDark?"rgba(37,99,235,.14)":"#EEF4FF"}}><Plus size={18} color={BUTTON_BLUE}/></Pressable>
+            </View>
+            <View style={{alignItems:"flex-end"}}><Text style={{fontSize:11,fontWeight:"700",color:theme.muted}}>ITEM TOTAL</Text><Text style={{fontSize:18,fontWeight:"900",color:theme.text,marginTop:2}}>KES {Number(item.line_total||0).toLocaleString("en-KE")}</Text></View>
+          </View>
+        </View>;
+      })}
+    </View>}
+    {selectedItems.length>0 && <View style={{marginTop:16,gap:12}}>
+      <View style={{borderWidth:1,borderColor:theme.border,borderRadius:24,backgroundColor:theme.card,padding:18}}>
+        <View style={{flexDirection:"row",alignItems:"center",gap:10,marginBottom:14}}><Tag size={18} color={BUTTON_BLUE}/><Text style={{fontWeight:"800",fontSize:15,color:theme.text}}>Order summary</Text></View>
+        <View style={{flexDirection:"row",justifyContent:"space-between",marginBottom:9}}><Text style={{color:theme.muted}}>Selected items ({selectedItemCount})</Text><Text style={{fontWeight:"700",color:theme.text}}>KES {total.toLocaleString("en-KE")}</Text></View>
+        <View style={{flexDirection:"row",justifyContent:"space-between",marginBottom:14}}><Text style={{color:theme.muted}}>Delivery</Text><Text style={{fontWeight:"800",color:"#16A34A"}}>Free</Text></View>
+        <View style={{borderTopWidth:1,borderTopColor:theme.border,paddingTop:14,flexDirection:"row",justifyContent:"space-between",alignItems:"center"}}><Text style={{fontSize:16,fontWeight:"900",color:theme.text}}>Total</Text><Text style={{fontSize:24,fontWeight:"900",color:BUTTON_BLUE}}>KES {total.toLocaleString("en-KE")}</Text></View>
+        <Text style={{textAlign:"center",fontSize:11,color:theme.muted,marginTop:12}}>Only selected items will be placed as orders. Unchecked items stay in your cart.</Text>
+      </View>
+      <View style={{flexDirection:"row",gap:9}}>{[{icon:CheckCircle2,title:"Secure",text:"Protected order flow"},{icon:Truck,title:"Flexible",text:"Pickup or delivery"},{icon:Bell,title:"Updates",text:"Order notifications"}].map(({icon:Icon,title,text})=><View key={title} style={{flex:1,alignItems:"center",paddingVertical:10}}><View style={{width:34,height:34,borderRadius:17,backgroundColor:theme.isDark?"rgba(37,99,235,.14)":"#EEF4FF",alignItems:"center",justifyContent:"center"}}><Icon size={17} color={BUTTON_BLUE}/></View><Text style={{fontWeight:"800",fontSize:11,color:theme.text,marginTop:6}}>{title}</Text><Text style={{fontSize:9,color:theme.muted,textAlign:"center",marginTop:2}}>{text}</Text></View>)}</View>
+    </View>}
+    </ScreenScroll>
+    {items.length>0 && <View pointerEvents="box-none" style={{position:"absolute",left:0,right:0,bottom:92,alignItems:"center",zIndex:100,elevation:20}}>
+      <Pressable disabled={checkingOut || !selectedItems.length} onPress={submitCheckout} style={{width:"92%",minHeight:58,borderRadius:20,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:10,paddingHorizontal:18,opacity:checkingOut||!selectedItems.length?0.55:1,shadowColor:"#000",shadowOpacity:0.2,shadowRadius:14,shadowOffset:{width:0,height:7},elevation:12}}>
+        <ShoppingBag size={21} color="#fff"/>
+        <View style={{flex:1}}><Text style={{color:"#fff",fontSize:15,fontWeight:"900"}}>{checkingOut?"Placing order…":selectedItems.length?"Place order":"Select items to order"}</Text><Text style={{color:"rgba(255,255,255,.82)",fontSize:10,fontWeight:"700",marginTop:2}}>{selectedItemCount} {selectedItemCount===1?"item":"items"} • KES {total.toLocaleString("en-KE")}</Text></View><ChevronRight size={21} color="#fff"/>
+      </Pressable>
+    </View>}
+  </View>;
+}
 function openReportAlert(type: "listing" | "user", subject: string) {
   const reasons = ["Scam/fraud", "Fake listing", "Prohibited item", "Harassment", "Spam", "Misleading information", "Other"];
   Alert.alert(`Report ${type}`, `Choose a reason for reporting ${subject}.`, reasons.map((reason) => ({ text: reason, onPress: () => Alert.alert("Confirm report", `Report ${subject} for: ${reason}?`, [{ text: "Cancel", style: "cancel" }, { text: "Confirm", style: "destructive", onPress: () => Alert.alert("Report ready", "The current backend does not expose a reporting endpoint, so nothing was sent to the server. The reporting operation is isolated and ready for a real endpoint later.") }]) })));
@@ -2314,7 +2772,7 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
           <Text style={[styles.productTitle, { color: theme.text }]} numberOfLines={2}>
             {safeDisplayText(listing.title, "Product")}
           </Text>
-          <Text style={[styles.bigPrice, { color: theme.accent, marginTop: 5 }]}>{safeDisplayText(listing.price, "Price on request")}</Text>
+          <PriceDisplay listing={listing} theme={theme} style={[styles.bigPrice, { color: theme.accent, marginTop: 5 }]} oldStyle={[styles.bigPrice, { color: theme.muted, marginTop: 5 }]} />
           <View style={styles.productMetaLine}>
             <Text style={[styles.productMetaSecondary, { color: theme.muted }]}>{safeDisplayText(listing.rating, "0")} ★</Text>
             <Text style={[styles.productMetaDot, { color: theme.muted }]}>•</Text>
@@ -2388,7 +2846,7 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
           {listing.storeLogo ? <Image source={{ uri: listing.storeLogo }} style={styles.detailStoreAvatarImage} resizeMode="cover" /> : <Text style={[styles.detailStoreAvatarText, { color: theme.accent }]}>{safeDisplayText(listing.store, "Store").slice(0, 1).toUpperCase()}</Text>}
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={[styles.storePillText, { color: theme.text }]} numberOfLines={1}>{safeDisplayText(listing.store, "Store")}</Text>
+          <StoreNameWithBadge name={safeDisplayText(listing.store, "Store")} verified={!!listing.storeVerified} style={[styles.storePillText, { color: theme.text }]} />
           <Text style={{ fontSize: 11, color: theme.muted }}>View store and other items</Text>
         </View>
         <ChevronRight size={18} color={theme.muted} />
@@ -2423,7 +2881,7 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
               {item.image ? <Image source={{ uri: optimizedImageUrl(item.image, 320) }} style={styles.relatedImage} /> : <View style={[styles.relatedImage, { alignItems: "center", justifyContent: "center", backgroundColor: theme.background }]}><ImageIcon size={28} color={theme.muted} /></View>}
               <View style={{ paddingHorizontal: 10, paddingTop: 8 }}>
                 <DisplayText style={[styles.relatedTitle, { color: theme.text, paddingHorizontal: 0, marginTop: 0 }]} value={item.title} fallback="Untitled listing" numberOfLines={2} />
-                <DisplayText style={[styles.relatedPrice, { color: theme.accent, paddingHorizontal: 0 }]} value={item.price} fallback="Price on request" />
+                <PriceDisplay listing={item} theme={theme} style={[styles.relatedPrice, { color: theme.accent, paddingHorizontal: 0 }]} oldStyle={[styles.relatedPrice, { color: theme.muted, paddingHorizontal: 0 }]} compact />
               </View>
             </Pressable>
           )} />
@@ -2471,6 +2929,7 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
   const [sectionY, setSectionY] = useState({ details: 0, photos: 0, publish: 0 });
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
+  const [stock, setStock] = useState("1");
   const [description, setDescription] = useState("");
   const [kind, setKind] = useState<"Product" | "Service">("Product");
   const [category, setCategory] = useState("Electronics");
@@ -2486,7 +2945,8 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
     ? ["Electronics", "Fashion", "Home & Living", "Books", "Food", "Other"]
     : ["Repairs", "Creative Services", "Tutoring", "Transport", "Professional", "Other"];
 
-  const canPublish = title.trim().length > 2 && price.trim().length > 0 && description.trim().length > 10 && category.length > 0;
+  const parsedStock = Number(stock.replace(/[^0-9]/g, ""));
+  const canPublish = title.trim().length > 2 && price.trim().length > 0 && description.trim().length > 10 && category.length > 0 && Number.isInteger(parsedStock) && parsedStock >= 0;
 
   const openPhotoPicker = async () => {
     const remaining = Math.max(0, 8 - photos.length);
@@ -2567,7 +3027,8 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
         currency: "KES",
         negotiable,
         condition: kind === "Product" ? condition.toLowerCase() : "na",
-        stock: 1,
+        stock: kind === "Product" ? parsedStock : 1,
+        is_available: kind === "Product" ? parsedStock > 0 : true,
         location: location.trim(),
         tags: [],
         image_urls: imageUrls,
@@ -2692,6 +3153,8 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
             <View style={{ flex: 1 }}><Field label="Price" value={price} onChangeText={setPrice} keyboardType="numeric" placeholder="KSh 0" theme={theme} /></View>
             <View style={styles.switchWrapModern}><Text style={[styles.switchLabel, { color: theme.text }]}>Negotiable</Text><Switch value={negotiable} onValueChange={setNegotiable} trackColor={{ false: theme.border, true: theme.accent }} thumbColor="#fff" /></View>
           </View>
+          {kind === "Product" && <Field label="Items in stock" value={stock} onChangeText={(value) => setStock(value.replace(/[^0-9]/g, ""))} keyboardType="number-pad" placeholder="0" theme={theme} />}
+
           <Text style={[styles.fieldLabel, { color: theme.text }]}>Category</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryPicker}>
             {categories.map((item) => <Pressable key={item} onPress={() => setCategory(item)} style={[styles.categoryChip, { borderColor: theme.border, backgroundColor: theme.background }, category === item && { borderColor: theme.accent, backgroundColor: theme.accent }]}><Text style={[styles.categoryChipText, { color: category === item ? "#fff" : theme.text }]}>{item}</Text></Pressable>)}
@@ -2849,6 +3312,15 @@ function MetaVerifiedBadge({ size = 18 }: { size?: number }) {
   );
 }
 
+function StoreNameWithBadge({ name, verified = false, style, numberOfLines = 1 }: { name: string; verified?: boolean; style?: any; numberOfLines?: number }) {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 5, minWidth: 0 }}>
+      <Text style={style} numberOfLines={numberOfLines}>{name}</Text>
+      {verified ? <MetaVerifiedBadge size={15} /> : null}
+    </View>
+  );
+}
+
 function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onSecurity, onNotificationPreferences, onHelp, onSignIn, onSignUp, onGoogle, onStore, onMessages, onCart, cartCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onSecurity: () => void; onNotificationPreferences: () => void; onHelp: () => void; onSignIn: () => void; onSignUp: () => void; onGoogle: () => void; onStore: () => void; onMessages: () => void; onCart: () => void; cartCount?: number }) {
   const insets = useSafeAreaInsets();
   const [profileMode, setProfileMode] = useState<"buyer" | "seller">("buyer");
@@ -2856,6 +3328,7 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
   const [editingListing, setEditingListing] = useState<Listing | null>(null);
   const [store, setStore] = useState<ProfileStore | null>(null);
   const [storeLoading, setStoreLoading] = useState(false);
+  const [profileCounts, setProfileCounts] = useState({ buyerOrders: 0, sellerOrders: 0, listings: 0, unreadMessages: 0, unreadNotifications: 0 });
   const initials = (currentUser?.full_name || currentUser?.email || "U").split(/\s+/).map((x) => x[0]).join("").slice(0,2).toUpperCase();
   const displayName = currentUser?.full_name || currentUser?.email?.split("@")[0] || "Marketplace member";
 
@@ -2870,6 +3343,40 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
     return () => { active = false; };
   }, [isLoggedIn]);
 
+  useEffect(() => {
+    if (!isLoggedIn || !globalThis.__MARKETPLACE_AUTH__?.access || !currentUser?.id) {
+      setProfileCounts({ buyerOrders: 0, sellerOrders: 0, listings: 0, unreadMessages: 0, unreadNotifications: 0 });
+      return;
+    }
+    let active = true;
+    const activeAuth = globalThis.__MARKETPLACE_AUTH__!;
+    const loadCounts = async () => {
+      try {
+        const [ordersData, listingsData, conversationsData, notificationsData] = await Promise.all([
+          apiRequest("/api/orders/", {}, activeAuth),
+          apiRequest("/api/listings/mine/", {}, activeAuth),
+          apiRequest("/api/conversations/", {}, activeAuth),
+          apiRequest("/api/notifications/", {}, activeAuth),
+        ]);
+        if (!active) return;
+        const orders = apiResults<OrderItem>(ordersData);
+        const listings = apiResults<any>(listingsData);
+        const conversations = apiResults<ConversationItem>(conversationsData);
+        const notifications = apiResults<NotificationItem>(notificationsData);
+        const userId = Number(currentUser.id);
+        setProfileCounts({
+          buyerOrders: orders.filter(order => Number(order.buyer) === userId).length,
+          sellerOrders: orders.filter(order => Number(order.seller) === userId).length,
+          listings: listings.length,
+          unreadMessages: conversations.reduce((sum, item) => sum + Number(item.unread_count || 0), 0),
+          unreadNotifications: notifications.filter(item => !item.is_read).length,
+        });
+      } catch { /* supplementary profile badges must not block the page */ }
+    };
+    void loadCounts();
+    return () => { active = false; };
+  }, [isLoggedIn, currentUser?.id]);
+
   if (!isLoggedIn) return <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
     <View style={[styles.profileAuthCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
       <View style={[styles.profileAuthIcon, { backgroundColor: theme.isDark ? "rgba(96,165,250,.12)" : "#EFF6FF" }]}><User size={30} color={theme.accent} /></View>
@@ -2882,17 +3389,18 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
     </View>
   </ScreenScroll>;
 
+  const sellerAttentionCount = profileCounts.sellerOrders + profileCounts.listings;
   const buyerActions = [
-    { icon: <ShoppingBag size={19} color={theme.text} />, title: "My orders", text: "Track purchases & delivery", onPress: onOrders },
-    { icon: <ShoppingCart size={19} color={theme.text} />, title: "Cart", text: `${cartCount} ${cartCount === 1 ? "item" : "items"} in cart`, onPress: onCart },
-    { icon: <MessageCircle size={19} color={theme.text} />, title: "Messages", text: "Chat with sellers", onPress: onMessages },
+    { icon: <ShoppingBag size={19} color={theme.text} />, title: "My orders", text: "Track purchases & delivery", badge: profileCounts.buyerOrders, onPress: onOrders },
+    { icon: <ShoppingCart size={19} color={theme.text} />, title: "Cart", text: `${cartCount} ${cartCount === 1 ? "item" : "items"} in cart`, badge: cartCount, onPress: onCart },
+    { icon: <MessageCircle size={19} color={theme.text} />, title: "Messages", text: "Chat with sellers", badge: profileCounts.unreadMessages, onPress: onMessages },
     { icon: <Store size={19} color={theme.text} />, title: "Following", text: "Stores you follow", onPress: () => {} },
   ];
   const sellerActions = [
-    { icon: <Store size={18} color={theme.accent} />, title: "Seller hub", text: "Manage your store", onPress: onStore },
-    { icon: <Tag size={18} color={theme.accent} />, title: "Listings", text: "Create & manage listings", onPress: onStore },
-    { icon: <ShoppingBag size={18} color={theme.accent} />, title: "Sales & orders", text: "Review customer orders", onPress: onOrders },
-    { icon: <MessageCircle size={18} color={theme.accent} />, title: "Buyer messages", text: "Respond to enquiries", onPress: onMessages },
+    { icon: <Store size={18} color={theme.accent} />, title: "Seller hub", text: "Manage your store", badge: sellerAttentionCount, onPress: onStore },
+    { icon: <Tag size={18} color={theme.accent} />, title: "Listings", text: "Create & manage listings", badge: profileCounts.listings, onPress: onStore },
+    { icon: <ShoppingBag size={18} color={theme.accent} />, title: "Sales & orders", text: "Review customer orders", badge: profileCounts.sellerOrders, onPress: onOrders },
+    { icon: <MessageCircle size={18} color={theme.accent} />, title: "Buyer messages", text: "Respond to enquiries", badge: profileCounts.unreadMessages, onPress: onMessages },
   ];
   const actions = profileMode === "buyer" ? buyerActions : sellerActions;
 
@@ -2934,7 +3442,7 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
 
       <View style={[styles.profileModeSwitch,{backgroundColor:theme.card,borderColor:theme.border}]}>
         <Pressable onPress={() => setProfileMode("buyer")} style={[styles.profileModeButton, profileMode === "buyer" && {backgroundColor:BUTTON_BLUE}]}><ShoppingBag size={15} color={profileMode === "buyer" ? "#fff" : theme.muted}/><Text style={[styles.profileModeText,{color:profileMode === "buyer" ? "#fff" : theme.muted}]}>Buyer</Text></Pressable>
-        <Pressable onPress={() => setProfileMode("seller")} style={[styles.profileModeButton, profileMode === "seller" && {backgroundColor:BUTTON_BLUE}]}><Store size={15} color={profileMode === "seller" ? "#fff" : theme.muted}/><Text style={[styles.profileModeText,{color:profileMode === "seller" ? "#fff" : theme.muted}]}>Seller</Text></Pressable>
+        <Pressable onPress={() => setProfileMode("seller")} style={[styles.profileModeButton, profileMode === "seller" && {backgroundColor:BUTTON_BLUE}]}><Store size={15} color={profileMode === "seller" ? "#fff" : theme.muted}/><Text style={[styles.profileModeText,{color:profileMode === "seller" ? "#fff" : theme.muted}]}>Seller</Text>{sellerAttentionCount > 0 && <CountBadge count={sellerAttentionCount} active={profileMode === "seller"} />}</Pressable>
       </View>
 
       <View style={styles.profileSectionHeader}>
@@ -2950,12 +3458,25 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
               theme={theme}
               icon={item.icon}
               title={item.title}
+              badge={item.badge}
               onPress={item.onPress}
             />
           ))}
         </View>
         <ProfileRow theme={theme} icon={<Heart size={19} color={theme.text}/>} title="Wishlist & saved searches" onPress={() => {}} />
       </> : <>
+        <View style={{ gap: 12 }}>
+          {sellerActions.map((item) => (
+            <ProfileRow
+              key={item.title}
+              theme={theme}
+              icon={item.icon}
+              title={item.title}
+              badge={item.badge}
+              onPress={item.onPress}
+            />
+          ))}
+        </View>
         <View style={[styles.sellerSetupCard,{backgroundColor:theme.isDark ? "#172554" : "#EFF6FF", borderWidth:1, borderColor:theme.isDark ? "#1E3A8A" : "#BFDBFE"}]}>
           <View style={{flex:1}}><Text style={styles.sellerSetupEyebrow}>SELLER READINESS</Text><Text style={[styles.sellerSetupTitle,{color:theme.text}]}>Build a store buyers trust.</Text><Text style={[styles.sellerSetupText,{color:theme.muted}]}>Add your store details, listings, delivery options and payout information.</Text></View>
           <Pressable onPress={onStore} style={[styles.sellerSetupButton,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.sellerSetupButtonText}>Set up</Text><ChevronRight size={16} color="#fff"/></Pressable>
@@ -2965,7 +3486,7 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
       <View style={styles.profileSectionHeader}><View><Text style={[styles.profileSectionTitle,{color:theme.text}]}>Account</Text><Text style={[styles.profileSectionSub,{color:theme.muted}]}>Preferences, privacy and support.</Text></View></View>
       <ProfileRow theme={theme} icon={<Settings size={19} color={theme.text}/>} title="Settings & preferences" onPress={onSettings}/>
       <ProfileRow theme={theme} icon={<LockKeyhole size={19} color={theme.text}/>} title="Security & privacy" onPress={onSecurity} />
-      <ProfileRow theme={theme} icon={<Bell size={19} color={theme.text}/>} title="Notifications" onPress={onNotificationPreferences} />
+      <ProfileRow theme={theme} icon={<Bell size={19} color={theme.text}/>} title="Notifications" badge={profileCounts.unreadNotifications} onPress={onNotificationPreferences} />
       <ProfileRow theme={theme} icon={<MessageCircle size={19} color={theme.text}/>} title="Help & support" onPress={onHelp} />
       {storeLoading && <Text style={[styles.profileLoading,{color:theme.muted}]}>Loading store profile…</Text>}
     </ScreenScroll>
@@ -3371,10 +3892,80 @@ function EditProfileSheet({ initialTab = "profile", theme, currentUser, store, i
   );
 }
 
-function OrdersScreen({ theme, auth, currentUser }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null }) {
+
+const ORDER_FLOW: OrderItem["status"][] = ["pending", "accepted", "preparing", "ready", "completed"];
+
+function OrderStatusControls({
+  status,
+  theme,
+  onTransition,
+}: {
+  status: OrderItem["status"];
+  theme: Theme;
+  onTransition: (next: OrderItem["status"]) => void;
+}) {
+  const index = ORDER_FLOW.indexOf(status);
+  const button = (label: string, next: OrderItem["status"], kind: "active" | "danger" | "success" | "disabled") => {
+    const colors = kind === "danger"
+      ? { bg: "#DC2626", fg: "#fff", border: "#DC2626" }
+      : kind === "success"
+        ? { bg: "#16A34A", fg: "#fff", border: "#16A34A" }
+        : kind === "active"
+          ? { bg: BUTTON_BLUE, fg: "#fff", border: BUTTON_BLUE }
+          : { bg: theme.isDark ? "#1F2937" : "#E5E7EB", fg: theme.muted, border: theme.border };
+    return <Pressable key={`${label}-${next}`} disabled={kind === "disabled"} onPress={() => onTransition(next)} style={[styles.smallAction, { backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border, opacity: kind === "disabled" ? 0.72 : 1 }]}>
+      <Text style={[styles.smallActionText, { color: colors.fg }]}>{label}</Text>
+    </Pressable>;
+  };
+
+  if (status === "pending") {
+    return <View style={{ gap: 8 }}>
+      <Text style={[styles.professionalOrderLabel, { color: theme.muted }]}>NEW ORDER — CHOOSE AN ACTION</Text>
+      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+        {button("Accept", "accepted", "active")}
+        {button("Decline", "declined", "danger")}
+      </View>
+    </View>;
+  }
+
+  if (status === "declined") {
+    return <View style={{ gap: 8 }}>
+      <Text style={[styles.professionalOrderLabel, { color: theme.muted }]}>ORDER STATUS</Text>
+      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+        {ORDER_FLOW.slice(0, Math.max(0, index + 1)).map(step => button(step === "pending" ? "New order" : step.charAt(0).toUpperCase() + step.slice(1), step, "disabled"))}
+        {button("Declined", "declined", "danger")}
+      </View>
+    </View>;
+  }
+
+  if (status === "cancelled") {
+    return <View style={{ gap: 8 }}>
+      <Text style={[styles.professionalOrderLabel, { color: theme.muted }]}>ORDER STATUS</Text>
+      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+        {ORDER_FLOW.slice(0, Math.max(0, index + 1)).map(step => button(step === "pending" ? "New order" : step.charAt(0).toUpperCase() + step.slice(1), step, "disabled"))}
+        {button("Cancelled", "cancelled", "danger")}
+      </View>
+    </View>;
+  }
+
+  const next = ORDER_FLOW[index + 1];
+  return <View style={{ gap: 8 }}>
+    <Text style={[styles.professionalOrderLabel, { color: theme.muted }]}>ORDER STATUS — NEXT STEP ONLY</Text>
+    <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+      {ORDER_FLOW.slice(0, index).map(step => button(step === "pending" ? "New order" : step.charAt(0).toUpperCase() + step.slice(1), step, "disabled"))}
+      {button(status === "pending" ? "New order" : status.charAt(0).toUpperCase() + status.slice(1), status, status === "completed" ? "success" : "disabled")}
+      {next && button(next === "completed" ? "Complete" : next.charAt(0).toUpperCase() + next.slice(1), next, next === "completed" ? "success" : "active")}
+      {status !== "completed" && button("Cancel", "cancelled", "danger")}
+    </View>
+  </View>;
+}
+
+function OrdersScreen({ theme, auth, currentUser, onRestock }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null; onRestock?: () => void }) {
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [stockDrafts, setStockDrafts] = useState<Record<number, string>>({});
+  const [savingStock, setSavingStock] = useState<Record<number, boolean>>({});
   const load = async (refresh = false) => {
     if (!auth?.access) { setLoading(false); return; }
     refresh ? setRefreshing(true) : setLoading(true);
@@ -3387,7 +3978,45 @@ function OrdersScreen({ theme, auth, currentUser }: { theme: Theme; auth: AuthPa
     try {
       const updated = await apiRequest(`/api/orders/${order.id}/transition/`, { method: "POST", body: JSON.stringify({ status }) }, auth) as OrderItem;
       setOrders(items => items.map(x => x.id === order.id ? updated : x));
-    } catch (e) { Alert.alert("Couldn't update order", e instanceof Error ? e.message : "Please try again."); }
+    } catch (e) {
+      const apiError = e instanceof ApiRequestError ? e : null;
+      if (apiError?.code === "INSUFFICIENT_STOCK" || apiError?.code === "OUT_OF_STOCK") {
+        Alert.alert(
+          "Cannot accept order",
+          apiError.message || "This item is out of stock or does not have enough stock for this order. Please restock it before accepting.",
+          [
+            { text: "Not now", style: "cancel" },
+            ...(onRestock ? [{ text: "Restock item", onPress: onRestock }] : []),
+          ]
+        );
+        return;
+      }
+      Alert.alert("Couldn't update order", e instanceof Error ? e.message : "Please try again.");
+    }
+  };
+  const updateOrderStock = async (order: OrderItem) => {
+    const item = order.listing_detail;
+    if (!item?.id) return;
+    const raw = stockDrafts[order.id] ?? String(item.stock ?? 0);
+    const stock = Number(raw.replace(/[^0-9]/g, ""));
+    if (!Number.isInteger(stock) || stock < 0) {
+      Alert.alert("Invalid stock", "Enter a whole number of items currently available.");
+      return;
+    }
+    setSavingStock(current => ({ ...current, [order.id]: true }));
+    try {
+      const updated = await apiRequest(`/api/listings/${item.id}/`, {
+        method: "PATCH",
+        body: JSON.stringify({ stock, is_available: stock > 0 }),
+      }, auth);
+      setOrders(current => current.map(x => x.id === order.id ? { ...x, listing_detail: { ...x.listing_detail, stock: updated.stock, is_available: updated.is_available } } : x));
+      setStockDrafts(current => ({ ...current, [order.id]: String(updated.stock ?? stock) }));
+      Alert.alert("Stock updated", `${updated.stock ?? stock} item${Number(updated.stock ?? stock) === 1 ? "" : "s"} now available.`);
+    } catch (e) {
+      Alert.alert("Couldn't update stock", e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setSavingStock(current => ({ ...current, [order.id]: false }));
+    }
   };
   const confirmReceived = async (order: OrderItem) => {
     try {
@@ -3397,27 +4026,48 @@ function OrdersScreen({ theme, auth, currentUser }: { theme: Theme; auth: AuthPa
   };
   if (!auth?.access) return <ScreenScroll theme={theme}><EmptyState theme={theme} title="Your orders are waiting" text="Sign in to request purchases and track them here." icon="orders" /></ScreenScroll>;
   return <ScreenScroll theme={theme}>
-    <View style={styles.pageIntro}><Text style={[styles.pageTitle,{color:theme.text}]}>My orders</Text><Text style={[styles.subtle,{color:theme.muted}]}>Track purchases, seller requests and fulfilment progress.</Text></View>
+    <View style={[styles.ordersHero, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <View style={[styles.ordersHeroIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><ShoppingBag size={22} color={BUTTON_BLUE} /></View>
+      <View style={{ flex: 1 }}><Text style={[styles.pageTitle,{color:theme.text}]}>My orders</Text><Text style={[styles.subtle,{color:theme.muted, marginTop:3}]}>Track your purchases and fulfilment from one professional order hub.</Text></View>
+      <View style={[styles.ordersCountPill, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><Text style={[styles.ordersCountText, { color: BUTTON_BLUE }]}>{orders.length}</Text><Text style={[styles.ordersCountLabel, { color: theme.muted }]}>orders</Text></View>
+    </View>
     {loading ? <View style={{ padding: 40, alignItems: "center" }}><ActivityIndicator color={BUTTON_BLUE}/></View> : orders.length === 0 ? <EmptyState theme={theme} title="No orders yet" text="When you request a purchase, its status will appear here." icon="orders" /> :
       <View style={{ gap: 12 }}>{orders.map(order => {
         const mineAsBuyer = order.buyer === currentUser?.id;
         const item = order.listing_detail;
-        const canAccept = !mineAsBuyer && order.status === "pending";
-        const canPrepare = !mineAsBuyer && order.status === "accepted";
-        const canReady = !mineAsBuyer && order.status === "preparing";
-        const canComplete = !mineAsBuyer && order.status === "ready";
-        return <View key={order.id} style={[styles.orderCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <View style={styles.rowBetween}><View style={{flex:1}}><Text style={[styles.cardTitle,{color:theme.text}]} numberOfLines={1}>{item?.title || `Order #${order.id}`}</Text><Text style={[styles.subtle,{color:theme.muted}]}>{mineAsBuyer ? "Purchase request" : "Buyer request"} • Qty {order.quantity}</Text></View><Badge text={order.status.charAt(0).toUpperCase() + order.status.slice(1)} theme={theme}/></View>
-          {!!order.message && <Text style={[styles.subtle,{color:theme.text, marginTop:8}]}>{order.message}</Text>}
-          <Text style={[styles.subtle,{color:theme.muted, marginTop:8}]}>{order.fulfillment === "delivery" ? "Delivery" : "Pickup"} • {new Date(order.created_at).toLocaleDateString()}</Text>
+        const sellerControls = !mineAsBuyer;
+        return <View key={order.id} style={[styles.professionalOrderCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <View style={styles.professionalOrderTop}><View style={[styles.professionalOrderIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><ShoppingBag size={18} color={BUTTON_BLUE} /></View><View style={{flex:1,minWidth:0}}><Text style={[styles.professionalOrderTitle,{color:theme.text}]} numberOfLines={1}>{item?.title || `Order #${order.id}`}</Text><Text style={[styles.professionalOrderMeta,{color:theme.muted}]}>Order #{order.id} • {new Date(order.created_at).toLocaleDateString()}</Text></View><Badge text={order.status.charAt(0).toUpperCase() + order.status.slice(1)} theme={theme}/></View>
+          <View style={[styles.professionalOrderInfo, { borderTopColor: theme.border, borderBottomColor: theme.border }]}><View><Text style={[styles.professionalOrderLabel,{color:theme.muted}]}>QUANTITY</Text><Text style={[styles.professionalOrderValue,{color:theme.text}]}>{order.quantity}</Text></View><View><Text style={[styles.professionalOrderLabel,{color:theme.muted}]}>FULFILMENT</Text><Text style={[styles.professionalOrderValue,{color:theme.text}]}>{order.fulfillment === "delivery" ? "Delivery" : "Pickup"}</Text></View><View><Text style={[styles.professionalOrderLabel,{color:theme.muted}]}>ROLE</Text><Text style={[styles.professionalOrderValue,{color:theme.text}]}>{mineAsBuyer ? "Buyer" : "Seller"}</Text></View></View>
+          {!!order.message && <View style={[styles.orderMessageBox,{backgroundColor:theme.isDark ? "#111827" : "#F8FAFC"}]}><Text style={[styles.orderMessageLabel,{color:theme.muted}]}>ORDER NOTE</Text><Text style={[styles.orderMessageText,{color:theme.text}]}>{order.message}</Text></View>}
           <View style={{flexDirection:"row", gap:8, flexWrap:"wrap", marginTop:12}}>
-            {canAccept && <Pressable onPress={() => void transition(order,"accepted")} style={[styles.smallAction,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.smallActionText}>Accept</Text></Pressable>}
-            {canAccept && <Pressable onPress={() => void transition(order,"declined")} style={[styles.smallAction,{backgroundColor:"#FEE2E2"}]}><Text style={[styles.smallActionText,{color:"#B91C1C"}]}>Decline</Text></Pressable>}
-            {canPrepare && <Pressable onPress={() => void transition(order,"preparing")} style={[styles.smallAction,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.smallActionText}>Start preparing</Text></Pressable>}
-            {canReady && <Pressable onPress={() => void transition(order,"ready")} style={[styles.smallAction,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.smallActionText}>Mark ready</Text></Pressable>}
-            {canComplete && <Pressable onPress={() => void transition(order,"completed")} style={[styles.smallAction,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.smallActionText}>Complete</Text></Pressable>}
+            {sellerControls && <View style={{ width: "100%", gap: 10 }}>
+              <View style={{ borderWidth: 1, borderColor: theme.border, borderRadius: 14, padding: 10, backgroundColor: theme.background }}>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.professionalOrderLabel, { color: theme.muted }]}>STOCK UPDATE</Text>
+                    <Text style={{ color: theme.text, fontSize: 10.5, marginTop: 3 }}>Update the listing stock while managing this order.</Text>
+                  </View>
+                  <Text style={{ color: theme.muted, fontSize: 10 }}>Current: {item?.stock ?? 0}</Text>
+                </View>
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 9, alignItems: "center" }}>
+                  <TextInput
+                    value={stockDrafts[order.id] ?? String(item?.stock ?? 0)}
+                    onChangeText={(value) => setStockDrafts(current => ({ ...current, [order.id]: value.replace(/[^0-9]/g, "") }))}
+                    keyboardType="number-pad"
+                    placeholder="Stock quantity"
+                    placeholderTextColor={theme.muted}
+                    style={{ flex: 1, height: 42, borderWidth: 1, borderColor: theme.border, borderRadius: 12, paddingHorizontal: 11, color: theme.text, backgroundColor: theme.card, fontSize: 12, fontWeight: "800" }}
+                  />
+                  <Pressable disabled={!!savingStock[order.id]} onPress={() => void updateOrderStock(order)} style={[styles.smallAction, { backgroundColor: BUTTON_BLUE, minWidth: 86, alignItems: "center", opacity: savingStock[order.id] ? .65 : 1 }]}>
+                    <Text style={styles.smallActionText}>{savingStock[order.id] ? "Saving…" : "Update stock"}</Text>
+                  </Pressable>
+                </View>
+              </View>
+              <OrderStatusControls status={order.status} theme={theme} onTransition={(next) => void transition(order, next)} />
+            </View>}
             {mineAsBuyer && order.status === "ready" && !order.buyer_confirmed && <Pressable onPress={() => void confirmReceived(order)} style={[styles.smallAction,{backgroundColor:"#16A34A"}]}><Text style={styles.smallActionText}>Confirm received</Text></Pressable>}
-            {mineAsBuyer && order.status === "pending" && <Pressable onPress={() => void transition(order,"cancelled")} style={[styles.smallAction,{backgroundColor:theme.background,borderWidth:1,borderColor:theme.border}]}><Text style={[styles.smallActionText,{color:theme.text}]}>Cancel</Text></Pressable>}
+            {mineAsBuyer && order.status === "pending" && <Pressable onPress={() => void transition(order,"cancelled")} style={[styles.smallAction,{backgroundColor:theme.background,borderWidth:1,borderColor:theme.border}]}><Text style={[styles.smallActionText,{color:theme.text}]}>Cancel order</Text></Pressable>}
           </View>
         </View>;
       })}</View>}
@@ -3541,7 +4191,7 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={[styles.chatName, { color: theme.text }]} numberOfLines={1}>{otherName}</Text>
-            {!!selectedConversation.store_name && <Text style={[styles.chatStore, { color: theme.muted }]} numberOfLines={1}>{selectedConversation.store_name}</Text>}
+            {!!selectedConversation.store_name && <StoreNameWithBadge name={selectedConversation.store_name} verified={!!selectedConversation.store_verified} style={[styles.chatStore, { color: theme.muted }]} />}
           </View>
           <View style={[styles.chatOnlineDot, { backgroundColor: "#22C55E" }]} />
         </View>
@@ -3601,7 +4251,7 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
         <View style={[styles.messageAvatar, { backgroundColor: theme.isDark ? "#24212B" : "#EFF6FF" }]}>{avatar ? <Image source={{ uri: avatar }} style={styles.messageAvatarImage} /> : <Text style={[styles.messageAvatarText, { color: theme.accent }]}>{initials}</Text>}</View>
         <View style={{ flex: 1, minWidth: 0 }}>
           <View style={styles.messageRowTop}><Text style={[styles.messageConversationName, { color: theme.text }]} numberOfLines={1}>{name}</Text><Text style={[styles.messageTime, { color: theme.muted }]}>{formatMessageTime(conversation.last_message?.created_at || conversation.updated_at)}</Text></View>
-          {!!conversation.store_name && <Text style={[styles.messageStoreName, { color: theme.accent }]} numberOfLines={1}>{conversation.store_name}</Text>}
+          {!!conversation.store_name && <StoreNameWithBadge name={conversation.store_name} verified={!!conversation.store_verified} style={[styles.messageStoreName, { color: theme.accent }]} />}
           <Text style={[styles.messagePreview, { color: theme.muted, fontWeight: (conversation.unread_count || 0) > 0 ? "800" : "500" }]} numberOfLines={1}>{conversation.last_message?.body || "Start a conversation"}</Text>
         </View>
         {(conversation.unread_count || 0) > 0 && <View style={styles.messageUnread}><Text style={styles.messageUnreadText}>{conversation.unread_count! > 9 ? "9+" : conversation.unread_count}</Text></View>}
@@ -3619,18 +4269,42 @@ function PreferenceSwitch({ theme, title, description, value, onValueChange }: {
 
 function SettingsPreferencesScreen({ theme, dark, setDark }: { theme: Theme; dark: boolean; setDark: (v:boolean)=>void }) {
   const [prefs, setPrefs] = useState<any>({ language: "English", region: "Kenya", currency: "KES", fulfillment: "Both", recommendations: true, recentlyViewed: true, recommendedListings: true, autoplay: true, highQuality: true, dataSaver: false, confirmDelete: true, confirmSignOut: true });
-  useEffect(() => { AsyncStorage.getItem("marketplace_settings").then(raw => { if (raw) setPrefs((p:any) => ({ ...p, ...JSON.parse(raw) })); }).catch(() => {}); }, []);
-  const update = (patch: any) => { const next = { ...prefs, ...patch }; setPrefs(next); void AsyncStorage.setItem("marketplace_settings", JSON.stringify(next)); };
+  const [picker, setPicker] = useState<"language"|"country"|"currency"|null>(null);
+  useEffect(() => { AsyncStorage.getItem("marketplace_settings").then(raw => { if (raw) { const loaded = JSON.parse(raw); setPrefs((p:any) => ({ ...p, ...loaded })); setMarketplaceLanguage(loaded.language || "English"); } }).catch(() => {}); }, []);
+  const update = (patch: any) => { const next = { ...prefs, ...patch }; setPrefs(next); if (patch.language) setMarketplaceLanguage(patch.language); void AsyncStorage.setItem("marketplace_settings", JSON.stringify(next)); };
+  const languages = ["English", "Swahili", "French", "Spanish", "Portuguese", "Arabic", "German", "Italian", "Chinese (Simplified)", "Japanese", "Korean", "Hindi", "Turkish", "Dutch", "Russian"];
+  const countries = [
+    ["Kenya","KES"],["Uganda","UGX"],["Tanzania","TZS"],["Rwanda","RWF"],["Ethiopia","ETB"],["Nigeria","NGN"],["Ghana","GHS"],["South Africa","ZAR"],["United States","USD"],["Canada","CAD"],["United Kingdom","GBP"],["Australia","AUD"],["India","INR"],["China","CNY"],["Japan","JPY"],["United Arab Emirates","AED"],["Saudi Arabia","SAR"],["Germany","EUR"],["France","EUR"],["Italy","EUR"],["Spain","EUR"]
+  ];
+  const currencies = ["KES","UGX","TZS","RWF","ETB","NGN","GHS","ZAR","USD","CAD","GBP","AUD","INR","CNY","JPY","AED","SAR","EUR"];
+  const pickerTitle = picker === "language" ? "Choose language" : picker === "country" ? "Choose country / region" : "Choose currency";
+  const pickerOptions = picker === "language" ? languages : picker === "country" ? countries.map(([name]) => name) : currencies;
+  const choose = (value:string) => {
+    if (picker === "language") update({ language: value });
+    if (picker === "country") { const found = countries.find(([name]) => name === value); update({ region: value, currency: found?.[1] || prefs.currency }); }
+    if (picker === "currency") update({ currency: value });
+    setPicker(null);
+  };
   return <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
     <SettingsSection theme={theme} title="Appearance"><SettingRow theme={theme} icon={<Moon size={19} color={theme.text}/>} title="Theme" trailing={<View style={{ flexDirection: "row", gap: 5 }}><ChoiceChip theme={theme} label="System" selected={!dark && prefs.theme !== "light"} onPress={() => { setDark(false); update({ theme: "system" }); }} /><ChoiceChip theme={theme} label="Light" selected={!dark && prefs.theme === "light"} onPress={() => { setDark(false); update({ theme: "light" }); }} /><ChoiceChip theme={theme} label="Dark" selected={dark} onPress={() => { setDark(true); update({ theme: "dark" }); }} /></View>} /></SettingsSection>
-    <SettingsSection theme={theme} title="Language"><SettingRow theme={theme} icon={<Compass size={19} color={theme.text}/>} title="App language" trailing={<Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.language}</Text>} /></SettingsSection>
-    <SettingsSection theme={theme} title="Region & Currency"><SettingRow theme={theme} icon={<MapPin size={19} color={theme.text}/>} title="Country / Region" trailing={<Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.region}</Text>} /><SettingRow theme={theme} icon={<Tag size={19} color={theme.text}/>} title="Currency" trailing={<Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.currency}</Text>} /></SettingsSection>
+    <SettingsSection theme={theme} title="Language"><Pressable onPress={() => setPicker("language")}><SettingRow theme={theme} icon={<Compass size={19} color={theme.text}/>} title="App language" trailing={<View style={{flexDirection:"row",alignItems:"center",gap:6}}><Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.language}</Text><ChevronRight size={17} color={theme.muted}/></View>} /></Pressable></SettingsSection>
+    <SettingsSection theme={theme} title="Country & Currency">
+      <Pressable onPress={() => setPicker("country")}><SettingRow theme={theme} icon={<MapPin size={19} color={theme.text}/>} title="Country / Region" trailing={<View style={{flexDirection:"row",alignItems:"center",gap:6}}><Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.region}</Text><ChevronRight size={17} color={theme.muted}/></View>} /></Pressable>
+      <Pressable onPress={() => setPicker("currency")}><SettingRow theme={theme} icon={<Tag size={19} color={theme.text}/>} title="Currency" subtitle="Used for displaying marketplace prices." trailing={<View style={{flexDirection:"row",alignItems:"center",gap:6}}><Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.currency}</Text><ChevronRight size={17} color={theme.muted}/></View>} /></Pressable>
+    </SettingsSection>
     <SettingsSection theme={theme} title="Marketplace Preferences"><ChoiceRow theme={theme} title="Preferred fulfillment" options={["Pickup","Delivery","Both"]} value={prefs.fulfillment} onChange={(v)=>update({fulfillment:v})} /><PreferenceSwitch theme={theme} title="Personalized recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})} /><PreferenceSwitch theme={theme} title="Recently viewed items" value={prefs.recentlyViewed} onValueChange={(v)=>update({recentlyViewed:v})} /><PreferenceSwitch theme={theme} title="Show recommended listings" value={prefs.recommendedListings} onValueChange={(v)=>update({recommendedListings:v})} /></SettingsSection>
     <SettingsSection theme={theme} title="Media & Data"><PreferenceSwitch theme={theme} title="Autoplay listing videos" value={prefs.autoplay} onValueChange={(v)=>update({autoplay:v})} /><PreferenceSwitch theme={theme} title="Load high-quality images" value={prefs.highQuality} onValueChange={(v)=>update({highQuality:v})} /><PreferenceSwitch theme={theme} title="Data saver mode" value={prefs.dataSaver} onValueChange={(v)=>update({dataSaver:v})} /><Pressable onPress={() => Alert.alert("Clear cached data", "No separate app cache is currently exposed by the existing storage system.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><RotateCcw size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Clear cached data</Text></Pressable></SettingsSection>
-    <SettingsSection theme={theme} title="App Behavior"><PreferenceSwitch theme={theme} title="Confirm before deleting a listing" value={prefs.confirmDelete} onValueChange={(v)=>update({confirmDelete:v})} /><PreferenceSwitch theme={theme} title="Confirm before signing out" value={prefs.confirmSignOut} onValueChange={(v)=>update({confirmSignOut:v})} /><Pressable onPress={() => Alert.alert("Reset app preferences", "Reset all locally stored Marketplace preferences?", [{text:"Cancel",style:"cancel"},{text:"Reset",style:"destructive",onPress:async()=>{await AsyncStorage.removeItem("marketplace_settings");setPrefs({ language:"English",region:"Kenya",currency:"KES",fulfillment:"Both",recommendations:true,recentlyViewed:true,recommendedListings:true,autoplay:true,highQuality:true,dataSaver:false,confirmDelete:true,confirmSignOut:true });setDark(false);}}])} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><RotateCcw size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Reset app preferences</Text></Pressable></SettingsSection>
+    <SettingsSection theme={theme} title="App Behavior"><PreferenceSwitch theme={theme} title="Confirm before deleting a listing" value={prefs.confirmDelete} onValueChange={(v)=>update({confirmDelete:v})} /><PreferenceSwitch theme={theme} title="Confirm before signing out" value={prefs.confirmSignOut} onValueChange={(v)=>update({confirmSignOut:v})} /><Pressable onPress={() => Alert.alert("Reset app preferences", "Reset all locally stored Marketplace preferences?", [{text:"Cancel",style:"cancel"},{text:"Reset",style:"destructive",onPress:async()=>{await AsyncStorage.removeItem("marketplace_settings");setPrefs({ language:"English",region:"Kenya",currency:"KES",fulfillment:"Both",recommendations:true,recentlyViewed:true,recommendedListings:true,autoplay:true,highQuality:true,dataSaver:false,confirmDelete:true,confirmSignOut:true });setDark(false);setMarketplaceLanguage("English");}}])} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><RotateCcw size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Reset app preferences</Text></Pressable></SettingsSection>
+    <Modal visible={picker !== null} transparent animationType="slide" onRequestClose={() => setPicker(null)}>
+      <View style={{flex:1,backgroundColor:"rgba(0,0,0,.48)",justifyContent:"flex-end"}}>
+        <View style={{maxHeight:"82%",backgroundColor:theme.card,borderTopLeftRadius:24,borderTopRightRadius:24,padding:18}}>
+          <View style={{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12}}><Text style={{fontSize:19,fontWeight:"900",color:theme.text}}>{pickerTitle}</Text><Pressable onPress={()=>setPicker(null)} style={styles.topIcon}><X size={20} color={theme.text}/></Pressable></View>
+          <ScrollView showsVerticalScrollIndicator={false}>{pickerOptions.map((option:string)=><Pressable key={option} onPress={()=>choose(option)} style={{paddingVertical:14,paddingHorizontal:12,borderBottomWidth:1,borderBottomColor:theme.border,flexDirection:"row",alignItems:"center",justifyContent:"space-between"}}><Text style={{fontSize:15,fontWeight:"700",color:theme.text}}>{option}</Text>{((picker==="language"&&prefs.language===option)||(picker==="country"&&prefs.region===option)||(picker==="currency"&&prefs.currency===option))&&<Check size={18} color={BUTTON_BLUE}/>}</Pressable>)}</ScrollView>
+        </View>
+      </View>
+    </Modal>
   </ScreenScroll>;
 }
-
 function SecurityPrivacyScreen({ theme, auth, onSignOut }: { theme: Theme; auth: AuthPayload | null; onSignOut: () => void }) {
   const [prefs, setPrefs] = useState<any>({ profileVisibility: true, contact: true, activity: true, recommendations: true, sharing: false });
   useEffect(() => { AsyncStorage.getItem("marketplace_privacy").then(raw => { if(raw) setPrefs((p:any)=>({...p,...JSON.parse(raw)})); }).catch(()=>{}); }, []);
@@ -3737,22 +4411,57 @@ function PublicStoreScreen({ theme, auth, listing, onOpenProduct }: { theme: The
   const [store, setStore] = useState<any>(null);
   const [items, setItems] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { (async () => { try { const [s, l] = await Promise.all([apiRequest(`/api/stores/${listing.storeId}/`, {}, auth), apiRequest(`/api/stores/${listing.storeId}/listings/`, {}, auth)]); setStore(s); setItems(apiResults<any>(l).map(mapApiListing)); } catch {} finally { setLoading(false); } })(); }, [listing.storeId]);
-  const storeItems = items.filter(x => String(x.id) !== String(listing.id));
+  const [followLoading, setFollowLoading] = useState(false);
+  const [following, setFollowing] = useState(false);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  useEffect(() => { (async () => { try { const [s, l] = await Promise.all([apiRequest(`/api/stores/${listing.storeId}/`, {}, auth), apiRequest(`/api/stores/${listing.storeId}/listings/`, {}, auth)]); setStore(s); setFollowing(!!s?.followed_by_user); setItems(apiResults<any>(l).map(mapApiListing)); } catch {} finally { setLoading(false); } })(); }, [listing.storeId, auth?.access]);
+  const storeItems = useMemo(() => {
+    const currentId = String(listing.id);
+    const hasCurrent = items.some(x => String(x.id) === currentId);
+    return hasCurrent ? items : [listing, ...items];
+  }, [items, listing]);
+  const isOwnStore = !!auth?.user?.id && Number(store?.owner) === Number(auth.user.id);
+  const toggleFollow = async () => {
+    if (!auth?.access) { Alert.alert("Sign in required", "Please sign in to follow a store."); return; }
+    if (!store?.id || isOwnStore || followLoading) return;
+    const next = !following;
+    setFollowing(next); setFollowLoading(true);
+    try {
+      await apiRequest(`/api/stores/${store.id}/follow/`, { method: next ? "POST" : "DELETE" }, auth);
+      setStore((prev: any) => ({ ...prev, followed_by_user: next, followers_count: Math.max(0, Number(prev?.followers_count || 0) + (next ? 1 : -1)) }));
+    } catch (e) { setFollowing(!next); Alert.alert("Couldn't update follow", "Please try again."); } finally { setFollowLoading(false); }
+  };
   return <ScreenScroll theme={theme} contentStyle={{paddingBottom:124}}>
-    <View style={[styles.detailSectionCard, { backgroundColor: theme.card, borderColor: theme.border, borderRadius: 24, padding: 18 }]}>
-      <View style={{flexDirection:"row",alignItems:"center",gap:13}}>
-        {store?.logo ? <Image source={{uri:store.logo}} style={{width:66,height:66,borderRadius:20}}/> : <View style={{width:66,height:66,borderRadius:20,backgroundColor:theme.background,alignItems:"center",justifyContent:"center"}}><Store size={28} color={theme.accent}/></View>}
-        <View style={{flex:1}}><DisplayText style={[styles.productTitle,{color:theme.text}]} value={store?.name || listing.store} fallback="Store" /><DisplayText style={{color:theme.muted,marginTop:3}} value={`${safeDisplayText(store?.owner_name, "Seller")} · ${safeDisplayText(store?.location, "Marketplace")}`} /></View>
-      </View>
-      <DisplayText style={[styles.detailText,{color:theme.muted,marginTop:14}]} value={store?.description} fallback="Explore products, seller information and other items from this store." />
-      <View style={{flexDirection:"row",gap:10,marginTop:16}}>
-        <View style={[styles.publicStoreStat,{backgroundColor:theme.background}]}><Text style={[styles.publicStoreStatValue,{color:theme.text}]}>{storeItems.length}</Text><Text style={[styles.publicStoreStatLabel,{color:theme.muted}]}>Items</Text></View>
-        <View style={[styles.publicStoreStat,{backgroundColor:theme.background}]}><Store size={15} color={theme.accent}/><Text style={[styles.publicStoreStatLabel,{color:theme.muted}]}>Storefront</Text></View>
+    <View style={[styles.detailSectionCard, { backgroundColor: theme.card, borderColor: theme.border, borderRadius: 24, padding: 0, overflow:"hidden" }]}>
+      {store?.cover ? <Image source={{uri:store.cover}} style={{width:"100%",height:150,backgroundColor:theme.background}} /> : <View style={{width:"100%",height:150,backgroundColor:theme.background,alignItems:"center",justifyContent:"center"}}><Store size={36} color={theme.muted}/></View>}
+      <View style={{padding:18}}>
+        <View style={{flexDirection:"row",alignItems:"center",gap:13}}>
+          {store?.logo ? <Image source={{uri:store.logo}} style={{width:72,height:72,borderRadius:22,borderWidth:3,borderColor:theme.card,marginTop:-48}}/> : <View style={{width:72,height:72,borderRadius:22,backgroundColor:theme.background,alignItems:"center",justifyContent:"center",borderWidth:3,borderColor:theme.card,marginTop:-48}}><Store size={28} color={theme.accent}/></View>}
+          <View style={{flex:1,paddingTop:2}}><StoreNameWithBadge name={safeDisplayText(store?.name || listing.store, "Store")} verified={!!store?.email_verified || !!listing.storeVerified} style={[styles.productTitle,{color:theme.text}]} /><DisplayText style={{color:theme.muted,marginTop:3}} value={safeDisplayText(store?.owner_name, "Seller")} /></View>
+        </View>
+        {!!store?.location && <View style={{marginTop:9}}><DisplayText style={{color:theme.muted,flex:1}} value={safeDisplayText(store?.location, "Marketplace")} /></View>}
+        {!!store?.phone && <View style={{flexDirection:"row",alignItems:"center",gap:7,marginTop:7}}><Phone size={14} color={theme.muted}/><Text style={{color:theme.text,fontSize:12,fontWeight:"700"}}>{store.phone}</Text></View>}
+        {!!store?.owner_email && <Pressable onPress={() => void Linking.openURL(`mailto:${store.owner_email}`)} style={{flexDirection:"row",alignItems:"center",gap:7,marginTop:7}}><Mail size={14} color={theme.muted}/><Text style={{color:theme.text,fontSize:12,fontWeight:"700",textDecorationLine:"underline",flex:1}} numberOfLines={1}>{store.owner_email}</Text></Pressable>}
+        {!!store?.description ? (
+          <View style={{marginTop:14}}>
+            <Text style={[styles.detailText,{color:theme.muted}]} numberOfLines={descriptionExpanded ? undefined : 3}>{store.description}</Text>
+            {String(store.description).length > 180 && <Pressable onPress={() => setDescriptionExpanded(v => !v)} hitSlop={6} style={{alignSelf:"flex-start",marginTop:5}}>
+              <Text style={{color:BUTTON_BLUE,fontSize:12,fontWeight:"900"}}>{descriptionExpanded ? "Read less" : "Read more"}</Text>
+            </Pressable>}
+          </View>
+        ) : <DisplayText style={[styles.detailText,{color:theme.muted,marginTop:14}]} value={undefined} fallback="Explore products, seller information and other items from this store." />}
+        {!isOwnStore && <Pressable onPress={toggleFollow} disabled={followLoading} style={{height:44,borderRadius:13,marginTop:14,backgroundColor:following ? theme.background : BUTTON_BLUE,borderWidth:following ? 1 : 0,borderColor:theme.border,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7,opacity:followLoading ? .65 : 1}}>
+          <Users size={17} color={following ? theme.text : "#fff"}/><Text style={{fontSize:12,fontWeight:"900",color:following ? theme.text : "#fff"}}>{followLoading ? "Updating..." : following ? "Following" : "Follow store"}</Text>
+        </Pressable>}
+        <Text style={{textAlign:"center",color:theme.muted,fontSize:10.5,fontWeight:"700",marginTop:7}}>{Number(store?.followers_count || 0).toLocaleString()} {Number(store?.followers_count || 0) === 1 ? "person" : "people"} follow this store</Text>
+        <View style={{flexDirection:"row",gap:10,marginTop:16}}>
+          <View style={[styles.publicStoreStat,{backgroundColor:theme.background}]}><Text style={[styles.publicStoreStatValue,{color:theme.text}]}>{items.length}</Text><Text style={[styles.publicStoreStatLabel,{color:theme.muted}]}>All items</Text></View>
+          <View style={[styles.publicStoreStat,{backgroundColor:theme.background}]}><Text style={[styles.publicStoreStatValue,{color:theme.text}]}>{items.filter(x => !x.isAvailable).length}</Text><Text style={[styles.publicStoreStatLabel,{color:theme.muted}]}>Out of stock</Text></View>
+        </View>
       </View>
     </View>
-    <View style={{marginTop:20,marginBottom:10}}><Text style={[styles.detailSectionTitle,{color:theme.text}]}>Other items from this store</Text><Text style={[styles.detailSectionSub,{color:theme.muted}]}>More products from this seller.</Text></View>
-    {loading ? <ActivityIndicator color={BUTTON_BLUE} style={{marginTop:20}}/> : storeItems.length ? <View style={styles.storeListingGrid}>{storeItems.map(x=><StoreListingCard key={x.id} listing={x} theme={theme} onPress={()=>onOpenProduct(x)} />)}</View> : <View style={[styles.detailSectionCard,{backgroundColor:theme.card,borderColor:theme.border,alignItems:"center",paddingVertical:28}]}><Store size={24} color={theme.muted}/><Text style={[styles.detailSectionTitle,{color:theme.text,marginTop:8}]}>No other items yet</Text><Text style={[styles.detailSectionSub,{color:theme.muted,textAlign:"center",marginTop:4}]}>Check back later for more products.</Text></View>}
+    <View style={{marginTop:20,marginBottom:10}}><Text style={[styles.detailSectionTitle,{color:theme.text}]}>All products from this store</Text><Text style={[styles.detailSectionSub,{color:theme.muted}]}>Products available from this seller, including out-of-stock items.</Text></View>
+    {loading ? <ActivityIndicator color={BUTTON_BLUE} style={{marginTop:20}}/> : storeItems.length ? <View style={styles.storeListingGrid}>{storeItems.map(x=><StoreListingCard key={x.id} listing={x} theme={theme} onPress={()=>onOpenProduct(x)} />)}</View> : <View style={[styles.detailSectionCard,{backgroundColor:theme.card,borderColor:theme.border,alignItems:"center",paddingVertical:28}]}><Store size={24} color={theme.muted}/><Text style={[styles.detailSectionTitle,{color:theme.text,marginTop:8}]}>No products yet</Text><Text style={[styles.detailSectionSub,{color:theme.muted,textAlign:"center",marginTop:4}]}>Check back later for products from this store.</Text></View>}
   </ScreenScroll>;
 }
 
@@ -3898,9 +4607,27 @@ function StoreVerificationModal({ theme, auth, onClose, onVerified }: { theme: T
   );
 }
 
+function StoreTrendBar({ theme, label, value, max, meta }: { theme: Theme; label: string; value: number; max: number; meta?: string }) {
+  const width = max > 0 ? Math.max(4, (value / max) * 100) : 4;
+  return (
+    <View style={{ marginBottom: 14 }}>
+      <View style={styles.rowBetween}>
+        <Text style={{ color: theme.text, fontWeight: "700", flex: 1 }} numberOfLines={1}>{label}</Text>
+        <Text style={{ color: theme.muted, fontSize: 12, fontWeight: "700" }}>{meta || value.toLocaleString()}</Text>
+      </View>
+      <View style={{ height: 9, borderRadius: 999, backgroundColor: theme.isDark ? "#1F2937" : "#EEF2F7", marginTop: 7, overflow: "hidden" }}>
+        <View style={{ height: "100%", width: `${width}%`, borderRadius: 999, backgroundColor: BUTTON_BLUE }} />
+      </View>
+    </View>
+  );
+}
+
 function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserUpdated }: { theme: Theme; auth: AuthPayload | null; onOpenProduct: (listing: Listing) => void; onMarketplaceChanged?: () => void; onUserUpdated?: (user: ApiUser) => void }) {
   const [store, setStore] = useState<ProfileStore | null>(null);
   const [mine, setMine] = useState<Listing[]>([]);
+  const [sellerOrders, setSellerOrders] = useState<OrderItem[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<"listings" | "orders" | "earnings" | "trends">("listings");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -3927,200 +4654,218 @@ function StoreScreen({ theme, auth, onOpenProduct, onMarketplaceChanged, onUserU
     }
   };
 
-  useEffect(() => {
-    void loadStore();
-  }, [auth?.access]);
+  const loadSellerOrders = async () => {
+    if (!auth?.access) return;
+    setOrdersLoading(true);
+    try {
+      const data = apiResults<OrderItem>(await apiRequest("/api/orders/", {}, auth));
+      const mineIds = new Set(mine.map((listing) => String(listing.id)));
+      setSellerOrders(data.filter((order) => String(order.seller) === String(auth.user?.id) && mineIds.has(String(order.listing))));
+    } catch (e) {
+      Alert.alert("Couldn't load orders", e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setOrdersLoading(false);
+    }
+  };
+
+  const transitionSellerOrder = async (order: OrderItem, nextStatus: OrderItem["status"]) => {
+    try {
+      const updated = await apiRequest(`/api/orders/${order.id}/transition/`, { method: "POST", body: JSON.stringify({ status: nextStatus }) }, auth) as OrderItem;
+      setSellerOrders(items => items.map(x => x.id === order.id ? updated : x));
+    } catch (e) {
+      const apiError = e instanceof ApiRequestError ? e : null;
+      if (apiError?.code === "INSUFFICIENT_STOCK" || apiError?.code === "OUT_OF_STOCK") {
+        const listing = mine.find(item => String(item.id) === String(order.listing));
+        Alert.alert(
+          "Cannot accept order",
+          apiError.message || "This item does not have enough stock to fulfil the requested quantity. Please restock it before accepting the order.",
+          [
+            { text: "Not now", style: "cancel" },
+            ...(listing ? [{ text: "Restock item", onPress: () => setEditingListing(listing) }] : []),
+          ]
+        );
+        return;
+      }
+      Alert.alert("Couldn't update order", e instanceof Error ? e.message : "Please try again.");
+    }
+  };
+
+  useEffect(() => { void loadStore(); }, [auth?.access]);
+  useEffect(() => { if (activeTab === "orders" || activeTab === "earnings" || activeTab === "trends") void loadSellerOrders(); }, [activeTab, auth?.access, mine.length]);
 
   const activeListings = mine.length;
   const storeInitial = (store?.name || "My Store").trim().slice(0, 1).toUpperCase();
   const cover = store?.cover || "";
   const logo = store?.logo || "";
   const promptStoreProfileEdit = () => {
-    Alert.alert(
-      "Edit store profile",
-      "Update your store logo, cover photo, and storefront details.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Edit store profile", onPress: () => setEditing(true) },
-      ],
-    );
+    Alert.alert("Edit store profile", "Update your store logo, cover photo, and storefront details.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Edit store profile", onPress: () => setEditing(true) },
+    ]);
   };
+
+  const salesByListing = sellerOrders.reduce<Record<string, number>>((acc, order) => {
+    if (order.status === "completed") acc[String(order.listing)] = (acc[String(order.listing)] || 0) + Number(order.quantity || 0);
+    return acc;
+  }, {});
+  const viewsTotal = mine.reduce((sum, item) => sum + Number(item.viewsCount || 0), 0);
+  const savesTotal = mine.reduce((sum, item) => sum + Number(item.savedCount || 0), 0);
+  const salesTotal = Object.values(salesByListing).reduce((sum, value) => sum + value, 0);
+  const mostViewed = [...mine].sort((a, b) => Number(b.viewsCount || 0) - Number(a.viewsCount || 0)).slice(0, 5);
+  const mostSaved = [...mine].sort((a, b) => Number(b.savedCount || 0) - Number(a.savedCount || 0)).slice(0, 5);
+  const topSales = [...mine].sort((a, b) => (salesByListing[String(b.id)] || 0) - (salesByListing[String(a.id)] || 0)).slice(0, 5);
 
   return (
     <>
-    <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 124, paddingTop: 0 }}>
-      {/* Store identity */}
-      <View style={[styles.storePageCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-        <View style={styles.storeCover}>
-          <Pressable
-            onPress={promptStoreProfileEdit}
-            accessibilityRole="button"
-            accessibilityLabel="Edit store cover photo"
-            style={[StyleSheet.absoluteFillObject, { zIndex: 0 }]}
-          >
-            {cover ? (
-              <Image source={{ uri: cover }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
-            ) : (
-              <View style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.isDark ? "#172554" : "#DBEAFE" }]}>
-                <View style={styles.storeCoverGlow} />
-              </View>
-            )}
-          </Pressable>
-          <View pointerEvents="none" style={[styles.storeCoverShade, { zIndex: 1 }]} />
-          <View style={[styles.storeCoverTopRow, { zIndex: 3 }]}>
-            <View style={styles.storeStatusPill}>
-              <View style={[styles.storeStatusDot, { backgroundColor: store?.is_active === false ? "#F59E0B" : "#22C55E" }]} />
-              <Text style={styles.storeStatusText}>{store?.is_active === false ? "Setup needed" : "Store active"}</Text>
+      <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 124, paddingTop: 0 }}>
+        <View style={[styles.storePageCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <View style={styles.storeCover}>
+            <Pressable onPress={promptStoreProfileEdit} accessibilityRole="button" accessibilityLabel="Edit store cover photo" style={[StyleSheet.absoluteFillObject, { zIndex: 0 }]}>
+              {cover ? <Image source={{ uri: cover }} style={StyleSheet.absoluteFillObject} resizeMode="cover" /> : <View style={[StyleSheet.absoluteFillObject, { backgroundColor: theme.isDark ? "#172554" : "#DBEAFE" }]}><View style={styles.storeCoverGlow} /></View>}
+            </Pressable>
+            <View pointerEvents="none" style={[styles.storeCoverShade, { zIndex: 1 }]} />
+            <View style={[styles.storeCoverTopRow, { zIndex: 3 }]}>
+              <View style={styles.storeStatusPill}><View style={[styles.storeStatusDot, { backgroundColor: store?.is_active === false ? "#F59E0B" : "#22C55E" }]} /><Text style={styles.storeStatusText}>{store?.is_active === false ? "Setup needed" : "Store active"}</Text></View>
+              <Pressable onPress={() => void loadStore(true)} style={styles.storeCircleButton} disabled={refreshing}>{refreshing ? <ActivityIndicator size="small" color="#fff" /> : <RotateCcw size={16} color="#fff" />}</Pressable>
             </View>
-            <Pressable onPress={() => void loadStore(true)} style={styles.storeCircleButton} disabled={refreshing}>
-              {refreshing ? <ActivityIndicator size="small" color="#fff" /> : <RotateCcw size={16} color="#fff" />}
+            <Pressable onPress={promptStoreProfileEdit} accessibilityRole="button" accessibilityLabel="Edit store logo" hitSlop={8} style={[styles.storeCoverLogoHolder, { backgroundColor: theme.isDark ? "#1D4ED8" : BUTTON_BLUE, borderColor: theme.card, zIndex: 3 }]}>
+              {logo ? <Image source={{ uri: logo }} style={styles.storeCoverLogoImage} /> : <Text style={styles.storeLogoLetter}>{storeInitial}</Text>}
             </Pressable>
           </View>
-          <Pressable
-            onPress={promptStoreProfileEdit}
-            accessibilityRole="button"
-            accessibilityLabel="Edit store logo"
-            hitSlop={8}
-            style={[styles.storeCoverLogoHolder, { backgroundColor: theme.isDark ? "#1D4ED8" : BUTTON_BLUE, borderColor: theme.card, zIndex: 3 }]}
-          >
-            {logo ? <Image source={{ uri: logo }} style={styles.storeCoverLogoImage} /> : <Text style={styles.storeLogoLetter}>{storeInitial}</Text>}
-          </Pressable>
-        </View>
-
-        <View style={[styles.storeIdentityBlock, { paddingTop: 14 }]}>
-          <View style={styles.storeIdentityText}>
-            <View style={styles.storeNameRow}>
-              <Text style={[styles.storePageTitle, { color: theme.text }]} numberOfLines={1}>{store?.name || "My Store"}</Text>
-              {store?.verification && store.verification !== "new" ? <MetaVerifiedBadge size={19} /> : null}
+          <View style={[styles.storeIdentityBlock, { paddingTop: 14 }]}>
+            <View style={styles.storeIdentityText}>
+              <View style={styles.storeNameRow}><Text style={[styles.storePageTitle, { color: theme.text }]} numberOfLines={1}>{store?.name || "My Store"}</Text>{store?.email_verified ? <MetaVerifiedBadge size={19} /> : null}</View>
+              <View style={styles.storeIdentityLabelRow}><Text style={[styles.storeIdentityLabel,{color:BUTTON_BLUE}]}>STORE IDENTITY</Text><Text style={[styles.storeOwnerLabel,{color:theme.muted}]}>Owned by your profile</Text></View>
+              <Text style={[styles.storePageDescription, { color: theme.muted }]} numberOfLines={2}>{store?.description || "Create a trusted storefront and keep your products ready for buyers."}</Text>
+              <View style={styles.storeMetaLine}>{store?.location ? <><MapPin size={12} color={theme.muted} /><Text style={[styles.storeMetaText, { color: theme.muted }]} numberOfLines={1}>{store.location}</Text></> : <Text style={[styles.storeMetaText, { color: theme.muted }]}>Your marketplace storefront</Text>}</View>
             </View>
-            <View style={styles.storeIdentityLabelRow}><Text style={[styles.storeIdentityLabel,{color:BUTTON_BLUE}]}>STORE IDENTITY</Text><Text style={[styles.storeOwnerLabel,{color:theme.muted}]}>Owned by your profile</Text></View>
-            <Text style={[styles.storePageDescription, { color: theme.muted }]} numberOfLines={2}>
-              {store?.description || "Create a trusted storefront and keep your products ready for buyers."}
-            </Text>
-            <View style={styles.storeMetaLine}>
-              {store?.location ? <><MapPin size={12} color={theme.muted} /><Text style={[styles.storeMetaText, { color: theme.muted }]} numberOfLines={1}>{store.location}</Text></> : <Text style={[styles.storeMetaText, { color: theme.muted }]}>Your marketplace storefront</Text>}
-            </View>
+          </View>
+          <View style={[styles.storeStatsRow, { borderTopColor: theme.border, borderBottomColor: theme.border }]}>
+            <View style={styles.storeStat}><Text style={[styles.storeStatValue, { color: theme.text }]}>{activeListings}</Text><Text style={[styles.storeStatLabel, { color: theme.muted }]}>Listings</Text></View>
+            <View style={[styles.storeStatDivider, { backgroundColor: theme.border }]} />
+            <View style={styles.storeStat}><Text style={[styles.storeStatValue, { color: theme.text }]}>{mine.filter(x => x.stock === undefined || (x.stock || 0) > 0).length}</Text><Text style={[styles.storeStatLabel, { color: theme.muted }]}>Available</Text></View>
+            <View style={[styles.storeStatDivider, { backgroundColor: theme.border }]} />
+            <View style={styles.storeStat}><Text style={[styles.storeStatValue, { color: theme.text }]}>{salesTotal}</Text><Text style={[styles.storeStatLabel, { color: theme.muted }]}>Sales</Text></View>
+          </View>
+          <View style={styles.storeQuickActions}>
+            <Pressable onPress={() => setStoreVerificationOpen(true)} style={[styles.storePrimaryAction, { backgroundColor: BUTTON_BLUE }]}><Settings size={16} color="#fff" /><Text style={styles.storePrimaryActionText}>Manage store</Text></Pressable>
+            <Pressable onPress={() => Alert.alert("Store sharing", "Your public store sharing link will be available when store pages are enabled.")} style={[styles.storeSecondaryAction, { backgroundColor: theme.card, borderColor: theme.border }]}><Share2 size={16} color={theme.text} /><Text style={[styles.storeSecondaryActionText, { color: theme.text }]}>Share</Text></Pressable>
           </View>
         </View>
 
-        <View style={[styles.storeStatsRow, { borderTopColor: theme.border, borderBottomColor: theme.border }]}>
-          <View style={styles.storeStat}><Text style={[styles.storeStatValue, { color: theme.text }]}>{activeListings}</Text><Text style={[styles.storeStatLabel, { color: theme.muted }]}>Listings</Text></View>
-          <View style={[styles.storeStatDivider, { backgroundColor: theme.border }]} />
-          <View style={styles.storeStat}><Text style={[styles.storeStatValue, { color: theme.text }]}>{mine.filter(x => x.stock === undefined || (x.stock || 0) > 0).length}</Text><Text style={[styles.storeStatLabel, { color: theme.muted }]}>Available</Text></View>
-          <View style={[styles.storeStatDivider, { backgroundColor: theme.border }]} />
-          <View style={styles.storeStat}><Text style={[styles.storeStatValue, { color: theme.text }]}>—</Text><Text style={[styles.storeStatLabel, { color: theme.muted }]}>Sales</Text></View>
+        <View style={[styles.storeTabBar, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          {([['listings', 'My listings'], ['orders', 'My orders'], ['earnings', 'Earnings'], ['trends', 'Trends']] as const).map(([key, label]) => {
+            const attentionCount = key === "listings"
+              ? mine.filter(item => Number(item.stock ?? 0) <= 0).length
+              : key === "orders"
+                ? sellerOrders.filter(order => String(order.status || "pending") === "pending").length
+                : 0;
+            return (
+              <Pressable key={key} onPress={() => setActiveTab(key)} style={[styles.storeTab, activeTab === key && { backgroundColor: theme.isDark ? "#1E3A8A" : "#EFF6FF" }]}>
+                <View style={styles.storeTabLabelRow}>
+                  <Text style={[styles.storeTabText, { color: activeTab === key ? BUTTON_BLUE : theme.muted }]}>{label}</Text>
+                  {attentionCount > 0 ? (
+                    <View style={styles.storeAttentionBadge}>
+                      <Text style={styles.storeAttentionBadgeText}>{attentionCount > 99 ? "99+" : attentionCount}</Text>
+                    </View>
+                  ) : null}
+                </View>
+              </Pressable>
+            );
+          })}
         </View>
 
-        <View style={styles.storeQuickActions}>
-          <Pressable onPress={() => setStoreVerificationOpen(true)} style={[styles.storePrimaryAction, { backgroundColor: BUTTON_BLUE }]}>
-            <Settings size={16} color="#fff" /><Text style={styles.storePrimaryActionText}>Manage store</Text>
-          </Pressable>
-          <Pressable onPress={() => Alert.alert("Store sharing", "Your public store sharing link will be available when store pages are enabled.")} style={[styles.storeSecondaryAction, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <Share2 size={16} color={theme.text} /><Text style={[styles.storeSecondaryActionText, { color: theme.text }]}>Share</Text>
-          </Pressable>
-        </View>
-      </View>
+        {activeTab === "listings" && <>
+          <View style={styles.storeListingsHeader}><View><Text style={[styles.storeListingsTitle, { color: theme.text }]}>My listings</Text><Text style={[styles.storeListingsSubtitle, { color: theme.muted }]}>{mine.length ? `${mine.length} live item${mine.length === 1 ? "" : "s"}` : "Your published products will appear here."}</Text></View><View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}><View style={[styles.storeCountPill, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><Text style={[styles.storeCountText, { color: BUTTON_BLUE }]}>{mine.length}</Text></View>{mine.filter(item => Number(item.stock ?? 0) <= 0).length > 0 ? <View style={styles.storeAttentionPill}><AlertCircle size={12} color="#B91C1C" /><Text style={styles.storeAttentionPillText}>{mine.filter(item => Number(item.stock ?? 0) <= 0).length} need attention</Text></View> : null}</View></View>
+          {loading ? <View style={[styles.storeLoadingCard, { backgroundColor: theme.card, borderColor: theme.border }]}><ActivityIndicator color={BUTTON_BLUE} /><Text style={[styles.storeLoadingText, { color: theme.muted }]}>Loading your store…</Text></View> : error ? <View style={[styles.storeErrorCard, { backgroundColor: theme.card, borderColor: theme.border }]}><AlertCircle size={20} color="#EF4444" /><View style={{ flex: 1 }}><Text style={[styles.storeErrorTitle, { color: theme.text }]}>Couldn't load your store</Text><Text style={[styles.storeErrorText, { color: theme.muted }]}>{error}</Text></View><Pressable onPress={() => void loadStore()} style={[styles.storeRetryButton, { backgroundColor: BUTTON_BLUE }]}><Text style={styles.storeRetryText}>Retry</Text></Pressable></View> : mine.length === 0 ? <View style={[styles.storeEmptyCard, { backgroundColor: theme.card, borderColor: theme.border }]}><View style={[styles.storeEmptyIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><Store size={22} color={BUTTON_BLUE} /></View><Text style={[styles.storeEmptyTitle, { color: theme.text }]}>Your store is ready for its first listing</Text><Text style={[styles.storeEmptyText, { color: theme.muted }]}>Add a product or service to start building your storefront.</Text></View> : <View style={styles.storeListingGrid}>{mine.map((listing) => <StoreListingCard key={listing.id} listing={listing} theme={theme} onPress={() => onOpenProduct(listing)} onEdit={() => setEditingListing(listing)} />)}</View>}
+        </>}
 
-      {/* Seller shortcuts */}
-      <View style={[styles.storeToolsCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-        <View style={styles.storeToolsHeader}>
-          <View>
-            <Text style={[styles.storeToolsTitle, { color: theme.text }]}>Seller workspace</Text>
-            <Text style={[styles.storeToolsSubtitle, { color: theme.muted }]}>Keep your storefront healthy and buyer-ready.</Text>
+        {activeTab === "orders" && <View style={{ marginTop: 16 }}>
+          <View style={styles.storeListingsHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.storeListingsTitle, { color: theme.text }]}>Orders received</Text>
+              <Text style={[styles.storeListingsSubtitle, { color: theme.muted }]}>Manage purchase requests from buyers in one place.</Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+              <View style={[styles.storeCountPill, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}>
+                <Text style={[styles.storeCountText, { color: BUTTON_BLUE }]}>{sellerOrders.length}</Text>
+              </View>
+              {sellerOrders.filter(order => String(order.status || "pending") === "pending").length > 0 ? <View style={styles.storeAttentionPill}><AlertCircle size={12} color="#B91C1C" /><Text style={styles.storeAttentionPillText}>{sellerOrders.filter(order => String(order.status || "pending") === "pending").length} need attention</Text></View> : null}
+            </View>
           </View>
-          <View style={[styles.storeToolsIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.16)" : "#EFF6FF" }]}><Sparkles size={17} color={BUTTON_BLUE} /></View>
-        </View>
-        <View style={styles.storeToolGrid}>
-          <View style={[styles.storeToolItem, { backgroundColor: theme.isDark ? "#111827" : "#F8FAFC" }]}><Tag size={16} color={BUTTON_BLUE} /><Text style={[styles.storeToolTitle, { color: theme.text }]}>Listings</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>Keep products fresh and accurate.</Text></View>
-          <View style={[styles.storeToolItem, { backgroundColor: theme.isDark ? "#111827" : "#F8FAFC" }]}><MessageCircle size={16} color={BUTTON_BLUE} /><Text style={[styles.storeToolTitle, { color: theme.text }]}>Messages</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>Respond quickly to buyers.</Text></View>
-          <View style={[styles.storeToolItem, { backgroundColor: theme.isDark ? "#111827" : "#F8FAFC" }]}><Truck size={16} color={BUTTON_BLUE} /><Text style={[styles.storeToolTitle, { color: theme.text }]}>Fulfilment</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>Keep delivery expectations clear.</Text></View>
-          <View style={[styles.storeToolItem, { backgroundColor: theme.isDark ? "#111827" : "#F8FAFC" }]}><ShieldIcon theme={theme} /><Text style={[styles.storeToolTitle, { color: theme.text }]}>Trust</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>Complete your store details.</Text></View>
-        </View>
-      </View>
+          {ordersLoading ? <View style={[styles.storeOrderLoading, { backgroundColor: theme.card, borderColor: theme.border }]}><ActivityIndicator color={BUTTON_BLUE} /><Text style={[styles.subtle, { color: theme.muted }]}>Loading buyer orders…</Text></View> : sellerOrders.length === 0 ? <View style={[styles.storeEmptyCard, { backgroundColor: theme.card, borderColor: theme.border }]}><View style={[styles.storeEmptyIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><ShoppingBag size={22} color={BUTTON_BLUE} /></View><Text style={[styles.storeEmptyTitle, { color: theme.text }]}>No orders received yet</Text><Text style={[styles.storeEmptyText, { color: theme.muted }]}>When a buyer places an order for one of your listings, it will appear here.</Text></View> : <View style={{ gap: 12 }}>{sellerOrders.map(order => {
+            const status = String(order.status || "pending");
+            const statusMap: Record<string, { label: string; bg: string; fg: string }> = { pending: { label: "New order", bg: "#FEF3C7", fg: "#92400E" }, accepted: { label: "Accepted", bg: "#DBEAFE", fg: "#1D4ED8" }, preparing: { label: "Preparing", bg: "#EDE9FE", fg: "#6D28D9" }, ready: { label: "Ready", bg: "#DCFCE7", fg: "#166534" }, completed: { label: "Completed", bg: "#DCFCE7", fg: "#166534" }, declined: { label: "Declined", bg: "#FEE2E2", fg: "#B91C1C" }, cancelled: { label: "Cancelled", bg: "#F3F4F6", fg: "#4B5563" } };
+            const statusStyle = statusMap[status] || statusMap.pending;
+            return <View key={order.id} style={[styles.sellerOrderCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <View style={styles.sellerOrderTop}>
+                <View style={[styles.sellerOrderIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><ShoppingBag size={18} color={BUTTON_BLUE} /></View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.sellerOrderTitle, { color: theme.text }]} numberOfLines={1}>{order.listing_detail?.title || `Order #${order.id}`}</Text>
+                  <Text style={[styles.sellerOrderMeta, { color: theme.muted }]}>Order #{order.id} • {new Date(order.created_at).toLocaleDateString()}</Text>
+                </View>
+                <View style={[styles.sellerOrderStatus, { backgroundColor: statusStyle.bg }]}><Text style={[styles.sellerOrderStatusText, { color: statusStyle.fg }]}>{statusStyle.label}</Text></View>
+              </View>
+              <View style={[styles.sellerOrderInfoGrid, { borderTopColor: theme.border, borderBottomColor: theme.border }]}>
+                <View style={styles.sellerOrderInfo}><Text style={[styles.sellerOrderInfoLabel, { color: theme.muted }]}>QUANTITY</Text><Text style={[styles.sellerOrderInfoValue, { color: theme.text }]}>{order.quantity}</Text></View>
+                <View style={styles.sellerOrderInfo}><Text style={[styles.sellerOrderInfoLabel, { color: theme.muted }]}>FULFILMENT</Text><Text style={[styles.sellerOrderInfoValue, { color: theme.text }]}>{order.fulfillment === "delivery" ? "Delivery" : "Pickup"}</Text></View>
+                <View style={styles.sellerOrderInfo}><Text style={[styles.sellerOrderInfoLabel, { color: theme.muted }]}>STATUS</Text><Text style={[styles.sellerOrderInfoValue, { color: statusStyle.fg }]}>{statusStyle.label}</Text></View>
+              </View>
+              <View style={{ marginTop: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <View><Text style={[styles.sellerOrderInfoLabel,{color:theme.muted}]}>ORDER VALUE</Text><Text style={[styles.sellerOrderInfoValue,{color:theme.text}]}>{String(order.currency || order.listing_detail?.currency || "KES")} {((Number(order.unit_price || 0) * Number(order.quantity || 0))).toLocaleString()}</Text></View>
+                <Text style={[styles.sellerOrderHint, { color: theme.muted, flex: 1, textAlign: "right" }]}>Buyer order received.</Text>
+              </View>
+              <View style={{ marginTop: 12, gap: 8 }}>
+                <OrderStatusControls status={order.status} theme={theme} onTransition={(next) => void transitionSellerOrder(order, next)} />
+              </View>
+            </View>;
+          })}</View>}
+        </View>}
 
-      {/* Listings */}
-      <View style={styles.storeListingsHeader}>
-        <View>
-          <Text style={[styles.storeListingsTitle, { color: theme.text }]}>Your listings</Text>
-          <Text style={[styles.storeListingsSubtitle, { color: theme.muted }]}>{mine.length ? `${mine.length} live item${mine.length === 1 ? "" : "s"}` : "Your published products will appear here."}</Text>
-        </View>
-        <View style={[styles.storeCountPill, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><Text style={[styles.storeCountText, { color: BUTTON_BLUE }]}>{mine.length}</Text></View>
-      </View>
+        {activeTab === "earnings" && <View style={{ marginTop: 16, gap: 12 }}>
+          {(() => {
+            const incoming = sellerOrders.filter(o => o.status === "pending").reduce((sum,o) => sum + Number(o.unit_price || 0) * Number(o.quantity || 0), 0);
+            const totalEarnings = sellerOrders.filter(o => o.status === "completed").reduce((sum,o) => sum + Number(o.unit_price || 0) * Number(o.quantity || 0), 0);
+            const currency = String(sellerOrders.find(o => o.currency)?.currency || "KES");
+            return <>
+              <View style={styles.storeListingsHeader}><View><Text style={[styles.storeListingsTitle,{color:theme.text}]}>Earnings</Text><Text style={[styles.storeListingsSubtitle,{color:theme.muted}]}>Track incoming order value and completed sales.</Text></View></View>
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                <View style={[styles.storeTrendMetric,{flex:1,backgroundColor:theme.card,borderColor:theme.border}]}><Text style={[styles.storeTrendMetricValue,{color:theme.text}]}>{currency} {incoming.toLocaleString()}</Text><Text style={[styles.storeTrendMetricLabel,{color:theme.muted}]}>Incoming</Text><Text style={[styles.subtle,{color:theme.muted,marginTop:4}]}>Pending / active orders</Text></View>
+                <View style={[styles.storeTrendMetric,{flex:1,backgroundColor:theme.card,borderColor:theme.border}]}><Text style={[styles.storeTrendMetricValue,{color:"#16A34A"}]}>{currency} {totalEarnings.toLocaleString()}</Text><Text style={[styles.storeTrendMetricLabel,{color:theme.muted}]}>Total earnings</Text><Text style={[styles.subtle,{color:theme.muted,marginTop:4}]}>Completed orders</Text></View>
+              </View>
+              <View style={[styles.storeEmptyCard,{backgroundColor:theme.card,borderColor:theme.border}]}>
+                <Text style={[styles.storeListingsTitle,{color:theme.text}]}>Order earnings breakdown</Text>
+                {sellerOrders.filter(o => o.status === "completed" || (o.status !== "declined" && o.status !== "cancelled")).slice(0,20).map(o => { const amount=Number(o.unit_price||0)*Number(o.quantity||0); const completed=o.status==="completed"; return <View key={o.id} style={{paddingVertical:10,borderBottomWidth:1,borderBottomColor:theme.border,flexDirection:"row",justifyContent:"space-between",gap:12}}><View style={{flex:1}}><Text style={[styles.cardTitle,{color:theme.text}]} numberOfLines={1}>{o.listing_detail?.title || `Order #${o.id}`}</Text><Text style={[styles.subtle,{color:theme.muted}]}>Order #{o.id} • {o.quantity} item{o.quantity===1?"":"s"}</Text></View><Text style={{fontWeight:"800",color:completed?"#16A34A":theme.text}}>{currency} {amount.toLocaleString()}</Text></View>; })}
+              </View>
+            </>;
+          })()}
+        </View>}
 
-      {loading ? (
-        <View style={[styles.storeLoadingCard, { backgroundColor: theme.card, borderColor: theme.border }]}><ActivityIndicator color={BUTTON_BLUE} /><Text style={[styles.storeLoadingText, { color: theme.muted }]}>Loading your store…</Text></View>
-      ) : error ? (
-        <View style={[styles.storeErrorCard, { backgroundColor: theme.card, borderColor: theme.border }]}><AlertCircle size={20} color="#EF4444" /><View style={{ flex: 1 }}><Text style={[styles.storeErrorTitle, { color: theme.text }]}>Couldn't load your store</Text><Text style={[styles.storeErrorText, { color: theme.muted }]}>{error}</Text></View><Pressable onPress={() => void loadStore()} style={[styles.storeRetryButton, { backgroundColor: BUTTON_BLUE }]}><Text style={styles.storeRetryText}>Retry</Text></Pressable></View>
-      ) : mine.length === 0 ? (
-        <View style={[styles.storeEmptyCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <View style={[styles.storeEmptyIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><Store size={22} color={BUTTON_BLUE} /></View>
-          <Text style={[styles.storeEmptyTitle, { color: theme.text }]}>Your store is ready for its first listing</Text>
-          <Text style={[styles.storeEmptyText, { color: theme.muted }]}>Add a product or service to start building your storefront.</Text>
-        </View>
-      ) : (
-        <View style={styles.storeListingGrid}>
-          {mine.map((listing) => <StoreListingCard key={listing.id} listing={listing} theme={theme} onPress={() => onOpenProduct(listing)} onEdit={() => setEditingListing(listing)} />)}
-        </View>
+        {activeTab === "trends" && <View style={{ marginTop: 16, gap: 12 }}>
+          <View style={styles.storeListingsHeader}><View><Text style={[styles.storeListingsTitle, { color: theme.text }]}>Trends</Text><Text style={[styles.storeListingsSubtitle, { color: theme.muted }]}>See what buyers are viewing, saving and purchasing.</Text></View></View>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            {[["Views", viewsTotal], ["Saves", savesTotal], ["Sales", salesTotal]].map(([label, value]) => <View key={String(label)} style={[styles.storeTrendMetric, { backgroundColor: theme.card, borderColor: theme.border }]}><Text style={[styles.storeTrendMetricValue, { color: theme.text }]}>{Number(value).toLocaleString()}</Text><Text style={[styles.storeTrendMetricLabel, { color: theme.muted }]}>{label}</Text></View>)}
+          </View>
+          <View style={[styles.storeTrendCard, { backgroundColor: theme.card, borderColor: theme.border }]}><View style={{ marginBottom: 14 }}><Text style={[styles.storeTrendTitle, { color: theme.text }]}>Most viewed goods</Text><Text style={[styles.subtle, { color: theme.muted }]}>Listings getting the most attention.</Text></View>{mostViewed.length ? mostViewed.map(item => <StoreTrendBar key={item.id} theme={theme} label={item.title} value={Number(item.viewsCount || 0)} max={Number(mostViewed[0]?.viewsCount || 0)} meta={`${Number(item.viewsCount || 0).toLocaleString()} views`} />) : <Text style={[styles.subtle, { color: theme.muted }]}>No view data yet.</Text>}</View>
+          <View style={[styles.storeTrendCard, { backgroundColor: theme.card, borderColor: theme.border }]}><View style={{ marginBottom: 14 }}><Text style={[styles.storeTrendTitle, { color: theme.text }]}>Saved items</Text><Text style={[styles.subtle, { color: theme.muted }]}>How often buyers save each listing.</Text></View>{mostSaved.length ? mostSaved.map(item => <StoreTrendBar key={item.id} theme={theme} label={item.title} value={Number(item.savedCount || 0)} max={Number(mostSaved[0]?.savedCount || 0)} meta={`${Number(item.savedCount || 0).toLocaleString()} saves`} />) : <Text style={[styles.subtle, { color: theme.muted }]}>No saved-item data yet.</Text>}</View>
+          <View style={[styles.storeTrendCard, { backgroundColor: theme.card, borderColor: theme.border }]}><View style={{ marginBottom: 14 }}><Text style={[styles.storeTrendTitle, { color: theme.text }]}>Sales per item</Text><Text style={[styles.subtle, { color: theme.muted }]}>Completed quantities sold by listing.</Text></View>{topSales.length ? topSales.map(item => <StoreTrendBar key={item.id} theme={theme} label={item.title} value={salesByListing[String(item.id)] || 0} max={Math.max(1, salesByListing[String(topSales[0]?.id)] || 0)} meta={`${salesByListing[String(item.id)] || 0} sold`} />) : <Text style={[styles.subtle, { color: theme.muted }]}>No completed sales yet.</Text>}</View>
+        </View>}
+      </ScreenScroll>
+
+      {editingListing && auth?.access && <ListingEditorSheet theme={theme} auth={auth} listing={editingListing} onClose={() => setEditingListing(null)} onSaved={(updated) => { setMine((current) => current.map((item) => item.id === updated.id ? updated : item)); listings = listings.map((item) => item.id === updated.id ? updated : item); setEditingListing(null); void onMarketplaceChanged?.(); }} onDeleted={(id) => { setMine((current) => current.filter((item) => item.id !== id)); listings = listings.filter((item) => item.id !== id); setEditingListing(null); void onMarketplaceChanged?.(); }} onBoosted={(updated) => { setMine((current) => current.map((item) => item.id === updated.id ? updated : item)); listings = listings.map((item) => item.id === updated.id ? updated : item); void onMarketplaceChanged?.(); }} />}
+      {storeVerificationOpen && auth && <StoreVerificationModal theme={theme} auth={auth} onClose={() => setStoreVerificationOpen(false)} onVerified={() => { setStoreVerificationOpen(false); setEditing(true); }} />}
+      {editing && auth && (
+        <EditProfileSheet
+          initialTab="store"
+          theme={theme}
+          currentUser={auth.user}
+          store={store}
+          insetsBottom={0}
+          onClose={() => setEditing(false)}
+          onUserUpdated={(user) => onUserUpdated?.(user)}
+          onStoreUpdated={(updatedStore) => setStore(updatedStore)}
+        />
       )}
-    </ScreenScroll>
-
-    {editingListing && auth?.access && (
-      <ListingEditorSheet
-        theme={theme}
-        auth={auth}
-        listing={editingListing}
-        onClose={() => setEditingListing(null)}
-        onSaved={(updated) => {
-          setMine((current) => current.map((item) => item.id === updated.id ? updated : item));
-          listings = listings.map((item) => item.id === updated.id ? updated : item);
-          setEditingListing(null);
-          void onMarketplaceChanged?.();
-        }}
-        onDeleted={(id) => {
-          setMine((current) => current.filter((item) => item.id !== id));
-          listings = listings.filter((item) => item.id !== id);
-          setEditingListing(null);
-          void onMarketplaceChanged?.();
-        }}
-        onBoosted={(updated) => {
-          setMine((current) => current.map((item) => item.id === updated.id ? updated : item));
-          listings = listings.map((item) => item.id === updated.id ? updated : item);
-          void onMarketplaceChanged?.();
-        }}
-      />
-    )}
-
-    {storeVerificationOpen && auth && (
-      <StoreVerificationModal
-        theme={theme}
-        auth={auth}
-        onClose={() => setStoreVerificationOpen(false)}
-        onVerified={() => {
-          setStoreVerificationOpen(false);
-          setEditing(true);
-        }}
-      />
-    )}
-
-    {editing && auth?.user && (
-      <EditProfileSheet
-        initialTab="store"
-        theme={theme}
-        currentUser={auth.user}
-        store={store}
-        insetsBottom={0}
-        onClose={() => setEditing(false)}
-        onUserUpdated={(user) => {
-          onUserUpdated?.(user);
-          const nextAuth = globalThis.__MARKETPLACE_AUTH__ ? { ...globalThis.__MARKETPLACE_AUTH__, user } : null;
-          if (nextAuth) {
-            globalThis.__MARKETPLACE_AUTH__ = nextAuth;
-            void AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextAuth));
-          }
-        }}
-        onStoreUpdated={(updatedStore) => setStore(updatedStore)}
-      />
-    )}
     </>
   );
 }
@@ -4132,14 +4877,15 @@ function StoreListingCard({ listing, theme, onPress, onEdit }: { listing: Listin
       <View style={styles.storeListingType}><Text style={styles.storeListingTypeText}>{listing.type}</Text></View>
       {listing.isOnOffer && <View style={styles.storeOfferPill}><BadgePercent size={11} color="#15803D" /><Text style={styles.storeOfferPillText}>OFFER</Text></View>}
       {listing.isFeatured && <View style={styles.storeBoostPill}><Zap size={10} color="#fff" fill="#fff" /><Text style={styles.storeBoostPillText}>BOOSTED</Text></View>}
+      {listing.stock !== undefined && listing.stock <= 0 && <View style={styles.storeOutOfStockBadge}><Text style={styles.storeOutOfStockBadgeText}>OUT OF STOCK</Text></View>}
     </Pressable>
     <View style={styles.storeListingBody}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
         <Text style={[styles.storeListingTitle, { color: theme.text, flex: 1 }]} numberOfLines={2}>{listing.title}</Text>
         {onEdit ? <Pressable onPress={onEdit} hitSlop={8} style={[styles.storeListingEditButton, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><Pencil size={14} color={BUTTON_BLUE} /></Pressable> : null}
       </View>
-      <Text style={[styles.storeListingPrice, { color: BUTTON_BLUE }]}>{listing.price}</Text>
-      {listing.isOnOffer && listing.originalPrice != null && <Text style={[styles.storeListingOriginalPrice, { color: theme.muted }]}>Regular KES {listing.originalPrice.toLocaleString("en-KE")}</Text>}
+      <PriceDisplay listing={listing} theme={theme} style={[styles.storeListingPrice, { color: BUTTON_BLUE }]} oldStyle={[styles.storeListingOriginalPrice, { color: theme.muted }]} />
+      {listing.stock !== undefined && <View style={styles.storeListingStockRow}><Text style={[styles.storeListingStockText, { color: listing.stock <= 0 ? "#DC2626" : theme.muted }]}>{listing.stock <= 0 ? "0 remaining" : `${listing.stock.toLocaleString()} remaining in stock`}</Text></View>}
       <View style={styles.storeListingMeta}><Text style={[styles.storeListingMetaText, { color: theme.muted }]} numberOfLines={1}>{listing.location || "Marketplace"}</Text><ChevronRight size={14} color={theme.muted} /></View>
     </View>
   </View>;
@@ -4148,6 +4894,7 @@ function StoreListingCard({ listing, theme, onPress, onEdit }: { listing: Listin
 function ListingEditorSheet({ theme, auth, listing, onClose, onSaved, onDeleted, onBoosted }: { theme: Theme; auth: AuthPayload; listing: Listing; onClose: () => void; onSaved: (listing: Listing) => void; onDeleted: (id: string) => void; onBoosted: (listing: Listing) => void }) {
   const [title, setTitle] = useState(listing.title);
   const [price, setPrice] = useState(listing.originalPrice != null ? String(listing.originalPrice) : String(Number(listing.price.replace(/[^0-9.]/g, "")) || ""));
+  const [stock, setStock] = useState(String(Number(listing.stock ?? 0)));
   const [description, setDescription] = useState(listing.description || "");
   const [location, setLocation] = useState(listing.location || "");
   const [negotiable, setNegotiable] = useState(!!listing.negotiable);
@@ -4192,13 +4939,15 @@ function ListingEditorSheet({ theme, auth, listing, onClose, onSaved, onDeleted,
   const save = async () => {
     const regularPrice = Number(price.replace(/[^0-9.]/g, ""));
     const salePrice = Number(offerPrice.replace(/[^0-9.]/g, ""));
+    const stockValue = Number(stock.replace(/[^0-9]/g, ""));
     if (title.trim().length < 3) { setError("Add a clear listing name."); return; }
     if (!regularPrice || regularPrice <= 0) { setError("Enter a valid price."); return; }
     if (isOnOffer && (!salePrice || salePrice >= regularPrice)) { setError("The offer price must be lower than the regular price."); return; }
+    if (!Number.isInteger(stockValue) || stockValue < 0) { setError("Enter a whole number of items in stock."); return; }
     if (!photos.length) { setError("Add at least one photo."); return; }
     setSaving(true); setError("");
     try {
-      const body = { title: title.trim(), description: description.trim(), price: regularPrice, original_price: regularPrice, offer_price: isOnOffer ? salePrice : null, is_on_offer: isOnOffer, negotiable, location: location.trim(), image_urls: photos };
+      const body = { title: title.trim(), description: description.trim(), price: regularPrice, original_price: regularPrice, offer_price: isOnOffer ? salePrice : null, is_on_offer: Boolean(isOnOffer), negotiable, stock: stockValue, is_available: stockValue > 0, location: location.trim(), image_urls: photos };
       const data = await apiRequest(`/api/listings/${listing.id}/`, { method: "PATCH", body: JSON.stringify(body) }, auth);
       onSaved(mapApiListing(data));
     } catch (e) { setError(e instanceof Error ? e.message : "Could not save listing changes."); }
@@ -4224,6 +4973,7 @@ function ListingEditorSheet({ theme, auth, listing, onClose, onSaved, onDeleted,
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 16, paddingBottom: 24 }} keyboardShouldPersistTaps="handled">
         <Field label="Listing name" value={title} onChangeText={setTitle} theme={theme} />
         <Field label="Regular price (KES)" value={price} onChangeText={setPrice} theme={theme} keyboardType="decimal-pad" />
+        <Field label="Items in stock" value={stock} onChangeText={(value) => setStock(value.replace(/[^0-9]/g, ""))} theme={theme} keyboardType="number-pad" placeholder="0" />
         <Field label="Description" value={description} onChangeText={setDescription} theme={theme} multiline />
         <Field label="Location" value={location} onChangeText={setLocation} theme={theme} />
         <Pressable onPress={() => setNegotiable(!negotiable)} style={[styles.listingEditorToggle, { backgroundColor: theme.background, borderColor: theme.border }]}><View><Text style={[styles.storeToolTitle, { color: theme.text }]}>Price is negotiable</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>Let buyers know you are open to offers.</Text></View><View style={[styles.listingToggle, { backgroundColor: negotiable ? BUTTON_BLUE : theme.border }]}><View style={[styles.listingToggleKnob, { transform: [{ translateX: negotiable ? 18 : 2 }] }]} /></View></Pressable>
@@ -4249,9 +4999,9 @@ function CompactListing({ listing, theme, onPress }: { listing: Listing; theme: 
           <View style={[styles.compactStoreAvatar,{backgroundColor:darken(theme.accent,theme.isDark ? 0.35 : 0.88)}]}>
             {listing.storeLogo ? <Image source={{uri:listing.storeLogo}} style={styles.compactStoreAvatarImage} resizeMode="cover" /> : <Text style={[styles.compactStoreAvatarText,{color:theme.accent}]}>{listing.store.slice(0,1).toUpperCase()}</Text>}
           </View>
-          <Text style={[styles.subtle,{color:theme.muted,flex:1}]} numberOfLines={1}>{listing.store}</Text>
+          <StoreNameWithBadge name={listing.store} verified={!!listing.storeVerified} style={[styles.subtle,{color:theme.muted,flex:1}]} />
         </View>
-        <Text style={[styles.priceSmall,{color:theme.text}]}>{listing.price}</Text>
+        <PriceDisplay listing={listing} theme={theme} style={[styles.priceSmall,{color:theme.text}]} oldStyle={[styles.priceSmall,{color:theme.muted,fontWeight:"700"}]} compact />
       </View>
       <ChevronRight size={18} color={theme.muted} style={{marginRight:10}}/>
     </Pressable>
@@ -4262,7 +5012,12 @@ function Field({ label, value, onChangeText, theme, keyboardType, multiline=fals
 function ShieldIcon({ theme }: { theme: Theme }) { return <View style={[styles.profileShieldIcon,{backgroundColor:theme.isDark?"rgba(43,158,99,.14)":"#ECFDF5"}]}><Check size={13} color="#2B9E63" strokeWidth={3}/></View>; }
 function ProfileActionTile({ theme, icon, title, text, onPress }: { theme:Theme; icon:React.ReactNode; title:string; text:string; onPress:()=>void }) { return <Pressable onPress={onPress} style={[styles.profileActionTile,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.profileActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}>{icon}</View><View style={{flex:1,minWidth:0}}><Text style={[styles.profileActionTitle,{color:theme.text}]} numberOfLines={1}>{title}</Text><Text style={[styles.profileActionText,{color:theme.muted}]} numberOfLines={2}>{text}</Text></View><ChevronRight size={16} color={theme.muted}/></Pressable>; }
 function ProfileMiniFeature({ theme, icon, title, text }: { theme:Theme; icon:React.ReactNode; title:string; text:string }) { return <View style={[styles.profileMiniFeature,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.profileActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}>{icon}</View><Text style={[styles.profileMiniTitle,{color:theme.text}]}>{title}</Text><Text style={[styles.profileMiniText,{color:theme.muted}]}>{text}</Text></View>; }
-function ProfileRow({ theme, icon, title, onPress }: { theme:Theme; icon:React.ReactNode; title:string; onPress:()=>void }) { return <Pressable onPress={onPress} style={[styles.profileRow,{backgroundColor:theme.card,borderColor:theme.border}]}>{icon}<Text style={[styles.profileRowText,{color:theme.text}]}>{title}</Text><ChevronRight size={18} color={theme.muted}/></Pressable>; }
+function CountBadge({ count, active = false }: { count?: number; active?: boolean }) {
+  if (!count || count <= 0) return null;
+  return <View style={[styles.countBadge, { backgroundColor: active ? "#FFFFFF" : BUTTON_BLUE }]}><Text style={[styles.countBadgeText, { color: active ? BUTTON_BLUE : "#FFFFFF" }]}>{count > 99 ? "99+" : count}</Text></View>;
+}
+
+function ProfileRow({ theme, icon, title, badge, onPress }: { theme:Theme; icon:React.ReactNode; title:string; badge?:number; onPress:()=>void }) { return <Pressable onPress={onPress} style={[styles.profileRow,{backgroundColor:theme.card,borderColor:theme.border}]}>{icon}<Text style={[styles.profileRowText,{color:theme.text,flex:1}]}>{title}</Text><CountBadge count={badge}/><ChevronRight size={18} color={theme.muted}/></Pressable>; }
 function SettingRow({ theme, icon, title, subtitle, trailing, onPress }: { theme:Theme; icon:React.ReactNode; title:string; subtitle?:string; trailing:React.ReactNode; onPress?:()=>void }) {
   const content = (
     <View style={styles.settingRowInner}>
@@ -4326,7 +5081,7 @@ const styles = StyleSheet.create({
   primaryButton:{height:44,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:16,flexDirection:"row",gap:8}, primaryButtonText:{color:"#fff",fontSize:14,fontWeight:"800"}, secondaryButton:{height:44,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:12,flexDirection:"row",gap:8,borderWidth:1}, secondaryButtonText:{fontSize:13,fontWeight:"800"},
   sectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:10}, sectionTitle:{fontSize:18,fontWeight:"800"}, sectionAction:{fontSize:13,fontWeight:"800"},
   categoryTile:{width:88,height:88,borderRadius:18,borderWidth:1,alignItems:"center",justifyContent:"center",gap:6}, categoryEmoji:{fontSize:26}, categoryText:{fontSize:11,fontWeight:"700"},
-  homeShopHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:16},
+  homeShopHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12}, homeSearchBar:{height:50,borderWidth:1,borderRadius:17,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:10,marginBottom:16}, homeSearchPlaceholder:{flex:1,fontSize:14,fontWeight:"600"}, homeSearchAction:{width:32,height:32,borderRadius:11,alignItems:"center",justifyContent:"center"},
 homeShopTitle:{fontSize:26,fontWeight:"900",letterSpacing:-0.5},
 homeShopSub:{fontSize:13,fontWeight:"600",marginTop:1},
 homeShopIcon:{width:42,height:42,borderWidth:1,borderRadius:21,alignItems:"center",justifyContent:"center"},
@@ -4343,7 +5098,7 @@ homeProductPrice:{fontSize:15,fontWeight:"900",marginTop:6},
 homeProductSkeleton:{width:"48.2%",aspectRatio:0.78,borderWidth:1,borderRadius:14},
 compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",overflow:"hidden"},compactImage:{width:82,height:82},compactStoreRow:{flexDirection:"row",alignItems:"center",gap:6,marginTop:4},compactStoreAvatar:{width:20,height:20,borderRadius:10,alignItems:"center",justifyContent:"center",overflow:"hidden"},compactStoreAvatarImage:{width:"100%",height:"100%"},compactStoreAvatarText:{fontSize:8,fontWeight:"900"},priceSmall:{fontSize:15,fontWeight:"800",marginTop:6},
   sellBanner:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"center",gap:12,marginTop:8},sellBannerTitle:{fontSize:15,fontWeight:"800",marginBottom:3},
-  searchBox:{height:48,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:8}, searchInput:{flex:1,fontSize:14,paddingVertical:0},
+  searchBox:{height:48,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:8}, searchInput:{flex:1,fontSize:14,paddingVertical:0}, searchInputPlaceholder:{flex:1,fontSize:14}, searchPageHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12}, searchPageTitle:{fontSize:22,fontWeight:"900"}, iconButton:{width:40,height:40,borderRadius:13,borderWidth:1,alignItems:"center",justifyContent:"center"}, searchPageInput:{height:54,borderWidth:1,borderRadius:17,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:9}, searchSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:8}, searchSectionTitle:{fontSize:15,fontWeight:"900"}, searchClearText:{fontSize:12,fontWeight:"800"}, searchHistoryRow:{minHeight:48,flexDirection:"row",alignItems:"center",gap:11,borderBottomWidth:1}, searchHistoryText:{flex:1,fontSize:14,fontWeight:"600"}, searchSuggestionRow:{minHeight:56,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:11,gap:10,marginBottom:8}, searchSuggestionIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"}, searchSuggestionText:{flex:1,fontSize:14,fontWeight:"700"}, searchNoSuggestions:{minHeight:130,borderWidth:1,borderRadius:18,alignItems:"center",justifyContent:"center",padding:20,gap:9},
   filterRow:{paddingVertical:6,gap:8,paddingRight:10},filterChip:{paddingHorizontal:14,paddingVertical:8,borderRadius:999,borderWidth:1,minHeight:34,justifyContent:"center"},filterText:{fontSize:11,fontWeight:"800"},
   pageTitle:{fontSize:28,fontWeight:"800",marginTop:5}, dataNotice:{marginHorizontal:12,marginTop:4,marginBottom:2,borderWidth:1,borderRadius:12,paddingHorizontal:10,paddingVertical:7,flexDirection:"row",alignItems:"center",gap:7}, dataNoticeDot:{width:7,height:7,borderRadius:4,backgroundColor:"#F2B84B"}, dataNoticeText:{fontSize:11.5,flex:1}, dataNoticeRetry:{fontSize:11.5,fontWeight:"900",color:"#2563EB"},
   pageIntro:{marginBottom:12},
@@ -4364,9 +5119,17 @@ compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"cente
   detailImage:{width:"100%",height:330,borderRadius:20,backgroundColor:"#EEE"},detailGallery:{height:330,borderRadius:24,overflow:"hidden",position:"relative",alignSelf:"center",marginBottom:2},detailGalleryImage:{height:330,backgroundColor:"#EEE"},detailGalleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},productTitle:{fontSize:20,fontWeight:"800",lineHeight:26},bigPrice:{fontSize:28,fontWeight:"900",marginTop:8},storePill:{borderWidth:1,borderRadius:999,paddingHorizontal:9,paddingVertical:6,alignSelf:"flex-start",marginTop:12,flexDirection:"row",alignItems:"center",gap:7,maxWidth:"90%"},detailStoreAvatar:{width:24,height:24,borderRadius:12,alignItems:"center",justifyContent:"center",overflow:"hidden"},detailStoreAvatarImage:{width:"100%",height:"100%"},detailStoreAvatarText:{fontSize:9,fontWeight:"900"},storePillText:{fontSize:12,fontWeight:"800",flexShrink:1},detailText:{fontSize:14,lineHeight:22,marginTop:14},detailButtons:{flexDirection:"row",gap:8,marginTop:18},rowBetween:{flexDirection:"row",alignItems:"flex-start",justifyContent:"space-between",gap:12},
   formHint:{fontSize:13,lineHeight:19,marginBottom:8},fieldLabel:{fontSize:12,fontWeight:"800",marginBottom:7},input:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,fontSize:14},uploadBox:{height:120,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",gap:8,marginBottom:14},
   createHeader:{flexDirection:"row",alignItems:"flex-start",gap:12,marginTop:4},createTitle:{fontSize:28,fontWeight:"900",letterSpacing:-0.5},createSub:{fontSize:12,lineHeight:18,marginTop:4,maxWidth:280},createStepBadge:{paddingHorizontal:10,paddingVertical:7,borderRadius:999},createStepText:{fontSize:11,fontWeight:"900"},progressRail:{marginTop:14,marginBottom:2},progressTrack:{height:5,borderRadius:999,overflow:"hidden"},progressFill:{height:5,borderRadius:999},progressLabels:{flexDirection:"row",justifyContent:"space-between",marginTop:7},progressLabel:{fontSize:10,fontWeight:"700"},progressLabelActive:{fontSize:10,fontWeight:"900"},progressStepButton:{paddingHorizontal:6,paddingVertical:4},typeCard:{borderWidth:1,borderRadius:20,padding:14},inlineLabel:{flexDirection:"row",alignItems:"center",gap:8},cardTitle:{fontSize:15,fontWeight:"900"},cardHint:{fontSize:11,lineHeight:17,marginTop:4,marginBottom:12},segmented:{borderWidth:1,borderRadius:16,padding:4,flexDirection:"row",gap:4},segment:{flex:1,height:42,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},segmentText:{fontSize:13,fontWeight:"800"},formCard:{borderWidth:1,borderRadius:20,padding:14},photoCover:{height:174,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",padding:14},photoCoverImage:{height:210,borderWidth:1,borderRadius:18,overflow:"hidden",position:"relative"},photoCoverImageFill:{width:"100%",height:"100%"},coverBadge:{position:"absolute",top:10,left:10,backgroundColor:"rgba(37,99,235,.95)",paddingHorizontal:9,paddingVertical:5,borderRadius:999},coverBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",letterSpacing:.7},coverEditHint:{position:"absolute",bottom:10,left:10,right:10,flexDirection:"row",alignItems:"center",gap:5},coverEditText:{color:"#fff",fontSize:10,fontWeight:"800",textShadowColor:"rgba(0,0,0,.7)",textShadowOffset:{width:0,height:1},textShadowRadius:3},coverHelper:{fontSize:10,lineHeight:15,marginTop:6},uploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.52)",alignItems:"center",justifyContent:"center",gap:7},uploadOverlayText:{color:"#fff",fontSize:11,fontWeight:"800"},uploadDoneBadge:{position:"absolute",right:10,bottom:10,width:27,height:27,borderRadius:14,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoThumbRowWide:{flexDirection:"row",gap:8,marginTop:10,flexWrap:"wrap"},photoThumbLarge:{width:62,height:62,borderWidth:1,borderRadius:13,overflow:"hidden",position:"relative"},photoThumbImage:{width:"100%",height:"100%"},photoAddThumb:{alignItems:"center",justifyContent:"center",borderStyle:"dashed"},thumbnailUploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.5)",alignItems:"center",justifyContent:"center"},thumbnailDoneBadge:{position:"absolute",right:4,bottom:4,width:19,height:19,borderRadius:10,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoAddedState:{alignItems:"center",justifyContent:"center"},photoUploadIcon:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center"},photoUploadTitle:{fontSize:14,fontWeight:"900",marginTop:10},photoAddedText:{fontSize:14,fontWeight:"900",marginTop:9},photoHint:{fontSize:11,marginTop:4,textAlign:"center"},photoThumbRow:{flexDirection:"row",gap:8,marginTop:9},photoThumb:{height:50,flex:1,borderWidth:1,borderRadius:13,alignItems:"center",justifyContent:"center"},fieldRow:{flexDirection:"row",gap:12,alignItems:"center"},switchWrapModern:{width:96,alignItems:"center",justifyContent:"center",marginBottom:10},switchLabel:{fontSize:10,fontWeight:"800",marginBottom:2},categoryPicker:{gap:8,paddingBottom:10},categoryChip:{borderWidth:1,borderRadius:999,paddingHorizontal:11,paddingVertical:8},categoryChipText:{fontSize:11,fontWeight:"800"},optionRow:{flexDirection:"row",gap:8,marginBottom:12},optionPill:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:14,alignItems:"center",justifyContent:"center"},optionPillText:{fontSize:12,fontWeight:"800"},inlineFieldLabel:{flexDirection:"row",alignItems:"center",gap:6,marginBottom:7},fieldLabelNoMargin:{fontSize:12,fontWeight:"800"},descriptionInput:{minHeight:190,borderWidth:1,borderRadius:14,padding:12,fontSize:14,lineHeight:20,textAlignVertical:"top"},characterHint:{fontSize:10,textAlign:"right",marginTop:5},tipCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"flex-start",gap:10},tipTitle:{fontSize:13,fontWeight:"800"},tipText:{fontSize:11,lineHeight:17,marginTop:3},publishSheet:{borderWidth:1,borderRadius:18,padding:10,flexDirection:"row",alignItems:"center",gap:8,marginTop:2}, publishSheetFixed:{position:"absolute",left:0,right:0,bottom:0,borderTopWidth:1,paddingHorizontal:12,paddingTop:10,paddingBottom:14,flexDirection:"row",alignItems:"center",gap:8,zIndex:50,elevation:12},publishSheetTitle:{fontSize:12,fontWeight:"900"},publishSheetSub:{fontSize:10,lineHeight:15,marginTop:2},  photoRemoveButton:{position:"absolute",top:2,right:2,width:22,height:22,borderRadius:11,backgroundColor:"rgba(0,0,0,.65)",alignItems:"center",justifyContent:"center"}, photoRemoveText:{color:"#fff",fontSize:14,fontWeight:"800"}, successScreen:{flex:1,alignItems:"center",justifyContent:"center",paddingHorizontal:20,gap:26}, verifiedAnimationWrap:{width:190,height:190,alignItems:"center",justifyContent:"center",position:"relative"}, successHalo:{position:"absolute",width:178,height:178,borderRadius:89,borderWidth:8}, verifiedBadge:{width:126,height:126,borderRadius:63,alignItems:"center",justifyContent:"center",elevation:10,shadowOpacity:0.2,shadowRadius:18,shadowOffset:{width:0,height:8}}, successSparkle:{position:"absolute",width:10,height:10,borderRadius:5}, sparkleTop:{top:12},sparkleRight:{right:14},sparkleBottom:{bottom:18},sparkleLeft:{left:14}, successCheckOuter:{width:170,height:170,borderRadius:85,alignItems:"center",justifyContent:"center",borderWidth:1}, successCheckCircle:{width:118,height:118,borderRadius:59,alignItems:"center",justifyContent:"center"}, successTitle:{fontSize:30,fontWeight:"900",textAlign:"center",letterSpacing:-0.5}, successSub:{fontSize:14,lineHeight:21,textAlign:"center",marginTop:8,paddingHorizontal:10}, successActions:{flexDirection:"row",gap:10,marginTop:24}, profileAuthCard:{borderWidth:1,borderRadius:28,padding:24,marginTop:12,marginHorizontal:2,alignItems:"center",shadowColor:"#000",shadowOpacity:.08,shadowRadius:18,shadowOffset:{width:0,height:8},elevation:5},profileAuthIcon:{width:72,height:72,borderRadius:24,alignItems:"center",justifyContent:"center",marginBottom:16},profileAuthTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.6,textAlign:"center"},profileAuthText:{fontSize:13,lineHeight:20,textAlign:"center",marginTop:8,maxWidth:340},profileAuthButton:{width:"100%",minHeight:52,borderWidth:1,borderRadius:16,alignItems:"center",justifyContent:"center",marginTop:10,paddingHorizontal:16},profileAuthButtonText:{fontSize:14,fontWeight:"900"},
- settingsSectionTitle:{fontSize:13,fontWeight:"900",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:6},preferenceBlock:{borderWidth:1,borderRadius:18,padding:14,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionRow:{minHeight:68,borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionIcon:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},preferenceTitle:{fontSize:13,fontWeight:"900"},preferenceDescription:{fontSize:10.5,lineHeight:16,marginTop:3},choiceChip:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:13,alignItems:"center",justifyContent:"center"},faqRow:{minHeight:58,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12,paddingVertical:11,paddingHorizontal:4},faqQuestion:{fontSize:13,fontWeight:"800",lineHeight:19},faqAnswer:{fontSize:11.5,lineHeight:18,marginTop:7},reportInput:{minHeight:120,borderWidth:1,borderRadius:16,padding:13,fontSize:13,textAlignVertical:"top",marginBottom:9},reportInputSingle:{height:48,borderWidth:1,borderRadius:14,paddingHorizontal:13,fontSize:13,marginBottom:9},safetyHero:{borderWidth:1,borderRadius:24,padding:20,alignItems:"flex-start",marginBottom:10},safetyTip:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"flex-start",gap:11,marginBottom:9},safetyNumber:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},legalCard:{borderWidth:1,borderRadius:24,padding:20,marginTop:8},legalTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.5},legalHeading:{fontSize:14,fontWeight:"900",marginTop:20,marginBottom:6},legalText:{fontSize:12.5,lineHeight:20}, profileHeader:{flexDirection:"row",alignItems:"center",gap:14,paddingVertical:8},profileAvatar:{width:76,height:76,borderRadius:38,alignItems:"center",justifyContent:"center"},profileAvatarText:{fontSize:18,fontWeight:"900",color:"#fff"},profileHeroCard:{borderWidth:1,borderRadius:26,padding:18,marginBottom:13,shadowColor:"#000",shadowOpacity:.07,shadowRadius:16,shadowOffset:{width:0,height:7},elevation:4},profileHeroTop:{flexDirection:"row",alignItems:"center",gap:12},profileAvatarEditWrap:{width:78,height:78,position:"relative"},profileEditIconButton:{position:"absolute",right:-5,bottom:-5,width:32,height:32,borderRadius:16,borderWidth:2,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:5},profileAvatarLarge:{width:64,height:64,borderRadius:22,alignItems:"center",justifyContent:"center"},profileAvatarTextLarge:{fontSize:20,fontWeight:"900",color:"#fff"},profileNameLine:{flexDirection:"row",alignItems:"center",gap:7},profileName:{fontSize:18,fontWeight:"900",letterSpacing:-0.3,flexShrink:1},profileEmail:{fontSize:11,marginTop:3},profileMember:{fontSize:10,marginTop:3},profileVerified:{flexDirection:"row",alignItems:"center",gap:3,paddingHorizontal:7,paddingVertical:4,borderRadius:999},profileVerifiedText:{fontSize:9,fontWeight:"900"},metaVerifiedBadge:{backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,.55)"},profileIdentityHint:{fontSize:9.5,lineHeight:14,marginTop:-4,marginBottom:10},profileEditButton:{width:34,height:34,borderWidth:1,borderRadius:12,alignItems:"center",justifyContent:"center"},profileTrustRow:{borderTopWidth:1,marginTop:14,paddingTop:12,flexDirection:"row",alignItems:"center",gap:10},profileTrustItem:{flex:1,flexDirection:"row",alignItems:"center",gap:8},profileShieldIcon:{width:26,height:26,borderRadius:9,alignItems:"center",justifyContent:"center"},profileTrustDivider:{width:1,height:28},profileTrustTitle:{fontSize:10,fontWeight:"900"},profileTrustText:{fontSize:8.5,marginTop:2},profileModeSwitch:{height:52,borderWidth:1,borderRadius:17,padding:4,flexDirection:"row",gap:4,marginBottom:16},profileModeButton:{flex:1,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:6},profileModeText:{fontSize:12,fontWeight:"900"},profileSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:5,marginBottom:10},profileSectionTitle:{fontSize:18,fontWeight:"900",letterSpacing:-0.2},profileSectionSub:{fontSize:10,lineHeight:15,marginTop:3,maxWidth:290},profileRoleBadge:{paddingHorizontal:8,paddingVertical:5,borderRadius:999},profileRoleBadgeText:{fontSize:8,fontWeight:"900",letterSpacing:1},profileActionGrid:{flexDirection:"row",flexWrap:"wrap",gap:9},profileActionTile:{flexBasis:"48%",flexGrow:1,minWidth:145,minHeight:100,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:9},profileActionIcon:{width:40,height:40,borderRadius:11,alignItems:"center",justifyContent:"center"},profileActionTitle:{fontSize:13,fontWeight:"900",letterSpacing:-.1},profileActionText:{fontSize:10.5,lineHeight:15,marginTop:4},profileFeatureCard:{borderWidth:1,borderRadius:18,padding:13,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:10},profileFeatureIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},profileFeatureTitle:{fontSize:12,fontWeight:"900"},profileFeatureText:{fontSize:9.5,lineHeight:15,marginTop:4},sellerSetupCard:{borderRadius:20,padding:15,marginTop:12,flexDirection:"row",alignItems:"center",gap:12},sellerSetupEyebrow:{fontSize:8,fontWeight:"900",letterSpacing:1.4,color:"#93C5FD"},sellerSetupTitle:{fontSize:17,fontWeight:"900",color:"#FFFFFF",marginTop:5,letterSpacing:-0.3},sellerSetupText:{fontSize:9.5,lineHeight:15,color:"#CBD5E1",marginTop:4},sellerSetupButton:{height:38,paddingHorizontal:12,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:3},sellerSetupButtonText:{fontSize:11,fontWeight:"900"},profileEssentialsRow:{flexDirection:"row",gap:9,alignItems:"stretch"},profileMiniFeature:{flex:1,minWidth:0,borderWidth:1,borderRadius:18,padding:13,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},profileMiniTitle:{fontSize:11,fontWeight:"900",marginTop:8},profileMiniText:{fontSize:9,lineHeight:14,marginTop:3},profileRow:{minHeight:62,borderWidth:1,borderRadius:18,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12,marginBottom:8},profileRowText:{fontSize:14,fontWeight:"700"},logoutRow:{minHeight:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12},logoutText:{color:"#D33D3D",fontSize:14,fontWeight:"800"},
+ settingsSectionTitle:{fontSize:13,fontWeight:"900",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:6},preferenceBlock:{borderWidth:1,borderRadius:18,padding:14,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionRow:{minHeight:68,borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionIcon:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},preferenceTitle:{fontSize:13,fontWeight:"900"},preferenceDescription:{fontSize:10.5,lineHeight:16,marginTop:3},choiceChip:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:13,alignItems:"center",justifyContent:"center"},faqRow:{minHeight:58,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12,paddingVertical:11,paddingHorizontal:4},faqQuestion:{fontSize:13,fontWeight:"800",lineHeight:19},faqAnswer:{fontSize:11.5,lineHeight:18,marginTop:7},reportInput:{minHeight:120,borderWidth:1,borderRadius:16,padding:13,fontSize:13,textAlignVertical:"top",marginBottom:9},reportInputSingle:{height:48,borderWidth:1,borderRadius:14,paddingHorizontal:13,fontSize:13,marginBottom:9},safetyHero:{borderWidth:1,borderRadius:24,padding:20,alignItems:"flex-start",marginBottom:10},safetyTip:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"flex-start",gap:11,marginBottom:9},safetyNumber:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},legalCard:{borderWidth:1,borderRadius:24,padding:20,marginTop:8},legalTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.5},legalHeading:{fontSize:14,fontWeight:"900",marginTop:20,marginBottom:6},legalText:{fontSize:12.5,lineHeight:20}, profileHeader:{flexDirection:"row",alignItems:"center",gap:14,paddingVertical:8},profileAvatar:{width:76,height:76,borderRadius:38,alignItems:"center",justifyContent:"center"},profileAvatarText:{fontSize:18,fontWeight:"900",color:"#fff"},profileHeroCard:{borderWidth:1,borderRadius:26,padding:18,marginBottom:13,shadowColor:"#000",shadowOpacity:.07,shadowRadius:16,shadowOffset:{width:0,height:7},elevation:4},profileHeroTop:{flexDirection:"row",alignItems:"center",gap:12},profileAvatarEditWrap:{width:78,height:78,position:"relative"},profileEditIconButton:{position:"absolute",right:-5,bottom:-5,width:32,height:32,borderRadius:16,borderWidth:2,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:5},profileAvatarLarge:{width:64,height:64,borderRadius:22,alignItems:"center",justifyContent:"center"},profileAvatarTextLarge:{fontSize:20,fontWeight:"900",color:"#fff"},profileNameLine:{flexDirection:"row",alignItems:"center",gap:7},profileName:{fontSize:18,fontWeight:"900",letterSpacing:-0.3,flexShrink:1},profileEmail:{fontSize:11,marginTop:3},profileMember:{fontSize:10,marginTop:3},profileVerified:{flexDirection:"row",alignItems:"center",gap:3,paddingHorizontal:7,paddingVertical:4,borderRadius:999},profileVerifiedText:{fontSize:9,fontWeight:"900"},metaVerifiedBadge:{backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,.55)"},profileIdentityHint:{fontSize:9.5,lineHeight:14,marginTop:-4,marginBottom:10},profileEditButton:{width:34,height:34,borderWidth:1,borderRadius:12,alignItems:"center",justifyContent:"center"},profileTrustRow:{borderTopWidth:1,marginTop:14,paddingTop:12,flexDirection:"row",alignItems:"center",gap:10},profileTrustItem:{flex:1,flexDirection:"row",alignItems:"center",gap:8},profileShieldIcon:{width:26,height:26,borderRadius:9,alignItems:"center",justifyContent:"center"},profileTrustDivider:{width:1,height:28},profileTrustTitle:{fontSize:10,fontWeight:"900"},profileTrustText:{fontSize:8.5,marginTop:2},profileModeSwitch:{height:52,borderWidth:1,borderRadius:17,padding:4,flexDirection:"row",gap:4,marginBottom:16},profileModeButton:{flex:1,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:6},profileModeText:{fontSize:12,fontWeight:"900"},countBadge:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:999,alignItems:"center",justifyContent:"center",marginLeft:4},countBadgeText:{fontSize:10,fontWeight:"900"},profileSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:5,marginBottom:10},profileSectionTitle:{fontSize:18,fontWeight:"900",letterSpacing:-0.2},profileSectionSub:{fontSize:10,lineHeight:15,marginTop:3,maxWidth:290},profileRoleBadge:{paddingHorizontal:8,paddingVertical:5,borderRadius:999},profileRoleBadgeText:{fontSize:8,fontWeight:"900",letterSpacing:1},profileActionGrid:{flexDirection:"row",flexWrap:"wrap",gap:9},profileActionTile:{flexBasis:"48%",flexGrow:1,minWidth:145,minHeight:100,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:9},profileActionIcon:{width:40,height:40,borderRadius:11,alignItems:"center",justifyContent:"center"},profileActionTitle:{fontSize:13,fontWeight:"900",letterSpacing:-.1},profileActionText:{fontSize:10.5,lineHeight:15,marginTop:4},profileFeatureCard:{borderWidth:1,borderRadius:18,padding:13,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:10},profileFeatureIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},profileFeatureTitle:{fontSize:12,fontWeight:"900"},profileFeatureText:{fontSize:9.5,lineHeight:15,marginTop:4},sellerSetupCard:{borderRadius:20,padding:15,marginTop:12,flexDirection:"row",alignItems:"center",gap:12},sellerSetupEyebrow:{fontSize:8,fontWeight:"900",letterSpacing:1.4,color:"#93C5FD"},sellerSetupTitle:{fontSize:17,fontWeight:"900",color:"#FFFFFF",marginTop:5,letterSpacing:-0.3},sellerSetupText:{fontSize:9.5,lineHeight:15,color:"#CBD5E1",marginTop:4},sellerSetupButton:{height:38,paddingHorizontal:12,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:3},sellerSetupButtonText:{fontSize:11,fontWeight:"900"},profileEssentialsRow:{flexDirection:"row",gap:9,alignItems:"stretch"},profileMiniFeature:{flex:1,minWidth:0,borderWidth:1,borderRadius:18,padding:13,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},profileMiniTitle:{fontSize:11,fontWeight:"900",marginTop:8},profileMiniText:{fontSize:9,lineHeight:14,marginTop:3},profileRow:{minHeight:62,borderWidth:1,borderRadius:18,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12,marginBottom:8},profileRowText:{fontSize:14,fontWeight:"700"},logoutRow:{minHeight:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12},logoutText:{color:"#D33D3D",fontSize:14,fontWeight:"800"},
   profileLoading:{fontSize:10,textAlign:"center",marginTop:2,marginBottom:4},storeVerificationOverlay:{flex:1,alignItems:"center",justifyContent:"center",padding:20},storeVerificationBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(15,23,42,.58)"},storeVerificationCard:{width:"100%",maxWidth:420,borderWidth:1,borderRadius:24,padding:20,shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:8},elevation:24},storeVerificationIconWrap:{width:50,height:50,borderRadius:25,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center",marginBottom:12},storeVerificationTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},storeVerificationText:{fontSize:11,lineHeight:17,marginTop:6},storeVerificationEmail:{marginTop:15,borderWidth:1,borderRadius:14,padding:12,flexDirection:"row",alignItems:"center",gap:10},storeVerificationEmailLabel:{fontSize:9,fontWeight:"800",textTransform:"uppercase",letterSpacing:.4},storeVerificationEmailValue:{fontSize:12,fontWeight:"800",marginTop:2},storeVerificationSuccess:{marginTop:15,borderWidth:1,borderRadius:14,padding:12,flexDirection:"row",alignItems:"center",gap:10},storeVerificationSuccessTitle:{fontSize:12,fontWeight:"900"},storeVerificationSuccessText:{fontSize:10,lineHeight:15,marginTop:2},storeVerificationPrimary:{height:46,borderRadius:13,marginTop:15,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeVerificationPrimaryText:{fontSize:12.5,fontWeight:"900",color:"#fff"},storeVerificationFieldLabel:{fontSize:11,fontWeight:"900",marginTop:15,marginBottom:6},storeVerificationInput:{height:48,borderWidth:1,borderRadius:13,paddingHorizontal:14,fontSize:18,fontWeight:"900",letterSpacing:4,textAlign:"center"},storeVerificationActions:{flexDirection:"row",gap:9,marginTop:14},profileSheetOverlay:{position:"absolute",left:0,right:0,top:0,bottom:0,zIndex:100,elevation:100,justifyContent:"flex-end"},profileSheetKeyboard:{width:"100%",flex:1,justifyContent:"flex-end"},profileSheetBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(0,0,0,.58)"},profileSheet:{height:"92%",maxHeight:"92%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:-8},elevation:24},profileSheetHeader:{minHeight:68,borderBottomWidth:1,paddingHorizontal:16,paddingVertical:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},profileEditTabs:{height:50,borderBottomWidth:1,flexDirection:"row",paddingHorizontal:10},profileEditTab:{flex:1,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,borderBottomWidth:2,borderBottomColor:"transparent"},profileEditTabText:{fontSize:11,fontWeight:"900"},profileSheetTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},profileSheetSub:{fontSize:10,marginTop:3},profileSheetClose:{width:34,height:34,borderRadius:17,alignItems:"center",justifyContent:"center"},profileEditSectionTitle:{fontSize:13,fontWeight:"900",marginBottom:8},profileEditCard:{borderWidth:1,borderRadius:18,padding:13},profileEditAvatarRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileEditAvatar:{width:74,height:74,borderRadius:37,alignItems:"center",justifyContent:"center"},profileEditAvatarWrap:{width:74,height:74,borderRadius:37,position:"relative"},profilePhotoAction:{position:"absolute",right:-3,bottom:-3,width:29,height:29,borderRadius:15,borderWidth:3,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:4},profileEditLabel:{fontSize:12,fontWeight:"900"},profileEditHint:{fontSize:9.5,lineHeight:14,marginTop:3},profileBlueButton:{height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,alignSelf:"flex-start",marginTop:7},profileBlueButtonText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileLockedField:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:7},profileLockedText:{fontSize:13,flex:1,marginRight:8},profileCoverPreview:{height:138,borderWidth:1,borderRadius:16,overflow:"hidden",alignItems:"center",justifyContent:"center",marginBottom:13},profileEditCoverLogoHolder:{position:"absolute",left:12,bottom:10,width:72,height:72,borderRadius:36,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},profileEditCoverLogo:{width:"100%",height:"100%",borderRadius:36},profileCoverButton:{position:"absolute",right:10,bottom:10,height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5},profileMediaAction:{position:"absolute",right:10,bottom:10,minHeight:34,borderRadius:12,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,borderWidth:2,shadowColor:"#000",shadowOpacity:.18,shadowRadius:6,shadowOffset:{width:0,height:2},elevation:4},profileMediaActionText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileStoreLogoWrap:{width:64,height:64,borderRadius:32,position:"relative"},profileStoreLogoRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileStoreLogo:{width:64,height:64,borderRadius:32,alignItems:"center",justifyContent:"center",overflow:"hidden"},countryPickerOverlay:{flex:1,justifyContent:"flex-end",backgroundColor:"rgba(15,23,42,.45)"},countryPickerBackdrop:{...StyleSheet.absoluteFillObject},countryPickerSheet:{height:"78%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.22,shadowRadius:16,shadowOffset:{width:0,height:-4},elevation:12},countryPickerHeader:{paddingHorizontal:18,paddingVertical:14,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12},countrySearchBox:{margin:12,borderWidth:1,borderRadius:13,minHeight:46,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:9},countryPickerRow:{minHeight:62,paddingHorizontal:18,flexDirection:"row",alignItems:"center",gap:12,borderBottomWidth:StyleSheet.hairlineWidth},countryFlag:{fontSize:25,width:36,textAlign:"center"},countryName:{fontSize:14,fontWeight:"700"},countryCode:{fontSize:12,marginTop:2},profileEditError:{borderWidth:1,borderRadius:14,padding:11,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:8},profileEditErrorText:{flex:1,fontSize:10.5,lineHeight:16,fontWeight:"700"},profileSheetActions:{borderTopWidth:1,paddingHorizontal:16,paddingTop:10,flexDirection:"row",gap:9},profileCancelButton:{height:46,borderWidth:1,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center"},profileCancelText:{fontSize:13,fontWeight:"900"},profileSaveButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},profileSaveText:{fontSize:13,fontWeight:"900",color:"#fff"},
-  storePageCard:{borderWidth:1,borderRadius:26,overflow:"hidden",marginBottom:12},storeCover:{height:150,position:"relative",overflow:"hidden"},storeCoverLogoHolder:{position:"absolute",left:16,bottom:-2,width:82,height:82,borderRadius:41,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},storeCoverLogoImage:{width:"100%",height:"100%",borderRadius:41},storeCoverGlow:{position:"absolute",width:230,height:230,borderRadius:115,backgroundColor:"rgba(37,99,235,.28)",right:-70,top:-110},storeCoverShade:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(2,6,23,.18)"},storeCoverTopRow:{position:"absolute",left:12,right:12,top:12,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},storeStatusPill:{height:30,paddingHorizontal:10,borderRadius:999,backgroundColor:"rgba(2,6,23,.48)",flexDirection:"row",alignItems:"center",gap:6},storeStatusDot:{width:7,height:7,borderRadius:4},storeStatusText:{fontSize:10,fontWeight:"900",color:"#fff"},storeCircleButton:{width:34,height:34,borderRadius:17,backgroundColor:"rgba(2,6,23,.48)",alignItems:"center",justifyContent:"center"},storeIdentityBlock:{paddingHorizontal:16,paddingTop:0,paddingBottom:14,flexDirection:"row",gap:12},storeLogoLarge:{width:72,height:72,borderRadius:22,borderWidth:4,alignItems:"center",justifyContent:"center",marginTop:-34,overflow:"hidden"},storeLogoImage:{width:"100%",height:"100%"},storeLogoLetter:{fontSize:24,fontWeight:"900",color:"#fff"},storeIdentityText:{flex:1,paddingTop:8,minWidth:0},storeNameRow:{flexDirection:"row",alignItems:"center",gap:7},storePageTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4,flexShrink:1},storeVerifiedBadge:{width:19,height:19,borderRadius:10,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},storeIdentityLabelRow:{flexDirection:"row",alignItems:"center",gap:7,marginBottom:4},storeIdentityLabel:{fontSize:8,fontWeight:"900",letterSpacing:1.2},storeOwnerLabel:{fontSize:8.5},storePageDescription:{fontSize:11,lineHeight:17,marginTop:4},storeMetaLine:{flexDirection:"row",alignItems:"center",gap:4,marginTop:6},storeMetaText:{fontSize:10,flexShrink:1},storeStatsRow:{marginHorizontal:16,borderTopWidth:1,borderBottomWidth:1,minHeight:62,flexDirection:"row",alignItems:"center",justifyContent:"space-around"},storeStat:{flex:1,alignItems:"center"},storeStatValue:{fontSize:17,fontWeight:"900"},storeStatLabel:{fontSize:9,fontWeight:"700",marginTop:2},storeStatDivider:{width:1,height:28},storeQuickActions:{padding:12,flexDirection:"row",gap:8},storePrimaryAction:{height:44,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storePrimaryActionText:{color:"#fff",fontSize:12,fontWeight:"900"},storeSecondaryAction:{height:44,borderRadius:13,paddingHorizontal:15,borderWidth:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeSecondaryActionText:{fontSize:12,fontWeight:"900"},storeToolsCard:{borderWidth:1,borderRadius:22,padding:14,marginBottom:14},storeToolsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},storeToolsTitle:{fontSize:15,fontWeight:"900"},storeToolsSubtitle:{fontSize:10,lineHeight:15,marginTop:3},storeToolsIcon:{width:36,height:36,borderRadius:12,alignItems:"center",justifyContent:"center"},storeToolGrid:{flexDirection:"row",flexWrap:"wrap",gap:8},storeToolItem:{width:"48.5%",minHeight:100,borderRadius:15,padding:11},storeToolTitle:{fontSize:11,fontWeight:"900",marginTop:8},storeToolText:{fontSize:9,lineHeight:14,marginTop:3},storeListingsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:4,marginBottom:10},storeListingsTitle:{fontSize:17,fontWeight:"900",letterSpacing:-.2},storeListingsSubtitle:{fontSize:10,marginTop:3},storeCountPill:{minWidth:32,height:30,paddingHorizontal:9,borderRadius:999,alignItems:"center",justifyContent:"center"},storeCountText:{fontSize:12,fontWeight:"900"},storeLoadingCard:{minHeight:150,borderWidth:1,borderRadius:20,alignItems:"center",justifyContent:"center",gap:9},storeLoadingText:{fontSize:11,fontWeight:"700"},storeErrorCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:10},storeErrorTitle:{fontSize:12,fontWeight:"900"},storeErrorText:{fontSize:9.5,lineHeight:14,marginTop:3},storeRetryButton:{height:34,paddingHorizontal:12,borderRadius:10,alignItems:"center",justifyContent:"center"},storeRetryText:{fontSize:10,fontWeight:"900",color:"#fff"},storeEmptyCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",justifyContent:"center",minHeight:200},storeEmptyIcon:{width:52,height:52,borderRadius:17,alignItems:"center",justifyContent:"center",marginBottom:12},storeEmptyTitle:{fontSize:14,fontWeight:"900",textAlign:"center"},storeEmptyText:{fontSize:10.5,lineHeight:16,textAlign:"center",marginTop:5,maxWidth:280},storeListingGrid:{flexDirection:"row",flexWrap:"wrap",gap:10},storeListingCard:{width:"48.6%",borderWidth:1,borderRadius:18,overflow:"hidden"},storeListingImageWrap:{height:145,position:"relative"},storeListingImage:{width:"100%",height:"100%",backgroundColor:"#E5E7EB"},storeListingType:{position:"absolute",left:8,bottom:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(2,6,23,.58)"},storeListingTypeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingBody:{padding:10},storeOfferPill:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:"#DCFCE7"},storeOfferPillText:{fontSize:8,fontWeight:"900",color:"#15803D"},storeBoostPill:{position:"absolute",right:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:BUTTON_BLUE},storeBoostPillText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingEditButton:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},storeListingOriginalPrice:{fontSize:9,textDecorationLine:"line-through",marginTop:2},listingEditorToggle:{minHeight:62,borderWidth:1,borderRadius:16,paddingHorizontal:12,paddingVertical:10,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},listingToggle:{width:40,height:23,borderRadius:999,justifyContent:"center"},listingToggleKnob:{width:19,height:19,borderRadius:10,backgroundColor:"#fff"},listingEditorSection:{borderWidth:1,borderRadius:18,padding:12,marginBottom:12},listingEditorSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10},listingEditPhoto:{width:118,height:150,borderWidth:2,borderRadius:14,overflow:"hidden",position:"relative"},listingEditPhotoImage:{width:"100%",height:"100%"},listingEditCover:{position:"absolute",left:6,top:6,paddingHorizontal:6,paddingVertical:4,borderRadius:7,backgroundColor:"rgba(37,99,235,.92)"},listingEditPhotoActions:{position:"absolute",left:5,right:5,bottom:5,flexDirection:"row",justifyContent:"center",gap:5},listingPhotoAction:{width:28,height:28,borderRadius:9,alignItems:"center",justifyContent:"center"},listingBoostCard:{borderWidth:1,borderRadius:18,padding:12,flexDirection:"row",alignItems:"center",gap:9,marginBottom:12},listingBoostIcon:{width:36,height:36,borderRadius:11,alignItems:"center",justifyContent:"center"},storeListingTitle:{fontSize:11.5,fontWeight:"900",lineHeight:16,minHeight:32},storeListingPrice:{fontSize:15,fontWeight:"900",marginTop:6},storeListingMeta:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:6},storeListingMetaText:{fontSize:8.5,flex:1,marginRight:4},  messagesIntro:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:14},messagesTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.5},messagesSubtitle:{fontSize:11,marginTop:3},messagesRefresh:{width:38,height:38,borderRadius:12,borderWidth:1,alignItems:"center",justifyContent:"center"},messagesSearch:{height:48,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:9,marginBottom:12},messagesSearchInput:{flex:1,fontSize:13},messageSkeleton:{height:82,borderWidth:1,borderRadius:18,marginBottom:9,opacity:.65},messagesEmptyCard:{borderWidth:1,borderRadius:22,padding:28,alignItems:"center",justifyContent:"center",marginTop:26,minHeight:250},messagesEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},messagesEmptyTitle:{fontSize:16,fontWeight:"900"},messagesEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",maxWidth:300,marginTop:5},messageConversationRow:{minHeight:78,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9},messageAvatar:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center",overflow:"hidden"},messageAvatarImage:{width:"100%",height:"100%"},messageAvatarText:{fontSize:14,fontWeight:"900"},messageRowTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:7},messageConversationName:{fontSize:13,fontWeight:"900",flex:1},messageTime:{fontSize:9},messageStoreName:{fontSize:9.5,fontWeight:"800",marginTop:2},messagePreview:{fontSize:10.5,marginTop:4},messageUnread:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:11,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},messageUnreadText:{fontSize:9,fontWeight:"900",color:"#fff"},chatHeader:{minHeight:64,borderWidth:1,borderRadius:18,marginBottom:8,padding:9,flexDirection:"row",alignItems:"center",gap:9},chatBackButton:{width:38,height:38,borderRadius:12,alignItems:"center",justifyContent:"center"},chatAvatar:{width:42,height:42,borderRadius:14,alignItems:"center",justifyContent:"center",overflow:"hidden"},chatAvatarImage:{width:"100%",height:"100%"},chatAvatarText:{fontSize:12,fontWeight:"900"},chatName:{fontSize:13,fontWeight:"900"},chatStore:{fontSize:9.5,marginTop:2},chatOnlineDot:{width:8,height:8,borderRadius:4,marginRight:3},chatEmpty:{alignItems:"center",justifyContent:"center",paddingTop:90,paddingHorizontal:30},chatEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},chatEmptyTitle:{fontSize:16,fontWeight:"900"},chatEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",marginTop:5},chatBubbleRow:{flexDirection:"row",marginBottom:8},chatBubble:{maxWidth:"82%",borderWidth:1,borderRadius:18,paddingHorizontal:12,paddingVertical:9},chatBubbleText:{fontSize:12,lineHeight:18},chatTime:{fontSize:8,alignSelf:"flex-end",marginTop:4},chatComposer:{borderTopWidth:1,paddingTop:8,paddingBottom:8,flexDirection:"row",alignItems:"flex-end",gap:7},chatAttach:{width:40,height:40,borderRadius:12,alignItems:"center",justifyContent:"center"},chatInput:{flex:1,minHeight:40,maxHeight:105,borderWidth:1,borderRadius:13,paddingHorizontal:11,paddingVertical:9,fontSize:12},chatSend:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},  sellerProfileHero:{alignItems:"center",paddingVertical:22,paddingHorizontal:18,borderRadius:24},publicStoreStat:{flex:1,minHeight:48,borderRadius:14,alignItems:"center",justifyContent:"center",gap:3},publicStoreStatValue:{fontSize:16,fontWeight:"900"},publicStoreStatLabel:{fontSize:9,fontWeight:"800"},sellerProfileAvatarWrap:{position:"relative"},sellerProfileAvatar:{width:88,height:88,borderRadius:44},sellerOnlineDot:{position:"absolute",right:2,bottom:4,width:16,height:16,borderRadius:8,backgroundColor:"#22C55E",borderWidth:3,borderColor:"#fff"},sellerStatsRow:{width:"100%",flexDirection:"row",alignItems:"center",justifyContent:"space-around",marginTop:20,paddingVertical:14,borderTopWidth:1,borderBottomWidth:1},sellerStat:{alignItems:"center",minWidth:70},sellerStatValue:{fontSize:19,fontWeight:"900"},sellerStatLabel:{fontSize:10,marginTop:3,fontWeight:"700"},sellerStatDivider:{width:1,height:28},notificationBadge:{position:"absolute",top:-4,right:-5,minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:"#DC2626",alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},notificationBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",lineHeight:11},productInfoRow:{flexDirection:"row",alignItems:"center",paddingHorizontal:2,paddingVertical:14,borderBottomWidth:StyleSheet.hairlineWidth},productMetaLine:{flexDirection:"row",alignItems:"center",flexWrap:"wrap",gap:5,marginTop:6},productMetaValue:{fontSize:16,fontWeight:"900"},productMetaSecondary:{fontSize:12,fontWeight:"600"},productMetaDot:{fontSize:12,fontWeight:"700"},productTopBar:{height:52,flexDirection:"row",alignItems:"center",paddingHorizontal:2},productTopIcon:{width:40,height:40,borderRadius:13,borderWidth:1,alignItems:"center",justifyContent:"center"},productTopLabel:{fontSize:14,fontWeight:"900"},productTitleActionRow:{minHeight:54,flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10,paddingHorizontal:2,marginBottom:10},productTitleActions:{flexDirection:"row",alignItems:"center",gap:8},productActionIcon:{width:46,height:46,borderRadius:15,borderWidth:1,alignItems:"center",justifyContent:"center"},reviewScoreBadge:{width:34,height:34,borderRadius:12,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center"},reviewScoreText:{fontSize:18,fontWeight:"900",color:BUTTON_BLUE},storeLinkCard:{width:"100%",maxWidth:"100%",alignSelf:"stretch",marginTop:14,paddingHorizontal:12,paddingVertical:10,borderRadius:18},reportActionsWrap:{marginTop:18},reportSectionLabel:{fontSize:10,fontWeight:"800",marginBottom:8,letterSpacing:.2},reportActionsRow:{gap:9},reportActionCard:{minHeight:62,borderWidth:1,borderRadius:18,paddingHorizontal:11,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10},reportActionIcon:{width:38,height:38,borderRadius:13,backgroundColor:"#FEF2F2",alignItems:"center",justifyContent:"center"},reportActionTitle:{fontSize:11.5,fontWeight:"900"},reportActionSub:{fontSize:9.5,marginTop:2},detailSectionCard:{borderWidth:1,borderRadius:18,padding:14,marginTop:14},detailSectionTitle:{fontSize:16,fontWeight:"900"},detailSectionSub:{fontSize:10,marginTop:3},detailSectionEmpty:{fontSize:11,lineHeight:17,marginTop:12},reviewRow:{borderTopWidth:1,paddingTop:10,marginTop:10},reviewName:{fontSize:11,fontWeight:"900"},reviewText:{fontSize:10.5,lineHeight:16,marginTop:4},relatedCard:{width:150,borderWidth:1,borderRadius:16,overflow:"hidden",paddingBottom:9},relatedImage:{width:150,height:130,backgroundColor:"#E5E7EB"},relatedTitle:{fontSize:11,fontWeight:"800",lineHeight:15,paddingHorizontal:9,marginTop:7},relatedPrice:{fontSize:13,fontWeight:"900",paddingHorizontal:9,marginTop:5},reportSheet:{maxHeight:"88%",borderTopLeftRadius:26,borderTopRightRadius:26,overflow:"hidden"},reportHero:{padding:16,flexDirection:"row",alignItems:"center",gap:11},reportHeroIcon:{width:42,height:42,borderRadius:14,backgroundColor:"#FEE2E2",alignItems:"center",justifyContent:"center"},reportTitle:{fontSize:18,fontWeight:"900"},reportSubtitle:{fontSize:10.5,marginTop:3},reportLabel:{fontSize:12,fontWeight:"900",marginTop:3},reportReasonGrid:{gap:8},reportReason:{minHeight:44,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},reportReasonText:{fontSize:11,fontWeight:"800"},reportInput:{minHeight:105,borderWidth:1,borderRadius:14,padding:12,textAlignVertical:"top",fontSize:12},reportSubmitButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},  orderCard:{minHeight:68,borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:10},badge:{paddingHorizontal:10,paddingVertical:6,borderRadius:999},badgeText:{fontSize:11,fontWeight:"800"},notificationCard:{borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:12},notificationIcon:{width:38,height:38,borderRadius:19,alignItems:"center",justifyContent:"center"},messageRow:{borderWidth:1,borderRadius:16,padding:12,flexDirection:"row",alignItems:"center",gap:12},settingsHero:{borderWidth:1,borderRadius:22,padding:17,marginBottom:20,flexDirection:"row",alignItems:"center",gap:13,shadowOpacity:0.04,shadowRadius:12,shadowOffset:{width:0,height:4},elevation:1},
+  storeTabBar: { flexDirection: "row", padding: 4, borderWidth: 1, borderRadius: 14, marginTop: 14, gap: 4 },
+  storeTab: { flex: 1, minHeight: 42, alignItems: "center", justifyContent: "center", borderRadius: 10, paddingHorizontal: 8 },
+  storeTabText: { fontSize: 13, fontWeight: "800" },storeTabLabelRow:{flexDirection:"row",alignItems:"center",justifyContent:"center",gap:5},storeAttentionBadge:{minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:"#DC2626",alignItems:"center",justifyContent:"center"},storeAttentionBadgeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeAttentionPill:{height:30,paddingHorizontal:9,borderRadius:999,backgroundColor:"#FEF2F2",flexDirection:"row",alignItems:"center",justifyContent:"center",gap:4},storeAttentionPillText:{fontSize:8.5,fontWeight:"900",color:"#B91C1C"},
+  storeTrendMetric: { flex: 1, borderWidth: 1, borderRadius: 14, paddingVertical: 14, paddingHorizontal: 10 },
+  storeTrendMetricValue: { fontSize: 20, fontWeight: "900" },
+  storeTrendMetricLabel: { fontSize: 12, marginTop: 3, fontWeight: "700" },
+  storeTrendCard: { borderWidth: 1, borderRadius: 16, padding: 16 },
+  storeTrendTitle: { fontSize: 16, fontWeight: "900" },
+  storePageCard:{borderWidth:1,borderRadius:26,overflow:"hidden",marginBottom:12},storeCover:{height:150,position:"relative",overflow:"hidden"},storeCoverLogoHolder:{position:"absolute",left:16,bottom:-2,width:82,height:82,borderRadius:41,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},storeCoverLogoImage:{width:"100%",height:"100%",borderRadius:41},storeCoverGlow:{position:"absolute",width:230,height:230,borderRadius:115,backgroundColor:"rgba(37,99,235,.28)",right:-70,top:-110},storeCoverShade:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(2,6,23,.18)"},storeCoverTopRow:{position:"absolute",left:12,right:12,top:12,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},storeStatusPill:{height:30,paddingHorizontal:10,borderRadius:999,backgroundColor:"rgba(2,6,23,.48)",flexDirection:"row",alignItems:"center",gap:6},storeStatusDot:{width:7,height:7,borderRadius:4},storeStatusText:{fontSize:10,fontWeight:"900",color:"#fff"},storeCircleButton:{width:34,height:34,borderRadius:17,backgroundColor:"rgba(2,6,23,.48)",alignItems:"center",justifyContent:"center"},storeIdentityBlock:{paddingHorizontal:16,paddingTop:0,paddingBottom:14,flexDirection:"row",gap:12},storeLogoLarge:{width:72,height:72,borderRadius:22,borderWidth:4,alignItems:"center",justifyContent:"center",marginTop:-34,overflow:"hidden"},storeLogoImage:{width:"100%",height:"100%"},storeLogoLetter:{fontSize:24,fontWeight:"900",color:"#fff"},storeIdentityText:{flex:1,paddingTop:8,minWidth:0},storeNameRow:{flexDirection:"row",alignItems:"center",gap:7},storePageTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4,flexShrink:1},storeVerifiedBadge:{width:19,height:19,borderRadius:10,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},storeIdentityLabelRow:{flexDirection:"row",alignItems:"center",gap:7,marginBottom:4},storeIdentityLabel:{fontSize:8,fontWeight:"900",letterSpacing:1.2},storeOwnerLabel:{fontSize:8.5},storePageDescription:{fontSize:11,lineHeight:17,marginTop:4},storeMetaLine:{flexDirection:"row",alignItems:"center",gap:4,marginTop:6},storeMetaText:{fontSize:10,flexShrink:1},storeStatsRow:{marginHorizontal:16,borderTopWidth:1,borderBottomWidth:1,minHeight:62,flexDirection:"row",alignItems:"center",justifyContent:"space-around"},storeStat:{flex:1,alignItems:"center"},storeStatValue:{fontSize:17,fontWeight:"900"},storeStatLabel:{fontSize:9,fontWeight:"700",marginTop:2},storeStatDivider:{width:1,height:28},storeQuickActions:{padding:12,flexDirection:"row",gap:8},storePrimaryAction:{height:44,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storePrimaryActionText:{color:"#fff",fontSize:12,fontWeight:"900"},storeSecondaryAction:{height:44,borderRadius:13,paddingHorizontal:15,borderWidth:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeSecondaryActionText:{fontSize:12,fontWeight:"900"},storeToolsCard:{borderWidth:1,borderRadius:22,padding:14,marginBottom:14},storeToolsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},storeToolsTitle:{fontSize:15,fontWeight:"900"},storeToolsSubtitle:{fontSize:10,lineHeight:15,marginTop:3},storeToolsIcon:{width:36,height:36,borderRadius:12,alignItems:"center",justifyContent:"center"},storeToolGrid:{flexDirection:"row",flexWrap:"wrap",gap:8},storeToolItem:{width:"48.5%",minHeight:100,borderRadius:15,padding:11},storeToolTitle:{fontSize:11,fontWeight:"900",marginTop:8},storeToolText:{fontSize:9,lineHeight:14,marginTop:3},storeListingsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:4,marginBottom:10},storeListingsTitle:{fontSize:17,fontWeight:"900",letterSpacing:-.2},storeListingsSubtitle:{fontSize:10,marginTop:3},storeCountPill:{minWidth:32,height:30,paddingHorizontal:9,borderRadius:999,alignItems:"center",justifyContent:"center"},storeCountText:{fontSize:12,fontWeight:"900"},storeLoadingCard:{minHeight:150,borderWidth:1,borderRadius:20,alignItems:"center",justifyContent:"center",gap:9},storeLoadingText:{fontSize:11,fontWeight:"700"},storeErrorCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:10},storeErrorTitle:{fontSize:12,fontWeight:"900"},storeErrorText:{fontSize:9.5,lineHeight:14,marginTop:3},storeRetryButton:{height:34,paddingHorizontal:12,borderRadius:10,alignItems:"center",justifyContent:"center"},storeRetryText:{fontSize:10,fontWeight:"900",color:"#fff"},storeEmptyCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",justifyContent:"center",minHeight:200},storeEmptyIcon:{width:52,height:52,borderRadius:17,alignItems:"center",justifyContent:"center",marginBottom:12},storeEmptyTitle:{fontSize:14,fontWeight:"900",textAlign:"center"},storeEmptyText:{fontSize:10.5,lineHeight:16,textAlign:"center",marginTop:5,maxWidth:280},storeListingGrid:{flexDirection:"row",flexWrap:"wrap",gap:10},storeListingCard:{width:"48%",borderWidth:1,borderRadius:18,overflow:"hidden"},storeListingImageWrap:{height:145,position:"relative"},storeListingImage:{width:"100%",height:"100%",backgroundColor:"#E5E7EB"},storeListingType:{position:"absolute",left:8,bottom:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(2,6,23,.58)"},storeListingTypeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeOutOfStockBadge:{position:"absolute",left:8,bottom:8,paddingHorizontal:8,paddingVertical:5,borderRadius:8,backgroundColor:"#DC2626",shadowOpacity:.12,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:2},storeOutOfStockBadgeText:{fontSize:7.5,fontWeight:"900",letterSpacing:.35,color:"#fff"},storeListingBody:{padding:10},storeOfferPill:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:"#DCFCE7"},storeOfferPillText:{fontSize:8,fontWeight:"900",color:"#15803D"},storeBoostPill:{position:"absolute",right:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:BUTTON_BLUE},storeBoostPillText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingEditButton:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},storeListingOriginalPrice:{fontSize:9,textDecorationLine:"line-through",marginTop:2},storeListingStockRow:{marginTop:5,minHeight:17,justifyContent:"center"},storeListingStockText:{fontSize:9.5,fontWeight:"800"},listingEditorToggle:{minHeight:62,borderWidth:1,borderRadius:16,paddingHorizontal:12,paddingVertical:10,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},listingToggle:{width:40,height:23,borderRadius:999,justifyContent:"center"},listingToggleKnob:{width:19,height:19,borderRadius:10,backgroundColor:"#fff"},listingEditorSection:{borderWidth:1,borderRadius:18,padding:12,marginBottom:12},listingEditorSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10},listingEditPhoto:{width:118,height:150,borderWidth:2,borderRadius:14,overflow:"hidden",position:"relative"},listingEditPhotoImage:{width:"100%",height:"100%"},listingEditCover:{position:"absolute",left:6,top:6,paddingHorizontal:6,paddingVertical:4,borderRadius:7,backgroundColor:"rgba(37,99,235,.92)"},listingEditPhotoActions:{position:"absolute",left:5,right:5,bottom:5,flexDirection:"row",justifyContent:"center",gap:5},listingPhotoAction:{width:28,height:28,borderRadius:9,alignItems:"center",justifyContent:"center"},listingBoostCard:{borderWidth:1,borderRadius:18,padding:12,flexDirection:"row",alignItems:"center",gap:9,marginBottom:12},listingBoostIcon:{width:36,height:36,borderRadius:11,alignItems:"center",justifyContent:"center"},storeListingTitle:{fontSize:11.5,fontWeight:"900",lineHeight:16,minHeight:32},storeListingPrice:{fontSize:15,fontWeight:"900",marginTop:6},storeListingMeta:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:6},storeListingMetaText:{fontSize:8.5,flex:1,marginRight:4},  messagesIntro:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:14},messagesTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.5},messagesSubtitle:{fontSize:11,marginTop:3},messagesRefresh:{width:38,height:38,borderRadius:12,borderWidth:1,alignItems:"center",justifyContent:"center"},messagesSearch:{height:48,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:9,marginBottom:12},messagesSearchInput:{flex:1,fontSize:13},messageSkeleton:{height:82,borderWidth:1,borderRadius:18,marginBottom:9,opacity:.65},messagesEmptyCard:{borderWidth:1,borderRadius:22,padding:28,alignItems:"center",justifyContent:"center",marginTop:26,minHeight:250},messagesEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},messagesEmptyTitle:{fontSize:16,fontWeight:"900"},messagesEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",maxWidth:300,marginTop:5},messageConversationRow:{minHeight:78,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9},messageAvatar:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center",overflow:"hidden"},messageAvatarImage:{width:"100%",height:"100%"},messageAvatarText:{fontSize:14,fontWeight:"900"},messageRowTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:7},messageConversationName:{fontSize:13,fontWeight:"900",flex:1},messageTime:{fontSize:9},messageStoreName:{fontSize:9.5,fontWeight:"800",marginTop:2},messagePreview:{fontSize:10.5,marginTop:4},messageUnread:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:11,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},messageUnreadText:{fontSize:9,fontWeight:"900",color:"#fff"},chatHeader:{minHeight:64,borderWidth:1,borderRadius:18,marginBottom:8,padding:9,flexDirection:"row",alignItems:"center",gap:9},chatBackButton:{width:38,height:38,borderRadius:12,alignItems:"center",justifyContent:"center"},chatAvatar:{width:42,height:42,borderRadius:14,alignItems:"center",justifyContent:"center",overflow:"hidden"},chatAvatarImage:{width:"100%",height:"100%"},chatAvatarText:{fontSize:12,fontWeight:"900"},chatName:{fontSize:13,fontWeight:"900"},chatStore:{fontSize:9.5,marginTop:2},chatOnlineDot:{width:8,height:8,borderRadius:4,marginRight:3},chatEmpty:{alignItems:"center",justifyContent:"center",paddingTop:90,paddingHorizontal:30},chatEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},chatEmptyTitle:{fontSize:16,fontWeight:"900"},chatEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",marginTop:5},chatBubbleRow:{flexDirection:"row",marginBottom:8},chatBubble:{maxWidth:"82%",borderWidth:1,borderRadius:18,paddingHorizontal:12,paddingVertical:9},chatBubbleText:{fontSize:12,lineHeight:18},chatTime:{fontSize:8,alignSelf:"flex-end",marginTop:4},chatComposer:{borderTopWidth:1,paddingTop:8,paddingBottom:8,flexDirection:"row",alignItems:"flex-end",gap:7},chatAttach:{width:40,height:40,borderRadius:12,alignItems:"center",justifyContent:"center"},chatInput:{flex:1,minHeight:40,maxHeight:105,borderWidth:1,borderRadius:13,paddingHorizontal:11,paddingVertical:9,fontSize:12},chatSend:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},  sellerProfileHero:{alignItems:"center",paddingVertical:22,paddingHorizontal:18,borderRadius:24},publicStoreStat:{flex:1,minHeight:48,borderRadius:14,alignItems:"center",justifyContent:"center",gap:3},publicStoreStatValue:{fontSize:16,fontWeight:"900"},publicStoreStatLabel:{fontSize:9,fontWeight:"800"},sellerProfileAvatarWrap:{position:"relative"},sellerProfileAvatar:{width:88,height:88,borderRadius:44},sellerOnlineDot:{position:"absolute",right:2,bottom:4,width:16,height:16,borderRadius:8,backgroundColor:"#22C55E",borderWidth:3,borderColor:"#fff"},sellerStatsRow:{width:"100%",flexDirection:"row",alignItems:"center",justifyContent:"space-around",marginTop:20,paddingVertical:14,borderTopWidth:1,borderBottomWidth:1},sellerStat:{alignItems:"center",minWidth:70},sellerStatValue:{fontSize:19,fontWeight:"900"},sellerStatLabel:{fontSize:10,marginTop:3,fontWeight:"700"},sellerStatDivider:{width:1,height:28},notificationBadge:{position:"absolute",top:-4,right:-5,minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:"#DC2626",alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},notificationBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",lineHeight:11},productInfoRow:{flexDirection:"row",alignItems:"center",paddingHorizontal:2,paddingVertical:14,borderBottomWidth:StyleSheet.hairlineWidth},productMetaLine:{flexDirection:"row",alignItems:"center",flexWrap:"wrap",gap:5,marginTop:6},productMetaValue:{fontSize:16,fontWeight:"900"},productMetaSecondary:{fontSize:12,fontWeight:"600"},productMetaDot:{fontSize:12,fontWeight:"700"},productTopBar:{height:52,flexDirection:"row",alignItems:"center",paddingHorizontal:2},productTopIcon:{width:40,height:40,borderRadius:13,borderWidth:1,alignItems:"center",justifyContent:"center"},productTopLabel:{fontSize:14,fontWeight:"900"},productTitleActionRow:{minHeight:54,flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10,paddingHorizontal:2,marginBottom:10},productTitleActions:{flexDirection:"row",alignItems:"center",gap:8},productActionIcon:{width:46,height:46,borderRadius:15,borderWidth:1,alignItems:"center",justifyContent:"center"},reviewScoreBadge:{width:34,height:34,borderRadius:12,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center"},reviewScoreText:{fontSize:18,fontWeight:"900",color:BUTTON_BLUE},storeLinkCard:{width:"100%",maxWidth:"100%",alignSelf:"stretch",marginTop:14,paddingHorizontal:12,paddingVertical:10,borderRadius:18},reportActionsWrap:{marginTop:18},reportSectionLabel:{fontSize:10,fontWeight:"800",marginBottom:8,letterSpacing:.2},reportActionsRow:{gap:9},reportActionCard:{minHeight:62,borderWidth:1,borderRadius:18,paddingHorizontal:11,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10},reportActionIcon:{width:38,height:38,borderRadius:13,backgroundColor:"#FEF2F2",alignItems:"center",justifyContent:"center"},reportActionTitle:{fontSize:11.5,fontWeight:"900"},reportActionSub:{fontSize:9.5,marginTop:2},detailSectionCard:{borderWidth:1,borderRadius:18,padding:14,marginTop:14},detailSectionTitle:{fontSize:16,fontWeight:"900"},detailSectionSub:{fontSize:10,marginTop:3},detailSectionEmpty:{fontSize:11,lineHeight:17,marginTop:12},reviewRow:{borderTopWidth:1,paddingTop:10,marginTop:10},reviewName:{fontSize:11,fontWeight:"900"},reviewText:{fontSize:10.5,lineHeight:16,marginTop:4},relatedCard:{width:150,borderWidth:1,borderRadius:16,overflow:"hidden",paddingBottom:9},relatedImage:{width:150,height:130,backgroundColor:"#E5E7EB"},relatedTitle:{fontSize:11,fontWeight:"800",lineHeight:15,paddingHorizontal:9,marginTop:7},relatedPrice:{fontSize:13,fontWeight:"900",paddingHorizontal:9,marginTop:5},reportSheet:{maxHeight:"88%",borderTopLeftRadius:26,borderTopRightRadius:26,overflow:"hidden"},reportHero:{padding:16,flexDirection:"row",alignItems:"center",gap:11},reportHeroIcon:{width:42,height:42,borderRadius:14,backgroundColor:"#FEE2E2",alignItems:"center",justifyContent:"center"},reportTitle:{fontSize:18,fontWeight:"900"},reportSubtitle:{fontSize:10.5,marginTop:3},reportLabel:{fontSize:12,fontWeight:"900",marginTop:3},reportReasonGrid:{gap:8},reportReason:{minHeight:44,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},reportReasonText:{fontSize:11,fontWeight:"800"},reportInput:{minHeight:105,borderWidth:1,borderRadius:14,padding:12,textAlignVertical:"top",fontSize:12},reportSubmitButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},  ordersHero:{borderWidth:1,borderRadius:22,padding:16,marginBottom:16,flexDirection:"row",alignItems:"center",gap:12},ordersHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},ordersCountPill:{minWidth:52,paddingHorizontal:9,paddingVertical:7,borderRadius:14,alignItems:"center",justifyContent:"center"},ordersCountText:{fontSize:16,fontWeight:"900"},ordersCountLabel:{fontSize:8,fontWeight:"800",marginTop:1},professionalOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},professionalOrderTop:{flexDirection:"row",alignItems:"center",gap:10},professionalOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},professionalOrderTitle:{fontSize:14,fontWeight:"900"},professionalOrderMeta:{fontSize:9.5,marginTop:3},professionalOrderInfo:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},professionalOrderLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},professionalOrderValue:{fontSize:11,fontWeight:"800",marginTop:3},orderMessageBox:{borderRadius:12,padding:10,marginTop:11},orderMessageLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},orderMessageText:{fontSize:10.5,lineHeight:16,marginTop:4},sellerOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},sellerOrderTop:{flexDirection:"row",alignItems:"center",gap:10},sellerOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},sellerOrderTitle:{fontSize:14,fontWeight:"900"},sellerOrderMeta:{fontSize:9.5,marginTop:3},sellerOrderStatus:{paddingHorizontal:9,paddingVertical:6,borderRadius:999},sellerOrderStatusText:{fontSize:9,fontWeight:"900"},sellerOrderInfoGrid:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},sellerOrderInfo:{flex:1},sellerOrderInfoLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},sellerOrderInfoValue:{fontSize:10.5,fontWeight:"800",marginTop:3},sellerOrderHint:{fontSize:9.5,lineHeight:15,marginTop:10},storeOrderLoading:{minHeight:120,borderWidth:1,borderRadius:18,alignItems:"center",justifyContent:"center",gap:8},  orderCard:{minHeight:68,borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:10},badge:{paddingHorizontal:10,paddingVertical:6,borderRadius:999},badgeText:{fontSize:11,fontWeight:"800"},notificationCard:{borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:12},notificationIcon:{width:38,height:38,borderRadius:19,alignItems:"center",justifyContent:"center"},messageRow:{borderWidth:1,borderRadius:16,padding:12,flexDirection:"row",alignItems:"center",gap:12},settingsHero:{borderWidth:1,borderRadius:22,padding:17,marginBottom:20,flexDirection:"row",alignItems:"center",gap:13,shadowOpacity:0.04,shadowRadius:12,shadowOffset:{width:0,height:4},elevation:1},
   settingsHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},
   settingsHeroTitle:{fontSize:21,fontWeight:"900",letterSpacing:-0.3},
   settingsHeroSubtitle:{fontSize:12,lineHeight:18,marginTop:3},

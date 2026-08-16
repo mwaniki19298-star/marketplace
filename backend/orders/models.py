@@ -16,6 +16,9 @@ class PurchaseRequest(models.Model):
     store = models.ForeignKey(Store, on_delete=models.PROTECT, related_name="purchase_requests")
     listing = models.ForeignKey(Listing, on_delete=models.PROTECT, related_name="purchase_requests")
     quantity = models.PositiveIntegerField(default=1)
+    # Immutable commercial snapshot: price/currency at the moment the order was placed.
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    currency = models.CharField(max_length=3, default="KES")
     message = models.TextField(blank=True)
     fulfillment = models.CharField(max_length=30, default="pickup")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)

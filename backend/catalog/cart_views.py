@@ -2,10 +2,12 @@ from django.db import transaction
 from rest_framework import serializers, status, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.decorators import action
 
 from .models import CartItem, Listing, MarketplaceEvent
 from .serializers import ListingSerializer
 from notifications.models import Notification
+from orders.models import PurchaseRequest
 import logging
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,76 @@ class CartViewSet(viewsets.ModelViewSet):
             )
         logger.info("CART ADD SUCCESS user=%s listing_id=%s cart_item=%s quantity=%s", request.user.id, listing.id, item.id, item.quantity)
         return Response(self.get_serializer(item).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @transaction.atomic
+    @action(detail=False, methods=["post"])
+    def checkout(self, request, *args, **kwargs):
+        """Place only the selected cart items as orders. Unselected items remain in the cart."""
+        selected_ids = request.data.get("cart_item_ids")
+        queryset = self.get_queryset().select_for_update().select_related("listing", "listing__store", "listing__store__owner")
+
+        if selected_ids is not None:
+            if not isinstance(selected_ids, list) or not selected_ids:
+                return Response({"detail": "Select at least one item to place an order."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                selected_ids = [int(value) for value in selected_ids]
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid cart item selection."}, status=status.HTTP_400_BAD_REQUEST)
+            items = list(queryset.filter(pk__in=selected_ids))
+            if len(items) != len(set(selected_ids)):
+                return Response({"detail": "One or more selected cart items could not be found."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            items = list(queryset)
+
+        if not items:
+            return Response({"detail": "Your cart is empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+        created_orders = []
+        for item in items:
+            listing = Listing.objects.select_for_update().select_related("store", "store__owner").get(pk=item.listing_id)
+            if listing.is_draft or not listing.is_available or listing.stock <= 0:
+                return Response({"detail": f"{listing.title} is no longer available."}, status=status.HTTP_400_BAD_REQUEST)
+            if item.quantity > listing.stock:
+                return Response({"detail": f"Only {listing.stock} item(s) of {listing.title} are available."}, status=status.HTTP_400_BAD_REQUEST)
+            if listing.store.owner_id == request.user.id:
+                return Response({"detail": f"You cannot purchase your own listing: {listing.title}."}, status=status.HTTP_400_BAD_REQUEST)
+
+            unit_price = (listing.offer_price if listing.is_on_offer and listing.offer_price is not None else listing.price) or 0
+            order = PurchaseRequest.objects.create(
+                buyer=request.user,
+                seller=listing.store.owner,
+                store=listing.store,
+                listing=listing,
+                quantity=item.quantity,
+                unit_price=unit_price,
+                currency=listing.currency or "KES",
+                fulfillment="pickup",
+                status=PurchaseRequest.Status.PENDING,
+            )
+            created_orders.append(order)
+            Notification.objects.create(
+                user=order.seller,
+                kind=Notification.Kind.ORDER,
+                title="New order placed",
+                body=f"{order.buyer.full_name} placed an order for {order.quantity} × {order.listing.title}.",
+                data={"order_id": order.id, "listing_id": order.listing_id},
+            )
+            Notification.objects.create(
+                user=order.buyer,
+                kind=Notification.Kind.ORDER,
+                title="Order placed",
+                body=f"Your order for {order.listing.title} has been placed.",
+                data={"order_id": order.id, "listing_id": order.listing_id},
+            )
+
+        # Only items that were actually checked out leave the cart. Unchecked
+        # products remain available for a later order.
+        CartItem.objects.filter(user=request.user, pk__in=[item.id for item in items]).delete()
+        return Response({
+            "detail": "Order placed successfully.",
+            "orders": [PurchaseRequest.objects.select_related("listing", "store").get(pk=o.id).id for o in created_orders],
+            "count": len(created_orders),
+        }, status=status.HTTP_201_CREATED)
 
     @transaction.atomic
     def partial_update(self, request, *args, **kwargs):

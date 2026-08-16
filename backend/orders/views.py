@@ -31,10 +31,15 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
+        listing = serializer.validated_data["listing"]
+        # Snapshot the commercial terms now. Later listing-price edits must never
+        # rewrite the value of an order that has already been placed.
         order = serializer.save(
             buyer=self.request.user,
-            seller=serializer.validated_data["listing"].store.owner,
-            store=serializer.validated_data["listing"].store,
+            seller=listing.store.owner,
+            store=listing.store,
+            unit_price=(listing.offer_price if listing.is_on_offer and listing.offer_price is not None else listing.price) or 0,
+            currency=listing.currency or "KES",
         )
         create_order_notification(
             order.seller,
@@ -53,34 +58,55 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     def transition(self, request, pk=None):
         order = self.get_object()
         next_status = request.data.get("status")
-        allowed = {
-            "pending": {"accepted", "declined", "cancelled"},
-            "accepted": {"preparing", "cancelled"},
-            "preparing": {"ready"},
-            "ready": {"completed"},
-        }
-        if next_status not in allowed.get(order.status, set()):
-            return Response({"detail": f"Cannot change {order.status} to {next_status}."}, status=400)
-        if request.user == order.buyer and next_status in {"accepted", "preparing", "ready", "declined"}:
-            return Response({"detail": "Only the seller can progress this order."}, status=403)
-        if request.user == order.seller and next_status == "cancelled":
-            pass
-        if request.user == order.buyer and next_status == "cancelled" and order.status != "pending":
-            return Response({"detail": "You can only cancel a pending request."}, status=403)
+        valid_statuses = {choice for choice, _ in PurchaseRequest.Status.choices}
+        if next_status not in valid_statuses:
+            return Response({"detail": f"Unknown order status: {next_status}."}, status=400)
+
+        # Buyers may only cancel a brand-new request. Sellers own the fulfilment
+        # lifecycle and can only move an order forward one step at a time.
+        if request.user == order.buyer:
+            if next_status != "cancelled" or order.status != PurchaseRequest.Status.PENDING:
+                return Response({"detail": "Buyers can only cancel a pending order."}, status=403)
+        elif request.user != order.seller:
+            return Response({"detail": "You do not have permission to change this order."}, status=403)
+        else:
+            allowed = {
+                PurchaseRequest.Status.PENDING: {PurchaseRequest.Status.ACCEPTED, PurchaseRequest.Status.DECLINED},
+                PurchaseRequest.Status.ACCEPTED: {PurchaseRequest.Status.PREPARING, PurchaseRequest.Status.CANCELLED},
+                PurchaseRequest.Status.PREPARING: {PurchaseRequest.Status.READY, PurchaseRequest.Status.CANCELLED},
+                PurchaseRequest.Status.READY: {PurchaseRequest.Status.COMPLETED, PurchaseRequest.Status.CANCELLED},
+                PurchaseRequest.Status.COMPLETED: set(),
+                PurchaseRequest.Status.DECLINED: set(),
+                PurchaseRequest.Status.CANCELLED: set(),
+            }
+            if next_status not in allowed.get(order.status, set()):
+                return Response({"detail": "Orders can only move to the next step. Previous or skipped steps are not allowed."}, status=400)
 
         with transaction.atomic():
             listing = order.listing.__class__.objects.select_for_update().get(pk=order.listing_id)
-            if next_status == "accepted":
+            if next_status == PurchaseRequest.Status.ACCEPTED:
                 if not listing.is_available or listing.is_draft:
-                    return Response({"detail": "This listing is no longer available."}, status=400)
+                    return Response({
+                        "detail": "You cannot accept this order because this listing is currently out of stock or unavailable.",
+                        "code": "OUT_OF_STOCK",
+                        "available_stock": listing.stock or 0,
+                        "requested_quantity": order.quantity,
+                        "action": "RESTOCK",
+                    }, status=400)
                 if listing.stock and order.quantity > listing.stock:
-                    return Response({"detail": f"Only {listing.stock} item(s) remain available."}, status=400)
+                    return Response({
+                        "detail": f"You cannot accept this order because only {listing.stock} item(s) remain in stock, but the order requests {order.quantity}.",
+                        "code": "INSUFFICIENT_STOCK",
+                        "available_stock": listing.stock,
+                        "requested_quantity": order.quantity,
+                        "action": "RESTOCK",
+                    }, status=400)
                 if listing.stock:
                     listing.stock -= order.quantity
                     if listing.stock == 0:
                         listing.is_available = False
                     listing.save(update_fields=["stock", "is_available", "updated_at"])
-            elif next_status == "cancelled" and order.status in {"accepted", "preparing"} and listing.stock is not None:
+            elif next_status == PurchaseRequest.Status.CANCELLED and order.status in {PurchaseRequest.Status.ACCEPTED, PurchaseRequest.Status.PREPARING, PurchaseRequest.Status.READY} and listing.stock is not None:
                 listing.stock += order.quantity
                 listing.is_available = True
                 listing.save(update_fields=["stock", "is_available", "updated_at"])

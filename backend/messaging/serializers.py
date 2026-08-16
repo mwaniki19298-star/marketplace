@@ -37,6 +37,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     seller_avatar = serializers.SerializerMethodField()
     store_name = serializers.CharField(source="store.name", read_only=True, allow_null=True)
     store_logo = serializers.SerializerMethodField()
+    store_verified = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
 
@@ -48,6 +49,15 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     def get_store_logo(self, obj):
         return media_url(self.context.get("request"), obj.store.logo if obj.store else None)
+
+    def get_store_verified(self, obj):
+        if not obj.store:
+            return False
+        try:
+            verification = obj.store.email_verification
+        except Exception:
+            return False
+        return bool(verification and verification.verified_at)
 
     def get_last_message(self, obj):
         message = obj.messages.order_by("-created_at").first()
@@ -71,7 +81,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         model = Conversation
         fields = [
             "id", "buyer", "seller", "buyer_name", "seller_name", "buyer_avatar", "seller_avatar",
-            "store", "store_name", "store_logo", "messages", "last_message", "unread_count",
+            "store", "store_name", "store_logo", "store_verified", "messages", "last_message", "unread_count",
             "created_at", "updated_at"
         ]
         read_only_fields = ["buyer", "seller"]
