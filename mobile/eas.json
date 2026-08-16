@@ -27,6 +27,19 @@
         "EXPO_PUBLIC_WEB_DOMAIN": "marketplace.co.ke",
         "EXPO_PUBLIC_ANDROID_PACKAGE": "com.marketplace.mobile"
       }
+    },
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://emilio2026.pythonanywhere.com",
+        "EXPO_PUBLIC_WEB_BASE_URL": "https://marketplace.co.ke",
+        "EXPO_PUBLIC_WEB_DOMAIN": "marketplace.co.ke",
+        "EXPO_PUBLIC_ANDROID_PACKAGE": "com.marketplace.mobile"
+      }
     }
   }
 }

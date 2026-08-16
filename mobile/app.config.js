@@ -69,6 +69,7 @@ module.exports = ({ config }) => {
       favicon: './assets/favicon.png',
     },
     plugins: [
+      ['@config-plugins/react-native-webrtc', { microphonePermission: 'Allow Marketplace to use your microphone for in-app calls.' }],
       [
         'expo-image-picker',
         {

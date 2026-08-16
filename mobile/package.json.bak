@@ -3,13 +3,11 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
-    "@config-plugins/react-native-webrtc": "^13.0.0",
-    "@react-native-async-storage/async-storage": "^2.1.2",
     "expo": "~54.0.0",
+    "@react-native-async-storage/async-storage": "^2.1.2",
     "expo-auth-session": "~7.0.8",
-    "expo-constants": "18.0.13",
+    "expo-constants": "~18.0.13",
     "expo-crypto": "~15.0.9",
-    "expo-dev-client": "~6.0.21",
     "expo-file-system": "~19.0.23",
     "expo-image-picker": "~17.0.5",
     "expo-intent-launcher": "~13.0.8",
@@ -22,14 +20,13 @@
     "react-native": "0.81.5",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-svg": "15.12.1",
-    "react-native-web": "^0.21.0",
-    "react-native-webrtc": "^124.0.6"
+    "react-native-web": "^0.21.0"
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
-    "@vitejs/plugin-react": "^5.0.2",
     "typescript": "~5.9.2",
-    "vite": "^7.1.3"
+    "vite": "^7.1.3",
+    "@vitejs/plugin-react": "^5.0.2"
   },
   "scripts": {
     "start": "vite --host 0.0.0.0",
@@ -45,8 +42,7 @@
     "eas:configure": "npx eas-cli build:configure",
     "check:api": "node scripts/check-production-api.mjs",
     "clean:install": "npm dedupe && npx expo-doctor",
-    "build:apk": "npx eas-cli build --platform android --profile preview",
-    "build:android:development": "npx eas-cli build --platform android --profile development"
+    "build:apk": "npx eas-cli build --platform android --profile preview"
   },
   "private": true,
   "overrides": {

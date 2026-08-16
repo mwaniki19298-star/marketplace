@@ -86,7 +86,42 @@ class GoogleAuthView(APIView):
         if info.get("name") and user.full_name != info["name"]:
             user.full_name = info["name"]; changed.append("full_name")
         user.last_seen_at = timezone.now(); changed.append("last_seen_at")
-        if changed: user.save(update_fields=changed)
+        # Google provides a profile photo URL in the verified ID token. When
+        # available, persist a Marketplace-hosted Cloudinary copy so the
+        # profile photo remains available even when Google changes its
+        # image URL. Failure to copy the photo must never block sign-in.
+        google_picture = str(info.get("picture") or "").strip()
+        if google_picture and google_picture.startswith(("https://", "http://")):
+            try:
+                import cloudinary
+                from cloudinary.uploader import upload as cloudinary_upload
+
+                cloud_name = getattr(settings, "CLOUDINARY_CLOUD_NAME", "")
+                api_key = getattr(settings, "CLOUDINARY_API_KEY", "")
+                api_secret = getattr(settings, "CLOUDINARY_API_SECRET", "")
+                if cloud_name and api_key and api_secret:
+                    cloudinary.config(
+                        cloud_name=cloud_name,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        secure=True,
+                    )
+                    uploaded = cloudinary_upload(
+                        google_picture,
+                        public_id=f"marketplace/profiles/user_{user.id}/google_avatar",
+                        overwrite=True,
+                        invalidate=True,
+                        resource_type="image",
+                    )
+                    secure_url = str(uploaded.get("secure_url") or "").strip()
+                    if secure_url and user.avatar.name != secure_url:
+                        user.avatar.name = secure_url
+                        if "avatar" not in changed:
+                            changed.append("avatar")
+            except Exception as exc:
+                logger.warning("Could not persist Google profile photo for user %s: %s", user.id, exc)
+
+        if changed: user.save(update_fields=list(dict.fromkeys(changed)))
         return Response({"user": UserSerializer(user, context={"request": request}).data, **token_pair(user)})
 
 class PublicUserView(APIView):
@@ -94,6 +129,10 @@ class PublicUserView(APIView):
 
     def get(self, request, user_id):
         user = get_object_or_404(User, pk=user_id, is_active=True)
+        from .api_views import _preferences
+        if not _preferences(user).settings.get("profileVisibility", True):
+            if not request.user.is_authenticated or request.user.id != user.id:
+                return Response({"detail": "This profile is private."}, status=403)
         return Response(UserSerializer(user, context={"request": request}).data)
 
 

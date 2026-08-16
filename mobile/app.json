@@ -23,6 +23,12 @@
     },
     "plugins": [
       [
+        "@config-plugins/react-native-webrtc",
+        {
+          "microphonePermission": "Allow Marketplace to use your microphone for in-app calls."
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Allow Marketplace to access your photos so you can add listing images.",

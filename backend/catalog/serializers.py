@@ -89,8 +89,19 @@ class StoreProfileUpdateSerializer(serializers.ModelSerializer):
             instance.cover.name = cover_url or None
         return super().update(instance, validated_data)
 
+SUPPORTED_CURRENCIES = {
+    "KES", "UGX", "TZS", "RWF", "ETB", "NGN", "GHS", "ZAR",
+    "USD", "CAD", "GBP", "AUD", "INR", "CNY", "JPY", "AED", "SAR", "EUR",
+}
+
+
 class ListingSerializer(serializers.ModelSerializer):
     store = StoreSerializer(read_only=True)
+    currency = serializers.SerializerMethodField()
+
+    def get_currency(self, obj):
+        return (obj.currency or "KES").upper()
+
     likes_count = serializers.SerializerMethodField()
     saved_count = serializers.SerializerMethodField()
     liked_by_user = serializers.SerializerMethodField()
@@ -115,9 +126,16 @@ class ListingSerializer(serializers.ModelSerializer):
         read_only_fields = ["views"]
 
 class ListingWriteSerializer(serializers.ModelSerializer):
+    currency = serializers.CharField(required=False, default="KES", allow_blank=True)
     original_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
     offer_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
     is_on_offer = serializers.BooleanField(required=False)
+
+    def validate_currency(self, value):
+        value = str(value or "KES").strip().upper()
+        if value not in SUPPORTED_CURRENCIES:
+            raise serializers.ValidationError("Unsupported listing currency.")
+        return value
 
     image_urls = serializers.ListField(
         child=serializers.URLField(max_length=1200),

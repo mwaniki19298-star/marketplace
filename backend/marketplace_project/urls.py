@@ -14,7 +14,9 @@ from reviews.views import RecommendationViewSet, ReviewViewSet, ListingReviewsVi
 from messaging.views import ConversationViewSet, MessageViewSet
 from notifications.views import NotificationViewSet
 from moderation.views import ReportViewSet
+from calls.views import CallViewSet
 from core.health import HealthView
+from core.exchange_rates import exchange_rates
 from catalog.web_views import listing_share_page, android_assetlinks, ios_aasa
 
 router = DefaultRouter()
@@ -29,6 +31,7 @@ router.register("conversations", ConversationViewSet, basename="conversation")
 router.register("messages", MessageViewSet, basename="message")
 router.register("notifications", NotificationViewSet, basename="notification")
 router.register("reports", ReportViewSet, basename="report")
+router.register("calls", CallViewSet, basename="call")
 
 urlpatterns = [
     path("listing/<int:listing_id>/<slug:slug>/", listing_share_page, name="listing-share"),
@@ -50,6 +53,7 @@ urlpatterns = [
     path("api/auth/delete-account/", DeleteAccountView.as_view(), name="delete-account"),
     path("api/auth/sign-out-all/", SignOutAllDevicesView.as_view(), name="sign-out-all"),
     path("api/health/", HealthView.as_view(), name="health"),
+    path("api/exchange-rates/", exchange_rates, name="exchange-rates"),
     path("api/media/cloudinary/sign/", CloudinarySignatureView.as_view(), name="cloudinary-signature"),
     path("api/listings/<int:listing_id>/reviews/", ListingReviewsView.as_view(), name="listing-reviews"),
     # Explicit cart routes keep the cart API unambiguous even when router

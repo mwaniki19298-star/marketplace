@@ -63,7 +63,7 @@ import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import * as IntentLauncher from "expo-intent-launcher";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Animated, Easing } from "react-native";
 import { BackHandler } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -71,10 +71,122 @@ import { apiUrl, API_BASE_URL } from "./src/apiConfig";
 
 const BUTTON_BLUE = "#2563EB";
 
+// Complete the Expo AuthSession popup immediately when the OAuth callback page loads.
+// This must run at module load time (not inside a React effect) so the popup can
+// close itself and return the OAuth result to the opener window.
+WebBrowser.maybeCompleteAuthSession();
+
 // Global in-app translation layer.  The selected language is persisted in the
 // existing Marketplace settings and drives shared UI text everywhere in the app.
 let ACTIVE_LANGUAGE = "English";
+let ACTIVE_LOCALE = "en-KE";
 let REQUEST_LANGUAGE_RENDER: (() => void) | null = null;
+let ACTIVE_CURRENCY = "KES";
+let CURRENCY_RATES: Record<string, number> = { USD: 1 };
+let CURRENCY_RATES_UPDATED_AT: string | null = null;
+let REQUEST_CURRENCY_RENDER: (() => void) | null = null;
+
+const LANGUAGE_LOCALES: Record<string, string> = {
+  English: "en-KE", Swahili: "sw-KE", French: "fr-FR", Spanish: "es-ES", Portuguese: "pt-PT",
+  Arabic: "ar-SA", German: "de-DE", Italian: "it-IT", "Chinese (Simplified)": "zh-CN",
+  Japanese: "ja-JP", Korean: "ko-KR", Hindi: "hi-IN", Turkish: "tr-TR", Dutch: "nl-NL", Russian: "ru-RU",
+};
+
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  KES: "KSh", UGX: "USh", TZS: "TSh", RWF: "FRw", ETB: "Br", NGN: "₦", GHS: "GH₵", ZAR: "R",
+  USD: "$", CAD: "CA$", GBP: "£", AUD: "A$", INR: "₹", CNY: "¥", JPY: "¥", AED: "د.إ", SAR: "﷼", EUR: "€",
+};
+
+const LISTING_CURRENCIES: ReadonlyArray<readonly [string, string]> = [
+  ["KES", "Kenyan Shilling"], ["UGX", "Ugandan Shilling"], ["TZS", "Tanzanian Shilling"], ["RWF", "Rwandan Franc"],
+  ["ETB", "Ethiopian Birr"], ["NGN", "Nigerian Naira"], ["GHS", "Ghanaian Cedi"], ["ZAR", "South African Rand"],
+  ["USD", "US Dollar"], ["CAD", "Canadian Dollar"], ["GBP", "British Pound"], ["AUD", "Australian Dollar"],
+  ["INR", "Indian Rupee"], ["CNY", "Chinese Yuan"], ["JPY", "Japanese Yen"], ["AED", "UAE Dirham"],
+  ["SAR", "Saudi Riyal"], ["EUR", "Euro"],
+] as const;
+
+function currencyLabel(code: string) {
+  const found = LISTING_CURRENCIES.find(([value]) => value === code);
+  return found ? `${found[0]} · ${found[1]}` : code;
+}
+
+function setMarketplaceLanguage(language: string) {
+  ACTIVE_LANGUAGE = language || "English";
+  ACTIVE_LOCALE = LANGUAGE_LOCALES[ACTIVE_LANGUAGE] || "en-KE";
+  REQUEST_LANGUAGE_RENDER?.();
+}
+
+function formatCurrencyAmount(amount: number, currency: string = ACTIVE_CURRENCY) {
+  const safeAmount = Number.isFinite(amount) ? amount : 0;
+  try {
+    return new Intl.NumberFormat(ACTIVE_LOCALE, { style: "currency", currency, maximumFractionDigits: currency === "JPY" ? 0 : 2 }).format(safeAmount);
+  } catch {
+    return `${CURRENCY_SYMBOLS[currency] || currency} ${safeAmount.toLocaleString(ACTIVE_LOCALE)}`;
+  }
+}
+
+function convertCurrencyAmount(amount: number, fromCurrency: string = "KES", toCurrency: string = ACTIVE_CURRENCY) {
+  const value = Number(amount);
+  const from = String(fromCurrency || "KES").toUpperCase();
+  const to = String(toCurrency || ACTIVE_CURRENCY || "KES").toUpperCase();
+  if (!Number.isFinite(value) || from === to) return Number.isFinite(value) ? value : 0;
+
+  // Rates are always stored relative to USD. Therefore:
+  // source -> USD -> target = value / sourceRate * targetRate.
+  const fromRate = Number(CURRENCY_RATES[from]);
+  const toRate = Number(CURRENCY_RATES[to]);
+  if (!Number.isFinite(fromRate) || fromRate <= 0 || !Number.isFinite(toRate) || toRate <= 0) return value;
+  return value * (toRate / fromRate);
+}
+
+async function fetchLiveUsdRates(forceFresh = false) {
+  const cacheBust = forceFresh ? `?refresh=1&t=${Date.now()}` : "";
+  const endpoints = [
+    apiUrl(`/api/exchange-rates/?base=USD${forceFresh ? `&refresh=1&t=${Date.now()}` : ""}`),
+    `https://open.er-api.com/v6/latest/USD${cacheBust}`,
+  ];
+
+  let lastError: unknown = null;
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+      const data = await response.json();
+      if (!response.ok || !data?.rates || typeof data.rates !== "object") {
+        throw new Error(data?.detail || "Exchange-rate service unavailable");
+      }
+      const normalized: Record<string, number> = { USD: 1 };
+      Object.entries(data.rates).forEach(([code, rate]) => {
+        const n = Number(rate);
+        if (Number.isFinite(n) && n > 0) normalized[String(code).toUpperCase()] = n;
+      });
+      if (Object.keys(normalized).length < 2) throw new Error("No usable exchange rates returned");
+      return {
+        rates: normalized,
+        fetchedAt: data.time_last_update_utc || data.fetched_at || new Date().toISOString(),
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Unable to load exchange rates");
+}
+
+async function refreshCurrencyRates(preferredCurrency: string = ACTIVE_CURRENCY, forceFresh = false) {
+  const target = String(preferredCurrency || "KES").toUpperCase();
+  ACTIVE_CURRENCY = target;
+  try {
+    const live = await fetchLiveUsdRates(forceFresh);
+    CURRENCY_RATES = live.rates;
+    CURRENCY_RATES_UPDATED_AT = live.fetchedAt;
+    REQUEST_CURRENCY_RENDER?.();
+    return true;
+  } catch {
+    // Keep the previous rates if the network is temporarily unavailable so an
+    // existing converted price does not suddenly disappear.
+    REQUEST_CURRENCY_RENDER?.();
+    return false;
+  }
+}
 
 const TRANSLATIONS: Record<string, Record<string, string>> = {
   "Swahili": {
@@ -92,6 +204,30 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
   "Hindi": {"Home":"होम","Browse":"ब्राउज़ करें","Search":"खोजें","Sell":"बेचें","Cart":"कार्ट","Profile":"प्रोफ़ाइल","Settings":"सेटिंग्स","My Orders":"मेरे ऑर्डर","Notifications":"सूचनाएँ","Messages":"संदेश","Help & Support":"सहायता और समर्थन","Store Details":"स्टोर विवरण","Follow":"फ़ॉलो करें","Following":"फ़ॉलो कर रहे हैं","Description":"विवरण","Reviews":"समीक्षाएँ","Cancel":"रद्द करें","Delete":"हटाएँ","Share":"साझा करें","Total":"कुल","Delivery":"डिलीवरी","Free":"मुफ़्त","Out of stock":"स्टॉक में नहीं"}
   
 };
+
+// Additional settings and language-picker translations. Keeping these separate
+// from the large legacy dictionary makes the language feature easier to extend.
+const EXTRA_TRANSLATIONS: Record<string, Record<string, string>> = {
+  English: {"Choose language":"Choose language","Choose country / region":"Choose country / region","Choose currency":"Choose currency","App language":"App language","Country / region":"Country / region","Currency":"Currency","Theme":"Theme","Appearance":"Appearance","Shopping":"Shopping","Preferred fulfillment":"Preferred fulfillment","Reset preferences":"Reset preferences"},
+  Swahili: {"Choose language":"Chagua lugha","Choose country / region":"Chagua nchi / eneo","Choose currency":"Chagua sarafu","App language":"Lugha ya programu","Country / region":"Nchi / eneo","Currency":"Sarafu","Theme":"Mandhari","Appearance":"Muonekano","Shopping":"Ununuzi","Preferred fulfillment":"Njia unayopendelea ya kupokea","Reset preferences":"Weka upya mapendeleo"},
+  French: {"Choose language":"Choisir la langue","Choose country / region":"Choisir le pays / la région","Choose currency":"Choisir la devise","App language":"Langue de l’application","Country / region":"Pays / région","Currency":"Devise","Theme":"Thème","Appearance":"Apparence","Shopping":"Achats","Preferred fulfillment":"Mode de réception préféré","Reset preferences":"Réinitialiser les préférences"},
+  Spanish: {"Choose language":"Elegir idioma","Choose country / region":"Elegir país / región","Choose currency":"Elegir moneda","App language":"Idioma de la aplicación","Country / region":"País / región","Currency":"Moneda","Theme":"Tema","Appearance":"Apariencia","Shopping":"Compras","Preferred fulfillment":"Entrega preferida","Reset preferences":"Restablecer preferencias"},
+  Portuguese: {"Choose language":"Escolher idioma","Choose country / region":"Escolher país / região","Choose currency":"Escolher moeda","App language":"Idioma do aplicativo","Country / region":"País / região","Currency":"Moeda","Theme":"Tema","Appearance":"Aparência","Shopping":"Compras","Preferred fulfillment":"Forma de recebimento preferida","Reset preferences":"Redefinir preferências"},
+  Arabic: {"Choose language":"اختر اللغة","Choose country / region":"اختر الدولة / المنطقة","Choose currency":"اختر العملة","App language":"لغة التطبيق","Country / region":"الدولة / المنطقة","Currency":"العملة","Theme":"المظهر","Appearance":"المظهر","Shopping":"التسوق","Preferred fulfillment":"طريقة الاستلام المفضلة","Reset preferences":"إعادة تعيين التفضيلات"},
+  German: {"Choose language":"Sprache auswählen","Choose country / region":"Land / Region auswählen","Choose currency":"Währung auswählen","App language":"App-Sprache","Country / region":"Land / Region","Currency":"Währung","Theme":"Design","Appearance":"Darstellung","Shopping":"Einkaufen","Preferred fulfillment":"Bevorzugte Lieferung","Reset preferences":"Einstellungen zurücksetzen"},
+  Italian: {"Choose language":"Scegli lingua","Choose country / region":"Scegli paese / regione","Choose currency":"Scegli valuta","App language":"Lingua dell’app","Country / region":"Paese / regione","Currency":"Valuta","Theme":"Tema","Appearance":"Aspetto","Shopping":"Acquisti","Preferred fulfillment":"Modalità di consegna preferita","Reset preferences":"Reimposta preferenze"},
+  "Chinese (Simplified)": {"Choose language":"选择语言","Choose country / region":"选择国家 / 地区","Choose currency":"选择货币","App language":"应用语言","Country / region":"国家 / 地区","Currency":"货币","Theme":"主题","Appearance":"外观","Shopping":"购物","Preferred fulfillment":"首选配送方式","Reset preferences":"重置偏好设置"},
+  Japanese: {"Choose language":"言語を選択","Choose country / region":"国 / 地域を選択","Choose currency":"通貨を選択","App language":"アプリの言語","Country / region":"国 / 地域","Currency":"通貨","Theme":"テーマ","Appearance":"外観","Shopping":"ショッピング","Preferred fulfillment":"希望する受け取り方法","Reset preferences":"設定をリセット"},
+  Korean: {"Choose language":"언어 선택","Choose country / region":"국가 / 지역 선택","Choose currency":"통화 선택","App language":"앱 언어","Country / region":"국가 / 지역","Currency":"통화","Theme":"테마","Appearance":"화면 설정","Shopping":"쇼핑","Preferred fulfillment":"선호 수령 방식","Reset preferences":"환경설정 초기화"},
+  Hindi: {"Choose language":"भाषा चुनें","Choose country / region":"देश / क्षेत्र चुनें","Choose currency":"मुद्रा चुनें","App language":"ऐप की भाषा","Country / region":"देश / क्षेत्र","Currency":"मुद्रा","Theme":"थीम","Appearance":"रूप-रंग","Shopping":"खरीदारी","Preferred fulfillment":"पसंदीदा डिलीवरी तरीका","Reset preferences":"प्राथमिकताएँ रीसेट करें"},
+  Turkish: {"Home":"Ana Sayfa","Browse":"Göz at","Search":"Ara","Sell":"Sat","Cart":"Sepet","Profile":"Profil","Settings":"Ayarlar","My Orders":"Siparişlerim","Notifications":"Bildirimler","Messages":"Mesajlar","Help & Support":"Yardım ve Destek","Choose language":"Dil seç","Choose country / region":"Ülke / bölge seç","Choose currency":"Para birimi seç","App language":"Uygulama dili","Country / region":"Ülke / bölge","Currency":"Para birimi","Theme":"Tema","Appearance":"Görünüm","Shopping":"Alışveriş","Preferred fulfillment":"Tercih edilen teslimat","Reset preferences":"Tercihleri sıfırla"},
+  Dutch: {"Home":"Home","Browse":"Bladeren","Search":"Zoeken","Sell":"Verkopen","Cart":"Winkelwagen","Profile":"Profiel","Settings":"Instellingen","My Orders":"Mijn bestellingen","Notifications":"Meldingen","Messages":"Berichten","Help & Support":"Hulp en ondersteuning","Choose language":"Taal kiezen","Choose country / region":"Land / regio kiezen","Choose currency":"Valuta kiezen","App language":"App-taal","Country / region":"Land / regio","Currency":"Valuta","Theme":"Thema","Appearance":"Uiterlijk","Shopping":"Winkelen","Preferred fulfillment":"Voorkeursbezorging","Reset preferences":"Voorkeuren resetten"},
+  Russian: {"Home":"Главная","Browse":"Обзор","Search":"Поиск","Sell":"Продать","Cart":"Корзина","Profile":"Профиль","Settings":"Настройки","My Orders":"Мои заказы","Notifications":"Уведомления","Messages":"Сообщения","Help & Support":"Помощь и поддержка","Choose language":"Выбрать язык","Choose country / region":"Выбрать страну / регион","Choose currency":"Выбрать валюту","App language":"Язык приложения","Country / region":"Страна / регион","Currency":"Валюта","Theme":"Тема","Appearance":"Внешний вид","Shopping":"Покупки","Preferred fulfillment":"Предпочтительный способ получения","Reset preferences":"Сбросить настройки"},
+};
+Object.entries(EXTRA_TRANSLATIONS).forEach(([language, entries]) => {
+  TRANSLATIONS[language] = { ...(TRANSLATIONS[language] || {}), ...entries };
+});
+
 function translateMarketplaceText(value: string) {
   return TRANSLATIONS[ACTIVE_LANGUAGE]?.[value] ?? value;
 }
@@ -100,11 +236,6 @@ function Text(props: React.ComponentProps<typeof RNText>) {
   const translated = typeof children === "string" ? translateMarketplaceText(children) : children;
   return <RNText {...props}>{translated}</RNText>;
 }
-function setMarketplaceLanguage(language: string) {
-  ACTIVE_LANGUAGE = language || "English";
-  REQUEST_LANGUAGE_RENDER?.();
-}
-
 const FEED_SESSION_KEY = "marketplace_feed_session";
 const FEED_PREFS_KEY = "marketplace_feed_preferences";
 
@@ -460,12 +591,16 @@ type CartItem = {
 type ApiUser = { id: number; email: string; full_name: string; avatar?: string | null; avatar_url?: string | null; is_community_verified?: boolean };
 type ProfileStore = { id: number; name: string; logo?: string | null; cover?: string | null; description?: string; location?: string; phone?: string; verification?: string; email_verified?: boolean; is_active?: boolean };
 type AuthPayload = { access: string; refresh: string; user: ApiUser };
-type MessageItem = { id: number; conversation: number; sender: number; sender_name?: string; sender_avatar?: string | null; body: string; is_read?: boolean; created_at: string };
+type MessageProductSnapshot = { id: number; title: string; image?: string | null; price?: string | null; currency?: string; original_price?: string | null; is_on_offer?: boolean; store_name?: string | null };
+type MessageItem = { id: number; conversation: number; sender: number; sender_name?: string; sender_avatar?: string | null; body: string; attachment?: string | null; listing?: number | null; product_snapshot?: MessageProductSnapshot | null; is_read?: boolean; created_at: string };
 type ConversationItem = {
   id: number; buyer: number; seller: number; buyer_name?: string; seller_name?: string;
   buyer_avatar?: string | null; seller_avatar?: string | null; store?: number | null; store_name?: string | null; store_logo?: string | null; store_verified?: boolean;
+  // Seller's saved contact number for this conversation (from their store profile). Only ever
+  // populated on the seller side today -- buyers have no saved phone number in the data model.
+  store_phone?: string | null;
   messages?: MessageItem[]; last_message?: { id: number; sender: number; sender_name?: string; body: string; created_at: string } | null;
-  unread_count?: number; updated_at: string;
+  unread_count?: number; updated_at: string; other_typing?: boolean;
 };
 
 type OrderItem = {
@@ -788,10 +923,15 @@ function DisplayText({ value, fallback = "", style, numberOfLines }: { value: an
 }
 
 function PriceDisplay({ listing, theme, style, oldStyle, compact = false }: { listing: Listing; theme: Theme; style?: any; oldStyle?: any; compact?: boolean }) {
+  const sourceCurrency = listing.currency || "KES";
   const hasOffer = !!listing.isOnOffer && listing.offerPrice != null && listing.originalPrice != null;
-  const currency = listing.currency || "KES";
-  const format = (value: number) => `${currency} ${value.toLocaleString("en-KE")}`;
-  if (!hasOffer) return <Text style={style}>{safeDisplayText(listing.price, "Price on request")}</Text>;
+  const converted = (value: number) => convertCurrencyAmount(value, sourceCurrency);
+  const format = (value: number) => formatCurrencyAmount(converted(value), ACTIVE_CURRENCY);
+  if (!hasOffer) {
+    const raw = listing.originalPrice ?? (listing.price && Number(String(listing.price).replace(/[^0-9.]/g, "")));
+    if (raw != null && Number.isFinite(Number(raw))) return <Text style={style}>{format(Number(raw))}</Text>;
+    return <Text style={style}>{safeDisplayText(listing.price, "Price on request")}</Text>;
+  }
   return (
     <View style={{ flexDirection: "row", alignItems: "baseline", flexWrap: "wrap", gap: 7 }}>
       <Text style={[style, { color: "#16A34A", fontWeight: "900" }]}>{format(Number(listing.offerPrice))}</Text>
@@ -827,6 +967,7 @@ declare global { var __MARKETPLACE_AUTH__: AuthPayload | null | undefined; var _
 
 type Screen = "home" | "browse" | "search" | "create" | "publishSuccess" | "cart" | "profile" | "product" | "orders" | "notifications" | "messages" | "settings" | "settingsPreferences" | "securityPrivacy" | "notificationPreferences" | "helpSupport" | "faq" | "reportProblem" | "safetyTips" | "terms" | "privacyPolicy" | "store" | "publicStore" | "sellerProfile" | "login";
 type RouteEntry = { screen: Screen; selectedId: string | null };
+type PendingChat = { conversation: ConversationItem; listing: Listing };
 
 function applyBrowseFilter(items: Listing[], mode: string) {
   const normalized = String(mode || "All").toLowerCase();
@@ -901,14 +1042,18 @@ function MarketplaceApp() {
   const [likedIds, setLikedIds] = useState<string[]>([]);
   const [dark, setDark] = useState(false);
   const [, setLanguageVersion] = useState(0);
+  const [, setCurrencyVersion] = useState(0);
   REQUEST_LANGUAGE_RENDER = () => setLanguageVersion((v) => v + 1);
+  REQUEST_CURRENCY_RENDER = () => setCurrencyVersion((v) => v + 1);
   const [search, setSearch] = useState("");
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState<ApiUser | null>(null);
   const [auth, setAuth] = useState<AuthPayload | null>(null);
+  const [pendingChat, setPendingChat] = useState<PendingChat | null>(null);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const callManagerRef = useRef<InAppCallHandle>(null);
   
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedPage, setFeedPage] = useState(1);
@@ -1115,7 +1260,16 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
     const bootstrap = async () => {
       try {
         const settingsRaw = await AsyncStorage.getItem("marketplace_settings");
-        if (settingsRaw) { try { setMarketplaceLanguage(JSON.parse(settingsRaw)?.language || "English"); } catch {} }
+        if (settingsRaw) {
+          try {
+            const settings = JSON.parse(settingsRaw);
+            setMarketplaceLanguage(settings?.language || "English");
+            ACTIVE_CURRENCY = settings?.currency || "KES";
+            await refreshCurrencyRates(ACTIVE_CURRENCY);
+          } catch {}
+        } else {
+          await refreshCurrencyRates("KES");
+        }
         const raw = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
         if (raw) {
           const savedAuth = JSON.parse(raw) as AuthPayload;
@@ -1258,24 +1412,16 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
 
   const openConversationForListing = async (listing: Listing) => {
     if (!auth?.access) { go("login"); return; }
-
-    // Navigation is immediate. The conversation request runs in the background
-    // so a slow network/API cannot make the chat button feel frozen.
-    go("messages");
-    if (!listing.sellerId) return;
-
+    if (!listing.sellerId) { Alert.alert("Seller unavailable", "This listing is not currently connected to a seller account."); return; }
     try {
-      await apiRequest("/api/conversations/", {
+      const conversation = await apiRequest("/api/conversations/", {
         method: "POST",
-        body: JSON.stringify({
-          seller: Number(listing.sellerId),
-          store: listing.storeId ? Number(listing.storeId) : null
-        }),
-      }, auth);
+        body: JSON.stringify({ seller: Number(listing.sellerId), store: listing.storeId ? Number(listing.storeId) : null }),
+      }, auth) as ConversationItem;
+      setPendingChat({ conversation, listing });
+      go("messages");
     } catch (error) {
-      // The Messages screen can still be used; surface the failure without
-      // blocking navigation.
-      console.warn("Couldn't start conversation:", error);
+      Alert.alert("Couldn't open chat", error instanceof Error ? error.message : "Please try again.");
     }
   };
 
@@ -1515,25 +1661,59 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
   }, [screen, selected]);
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <StatusBar style={dark ? "light" : "dark"} backgroundColor={theme.background} translucent={false} />
+    <View style={[styles.container, { backgroundColor: screen === "profile" && isLoggedIn ? "#4B52E8" : theme.background }]}>
+      <StatusBar
+        style={screen === "profile" && isLoggedIn ? "light" : (dark ? "light" : "dark")}
+        backgroundColor={screen === "profile" && isLoggedIn ? "#4B52E8" : theme.background}
+        translucent={false}
+      />
 
-      <View style={[styles.shell, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}> 
+      <View style={[
+        styles.shell,
+        {
+          paddingTop: screen === "profile" && isLoggedIn ? 0 : insets.top + 8,
+          paddingHorizontal: screen === "profile" && isLoggedIn ? 0 : 12,
+          backgroundColor: screen === "profile" && isLoggedIn ? "#4B52E8" : theme.background,
+        }
+      ]}> 
         {screen !== "login" && screen !== "messages" && screen !== "search" && !(screen === "profile" && !isLoggedIn) && (
-        <View style={styles.topBar}>
+        <View style={[
+          styles.topBar,
+          screen === "profile" && isLoggedIn && {
+            height: insets.top + 58,
+            paddingTop: insets.top,
+            paddingHorizontal: 18,
+            marginBottom: 0,
+          }
+        ]}>
           {screen !== "home" && screen !== "browse" ? (
-            <Pressable onPress={goBack} style={styles.topIcon}>
-              <ArrowLeft size={21} color={theme.text} />
+            <Pressable
+              onPress={goBack}
+              style={[
+                styles.topIcon,
+                screen === "profile" && isLoggedIn && { backgroundColor: "rgba(255,255,255,0.16)" }
+              ]}
+            >
+              <ArrowLeft size={21} color={screen === "profile" && isLoggedIn ? "#fff" : theme.text} />
             </Pressable>
           ) : (
             <Pressable onPress={() => setMenuOpen((v) => !v)} style={styles.topIcon}>
               <Menu size={21} color={theme.text} />
             </Pressable>
           )}
-          <Text style={[styles.brand, { color: theme.text }]} numberOfLines={1}>{topTitle}</Text>
+          <Text
+            style={[styles.brand, { color: screen === "profile" && isLoggedIn ? "#fff" : theme.text }]}
+            numberOfLines={1}
+          >{topTitle}</Text>
           <View style={styles.headerActions}>
-            <Pressable onPress={() => go("notifications")} style={styles.topIcon}>
-              <Bell size={20} color={theme.text} />
+            <Pressable
+              onPress={() => go("notifications")}
+              style={[
+                styles.topIcon,
+                screen === "profile" && isLoggedIn && { backgroundColor: "rgba(255,255,255,0.12)" }
+              ]}
+            >
+              <Bell size={20} color={screen === "profile" && isLoggedIn ? "#fff" : theme.text} />
               {unreadNotificationCount > 0 && (
                 <View style={styles.notificationBadge}>
                   <Text style={styles.notificationBadgeText}>
@@ -1542,8 +1722,18 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
                 </View>
               )}
             </Pressable>
-            <Pressable onPress={() => setDark((v) => !v)} style={styles.topIcon} accessibilityRole="button" accessibilityLabel={dark ? "Switch to light mode" : "Switch to dark mode"}>
-              {dark ? <Sun size={20} color={theme.text} /> : <Moon size={20} color={theme.text} />}
+            <Pressable
+              onPress={() => setDark((v) => !v)}
+              style={[
+                styles.topIcon,
+                screen === "profile" && isLoggedIn && { backgroundColor: "rgba(255,255,255,0.12)" }
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={dark ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {dark
+                ? <Sun size={20} color={screen === "profile" && isLoggedIn ? "#fff" : theme.text} />
+                : <Moon size={20} color={screen === "profile" && isLoggedIn ? "#fff" : theme.text} />}
             </Pressable>
           </View>
         </View>
@@ -1626,14 +1816,14 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         {screen === "login" && <LoginScreen theme={theme} onBack={goBack} initialMode={loginMode} autoGoogle={autoGoogleLogin} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); go("profile"); }} />}
         {screen === "create" && <CreateScreen theme={theme} auth={auth} onStore={() => go("store")} onDone={async () => { await refreshMarketplaceData(auth); go("publishSuccess"); }} />}
         {screen === "publishSuccess" && <PublishSuccessScreen theme={theme} onBrowse={() => go("browse")} onHome={() => go("home")} />}
-        {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); }} onBack={goBack} onStore={() => go("store")} onMessages={() => go("messages")} onCart={() => go("cart")} cartCount={cartItems.length} />}
+        {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onNotifications={() => go("notifications")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); }} onBack={goBack} onStore={() => go("store")} onMessages={() => go("messages")} onCart={() => go("cart")} cartCount={cartItems.length} />}
         {screen === "product" && selected && <ProductScreen theme={theme} listing={selected} inCart={cartIds.includes(selected.id)} liked={likedIds.includes(selected.id)} onAddToCart={() => addToCart(selected.id)} onToggleLike={() => toggleLike(selected.id)} onContactSeller={() => openConversationForListing(selected)} onOpenProduct={(item) => { setSelected(item); go("product"); }} onBack={goBack} auth={auth} />}
         {screen === "orders" && <OrdersScreen theme={theme} auth={auth} currentUser={currentUser} onRestock={() => go("store")} />}
         {screen === "notifications" && <NotificationsScreen theme={theme} auth={auth} />}
-        {screen === "messages" && <MessagesScreen theme={theme} auth={auth} currentUser={currentUser} />}
+        {screen === "messages" && <MessagesScreen theme={theme} auth={auth} currentUser={currentUser} initialChat={pendingChat} onInitialChatConsumed={() => setPendingChat(null)} onStartCall={(conversation) => callManagerRef.current?.startCall(conversation)} />}
         {screen === "settings" && <SettingsScreen theme={theme} dark={dark} setDark={setDark} />}
-        {screen === "settingsPreferences" && <SettingsPreferencesScreen theme={theme} dark={dark} setDark={setDark} />}
-        {screen === "securityPrivacy" && <SecurityPrivacyScreen theme={theme} auth={auth} onSignOut={async () => { await AsyncStorage.removeItem(AUTH_STORAGE_KEY); globalThis.__MARKETPLACE_AUTH__ = null; setAuth(null); setCurrentUser(null); setIsLoggedIn(false); setCartItems([]); setLikedIds([]); go("profile"); }} />}
+        {screen === "settingsPreferences" && <SettingsPreferencesScreen theme={theme} dark={dark} setDark={setDark} auth={auth} />}
+        {screen === "securityPrivacy" && <SecurityPrivacyScreen theme={theme} auth={auth} onSignOut={async () => { await AsyncStorage.removeItem(AUTH_STORAGE_KEY); globalThis.__MARKETPLACE_AUTH__ = null; setAuth(null); setCurrentUser(null); setIsLoggedIn(false); setCartItems([]); setLikedIds([]); go("profile"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} />}
         {screen === "notificationPreferences" && <NotificationPreferencesScreen theme={theme} />}
         {screen === "helpSupport" && <HelpSupportScreen theme={theme} onFAQ={() => go("faq")} onSafety={() => go("safetyTips")} onReport={() => go("reportProblem")} onTerms={() => go("terms")} onPrivacy={() => go("privacyPolicy")} />}
         {screen === "faq" && <FAQScreen theme={theme} />}
@@ -1644,6 +1834,8 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         {screen === "store" && <StoreScreen theme={theme} auth={auth} onOpenProduct={openProduct} onMarketplaceChanged={() => void refreshMarketplaceData(auth)} onUserUpdated={(user) => { setCurrentUser(user); setAuth((prev) => prev ? { ...prev, user } : prev); }} />}
         {screen === "publicStore" && selected && <PublicStoreScreen theme={theme} auth={auth} listing={selected} onOpenProduct={openProduct} />}
         {screen === "sellerProfile" && selected && <SellerProfileScreen theme={theme} auth={auth} listing={selected} onOpenStore={() => go("publicStore")} />}
+
+        <InAppCallManager ref={callManagerRef} theme={theme} auth={auth} currentUser={currentUser} />
 
         {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && screen !== "messages" && screen !== "search" && !(screen === "profile" && !isLoggedIn) && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
           {[
@@ -1782,10 +1974,6 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
     selectAccount: true,
     redirectUri: googleRedirectUri,
   });
-
-  useEffect(() => {
-    WebBrowser.maybeCompleteAuthSession();
-  }, []);
 
   useEffect(() => {
     const finishGoogleLogin = async () => {
@@ -2625,7 +2813,7 @@ function CartScreen({ theme, auth, cartItems, onOpenProduct, onRemove, onQuantit
   const isOwnStore = (listing: Listing) => String(listing.sellerId || "") === String(authUserId || "");
   const selectableItems = items.filter(({listing}) => !isOwnStore(listing));
   const selectedItems = items.filter(({item,listing}) => selectedIds.has(item.id) && !isOwnStore(listing));
-  const total = selectedItems.reduce((sum,x)=>sum+Number(x.item.line_total||0),0);
+  const total = selectedItems.reduce((sum,x)=>sum+convertCurrencyAmount(Number(x.item.line_total||0), x.item.currency || x.listing.currency || "KES"),0);
   const cartItemCount = items.reduce((sum,x)=>sum+x.item.quantity,0);
   const selectedItemCount = selectedItems.reduce((sum,x)=>sum+x.item.quantity,0);
 
@@ -2702,7 +2890,7 @@ function CartScreen({ theme, auth, cartItems, onOpenProduct, onRemove, onQuantit
               <Text style={{minWidth:30,textAlign:"center",fontWeight:"900",color:theme.text}}>{item.quantity}</Text>
               <Pressable onPress={()=>onQuantityChange(item.id,item.quantity+1)} style={{width:38,height:38,alignItems:"center",justifyContent:"center",backgroundColor:theme.isDark?"rgba(37,99,235,.14)":"#EEF4FF"}}><Plus size={18} color={BUTTON_BLUE}/></Pressable>
             </View>
-            <View style={{alignItems:"flex-end"}}><Text style={{fontSize:11,fontWeight:"700",color:theme.muted}}>ITEM TOTAL</Text><Text style={{fontSize:18,fontWeight:"900",color:theme.text,marginTop:2}}>KES {Number(item.line_total||0).toLocaleString("en-KE")}</Text></View>
+            <View style={{alignItems:"flex-end"}}><Text style={{fontSize:11,fontWeight:"700",color:theme.muted}}>ITEM TOTAL</Text><Text style={{fontSize:18,fontWeight:"900",color:theme.text,marginTop:2}}>{formatCurrencyAmount(convertCurrencyAmount(Number(item.line_total||0), item.currency || listing.currency || "KES"), ACTIVE_CURRENCY)}</Text></View>
           </View>
         </View>;
       })}
@@ -2710,9 +2898,9 @@ function CartScreen({ theme, auth, cartItems, onOpenProduct, onRemove, onQuantit
     {selectedItems.length>0 && <View style={{marginTop:16,gap:12}}>
       <View style={{borderWidth:1,borderColor:theme.border,borderRadius:24,backgroundColor:theme.card,padding:18}}>
         <View style={{flexDirection:"row",alignItems:"center",gap:10,marginBottom:14}}><Tag size={18} color={BUTTON_BLUE}/><Text style={{fontWeight:"800",fontSize:15,color:theme.text}}>Order summary</Text></View>
-        <View style={{flexDirection:"row",justifyContent:"space-between",marginBottom:9}}><Text style={{color:theme.muted}}>Selected items ({selectedItemCount})</Text><Text style={{fontWeight:"700",color:theme.text}}>KES {total.toLocaleString("en-KE")}</Text></View>
+        <View style={{flexDirection:"row",justifyContent:"space-between",marginBottom:9}}><Text style={{color:theme.muted}}>Selected items ({selectedItemCount})</Text><Text style={{fontWeight:"700",color:theme.text}}>{formatCurrencyAmount(total, ACTIVE_CURRENCY)}</Text></View>
         <View style={{flexDirection:"row",justifyContent:"space-between",marginBottom:14}}><Text style={{color:theme.muted}}>Delivery</Text><Text style={{fontWeight:"800",color:"#16A34A"}}>Free</Text></View>
-        <View style={{borderTopWidth:1,borderTopColor:theme.border,paddingTop:14,flexDirection:"row",justifyContent:"space-between",alignItems:"center"}}><Text style={{fontSize:16,fontWeight:"900",color:theme.text}}>Total</Text><Text style={{fontSize:24,fontWeight:"900",color:BUTTON_BLUE}}>KES {total.toLocaleString("en-KE")}</Text></View>
+        <View style={{borderTopWidth:1,borderTopColor:theme.border,paddingTop:14,flexDirection:"row",justifyContent:"space-between",alignItems:"center"}}><Text style={{fontSize:16,fontWeight:"900",color:theme.text}}>Total</Text><Text style={{fontSize:24,fontWeight:"900",color:BUTTON_BLUE}}>{formatCurrencyAmount(total, ACTIVE_CURRENCY)}</Text></View>
         <Text style={{textAlign:"center",fontSize:11,color:theme.muted,marginTop:12}}>Only selected items will be placed as orders. Unchecked items stay in your cart.</Text>
       </View>
       <View style={{flexDirection:"row",gap:9}}>{[{icon:CheckCircle2,title:"Secure",text:"Protected order flow"},{icon:Truck,title:"Flexible",text:"Pickup or delivery"},{icon:Bell,title:"Updates",text:"Order notifications"}].map(({icon:Icon,title,text})=><View key={title} style={{flex:1,alignItems:"center",paddingVertical:10}}><View style={{width:34,height:34,borderRadius:17,backgroundColor:theme.isDark?"rgba(37,99,235,.14)":"#EEF4FF",alignItems:"center",justifyContent:"center"}}><Icon size={17} color={BUTTON_BLUE}/></View><Text style={{fontWeight:"800",fontSize:11,color:theme.text,marginTop:6}}>{title}</Text><Text style={{fontSize:9,color:theme.muted,textAlign:"center",marginTop:2}}>{text}</Text></View>)}</View>
@@ -2721,7 +2909,7 @@ function CartScreen({ theme, auth, cartItems, onOpenProduct, onRemove, onQuantit
     {items.length>0 && <View pointerEvents="box-none" style={{position:"absolute",left:0,right:0,bottom:92,alignItems:"center",zIndex:100,elevation:20}}>
       <Pressable disabled={checkingOut || !selectedItems.length} onPress={submitCheckout} style={{width:"92%",minHeight:58,borderRadius:20,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:10,paddingHorizontal:18,opacity:checkingOut||!selectedItems.length?0.55:1,shadowColor:"#000",shadowOpacity:0.2,shadowRadius:14,shadowOffset:{width:0,height:7},elevation:12}}>
         <ShoppingBag size={21} color="#fff"/>
-        <View style={{flex:1}}><Text style={{color:"#fff",fontSize:15,fontWeight:"900"}}>{checkingOut?"Placing order…":selectedItems.length?"Place order":"Select items to order"}</Text><Text style={{color:"rgba(255,255,255,.82)",fontSize:10,fontWeight:"700",marginTop:2}}>{selectedItemCount} {selectedItemCount===1?"item":"items"} • KES {total.toLocaleString("en-KE")}</Text></View><ChevronRight size={21} color="#fff"/>
+        <View style={{flex:1}}><Text style={{color:"#fff",fontSize:15,fontWeight:"900"}}>{checkingOut?"Placing order…":selectedItems.length?"Place order":"Select items to order"}</Text><Text style={{color:"rgba(255,255,255,.82)",fontSize:10,fontWeight:"700",marginTop:2}}>{selectedItemCount} {selectedItemCount===1?"item":"items"} • {formatCurrencyAmount(total, ACTIVE_CURRENCY)}</Text></View><ChevronRight size={21} color="#fff"/>
       </Pressable>
     </View>}
   </View>;
@@ -2747,6 +2935,16 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
   const [reportReason, setReportReason] = useState("");
   const [reportDetails, setReportDetails] = useState("");
   const [reporting, setReporting] = useState(false);
+  useEffect(() => {
+    AsyncStorage.getItem("marketplace_settings").then(raw => {
+      if (!raw) return;
+      try {
+        const settings = JSON.parse(raw);
+        if (settings.fulfillment === "Delivery") setFulfillment("delivery");
+        else setFulfillment("pickup");
+      } catch {}
+    }).catch(() => {});
+  }, []);
   const reportReasons = ["Scam or fraud", "Fake or misleading listing", "Prohibited item", "Harassment", "Spam", "Other"];
   useEffect(() => {
     let active = true;
@@ -3000,6 +3198,7 @@ function CreateScreen({ theme, auth, onDone, onStore }: { theme: Theme; auth: Au
   const [step, setStep] = useState<0 | 1 | 2 | 3>(0);
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
+  const [currency, setCurrency] = useState("KES");
   const [stock, setStock] = useState("1");
   const [description, setDescription] = useState("");
   const [kind, setKind] = useState<"Product" | "Service">("Product");
@@ -3008,7 +3207,7 @@ function CreateScreen({ theme, auth, onDone, onStore }: { theme: Theme; auth: Au
   const [negotiable, setNegotiable] = useState(true);
   const [condition, setCondition] = useState("New");
   const [delivery, setDelivery] = useState("Pickup");
-  const [dropdownOpen, setDropdownOpen] = useState<"category" | "condition" | null>(null);
+  const [dropdownOpen, setDropdownOpen] = useState<"category" | "condition" | "currency" | null>(null);
   const [photos, setPhotos] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [publishing, setPublishing] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<Record<string, "idle" | "uploading" | "done">>({});
@@ -3167,7 +3366,7 @@ function CreateScreen({ theme, auth, onDone, onStore }: { theme: Theme; auth: Au
         slug: `${slugBase || "listing"}-${Date.now()}`,
         description: description.trim(),
         price: Number(price.replace(/[^0-9.]/g, "")),
-        currency: "KES",
+        currency: currency || "KES",
         negotiable,
         condition: kind === "Product" ? condition.toLowerCase() : "na",
         stock: kind === "Product" ? parsedStock : 1,
@@ -3245,9 +3444,14 @@ function CreateScreen({ theme, auth, onDone, onStore }: { theme: Theme; auth: Au
               <View style={styles.inlineLabel}><Tag size={16} color={theme.accent} /><Text style={[styles.cardTitle, { color: theme.text }]}>Product details</Text></View>
               <Field label="Title" value={title} onChangeText={setTitle} placeholder={kind === "Product" ? "e.g. Refurbished HP EliteBook 840" : "e.g. Professional portrait photography"} theme={theme} />
               <View style={styles.fieldRow}>
-                <View style={{ flex: 1 }}><Field label="Price" value={price} onChangeText={setPrice} keyboardType="numeric" placeholder="KSh 0" theme={theme} /></View>
+                <View style={{ flex: 1 }}><Field label={`Price (${currency})`} value={price} onChangeText={setPrice} keyboardType="numeric" placeholder={`${CURRENCY_SYMBOLS[currency] || currency} 0`} theme={theme} /></View>
                 <View style={styles.switchWrapModern}><Text style={[styles.switchLabel, { color: theme.text }]}>Negotiable</Text><Switch value={negotiable} onValueChange={setNegotiable} trackColor={{ false: theme.border, true: theme.accent }} thumbColor="#fff" /></View>
               </View>
+              <Text style={[styles.fieldLabel,{color:theme.text,marginTop:12}]}>Listing currency</Text>
+              <Pressable onPress={() => setDropdownOpen("currency")} style={[styles.selectField,{borderColor:theme.border,backgroundColor:theme.background}]}>
+                <View style={{flex:1}}><Text style={[styles.selectValue,{color:theme.text}]}>{currencyLabel(currency)}</Text><Text style={[styles.selectHint,{color:theme.muted}]}>This is the currency buyers will see for your listing price.</Text></View>
+                <ChevronDown size={18} color={theme.muted}/>
+              </Pressable>
               {kind === "Product" && <Field label="Items in stock" value={stock} onChangeText={(value) => setStock(value.replace(/[^0-9]/g, ""))} keyboardType="number-pad" placeholder="0" theme={theme} />}
             </View>
           </>
@@ -3292,16 +3496,21 @@ function CreateScreen({ theme, auth, onDone, onStore }: { theme: Theme; auth: Au
                 <View style={styles.dropdownSheetHandle} />
                 <View style={styles.dropdownHeader}>
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.dropdownTitle, { color: theme.text }]}>{dropdownOpen === "category" ? "Select category" : "Select condition"}</Text>
-                    <Text style={[styles.dropdownSubtitle, { color: theme.muted }]}>{dropdownOpen === "category" ? "Choose the category that best matches your listing." : "Tell buyers the current condition of this item."}</Text>
+                    <Text style={[styles.dropdownTitle, { color: theme.text }]}>{dropdownOpen === "category" ? "Select category" : dropdownOpen === "condition" ? "Select condition" : "Select currency"}</Text>
+                    <Text style={[styles.dropdownSubtitle, { color: theme.muted }]}>{dropdownOpen === "category" ? "Choose the category that best matches your listing." : dropdownOpen === "condition" ? "Tell buyers the current condition of this item." : "Choose the currency in which your listing price is set."}</Text>
                   </View>
                   <Pressable onPress={() => setDropdownOpen(null)} style={[styles.dropdownClose, { backgroundColor: theme.background }]}><X size={18} color={theme.text} /></Pressable>
                 </View>
                 <ScrollView contentContainerStyle={{ paddingBottom: 18, gap: 8 }}>
-                  {(dropdownOpen === "category" ? categories : ["New", "Used"]).map((item) => {
-                    const selected = dropdownOpen === "category" ? category === item : condition === item;
+                  {(dropdownOpen === "category" ? categories : dropdownOpen === "condition" ? ["New", "Used"] : LISTING_CURRENCIES.map(([code, name]) => `${code} · ${name}`)).map((item) => {
+                    const selected = dropdownOpen === "category" ? category === item : dropdownOpen === "condition" ? condition === item : currencyLabel(currency) === item;
                     return (
-                      <Pressable key={item} onPress={() => { if (dropdownOpen === "category") setCategory(item); else setCondition(item); setDropdownOpen(null); }} style={[styles.dropdownOption, { borderColor: theme.border, backgroundColor: theme.background }, selected && { borderColor: theme.accent, backgroundColor: theme.accent + (theme.isDark ? "22" : "0D") }]}>
+                      <Pressable key={item} onPress={() => {
+                        if (dropdownOpen === "category") setCategory(item);
+                        else if (dropdownOpen === "condition") setCondition(item);
+                        else setCurrency(item.split(" · ")[0]);
+                        setDropdownOpen(null);
+                      }} style={[styles.dropdownOption, { borderColor: theme.border, backgroundColor: theme.background }, selected && { borderColor: theme.accent, backgroundColor: theme.accent + (theme.isDark ? "22" : "0D") }]}>
                         <View style={[styles.dropdownOptionIcon, { backgroundColor: selected ? theme.accent : theme.card }]}><Tag size={15} color={selected ? "#fff" : theme.muted} /></View>
                         <Text style={[styles.dropdownOptionText, { color: theme.text }]}>{item}</Text>
                         {selected && <Check size={18} color={theme.accent} />}
@@ -3555,11 +3764,12 @@ function StoreNameWithBadge({ name, verified = false, style, numberOfLines = 1 }
   );
 }
 
-function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onSecurity, onNotificationPreferences, onHelp, onSignIn, onSignUp, onGoogle, onAuthenticated, onBack, onStore, onMessages, onCart, cartCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onSecurity: () => void; onNotificationPreferences: () => void; onHelp: () => void; onSignIn: () => void; onSignUp: () => void; onGoogle: () => void; onAuthenticated: (payload: AuthPayload) => void | Promise<void>; onBack: () => boolean; onStore: () => void; onMessages: () => void; onCart: () => void; cartCount?: number }) {
+function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onSecurity, onNotificationPreferences, onNotifications, onHelp, onSignIn, onSignUp, onGoogle, onAuthenticated, onBack, onStore, onMessages, onCart, cartCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onSecurity: () => void; onNotificationPreferences: () => void; onNotifications: () => void; onHelp: () => void; onSignIn: () => void; onSignUp: () => void; onGoogle: () => void; onAuthenticated: (payload: AuthPayload) => void | Promise<void>; onBack: () => boolean; onStore: () => void; onMessages: () => void; onCart: () => void; cartCount?: number }) {
   const insets = useSafeAreaInsets();
   const [profileMode, setProfileMode] = useState<"buyer" | "seller">("buyer");
+  const [shoppingOpen, setShoppingOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editingListing, setEditingListing] = useState<Listing | null>(null);
   const [store, setStore] = useState<ProfileStore | null>(null);
   const [storeLoading, setStoreLoading] = useState(false);
   const [profileCounts, setProfileCounts] = useState({ buyerOrders: 0, sellerOrders: 0, listings: 0, unreadMessages: 0, unreadNotifications: 0 });
@@ -3615,68 +3825,89 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
 
   const sellerAttentionCount = profileCounts.sellerOrders + profileCounts.listings;
   const buyerActions = [
-    { icon: <ShoppingBag size={19} color={theme.text} />, title: "My orders", text: "Track purchases & delivery", badge: profileCounts.buyerOrders, onPress: onOrders },
-    { icon: <ShoppingCart size={19} color={theme.text} />, title: "Cart", text: `${cartCount} ${cartCount === 1 ? "item" : "items"} in cart`, badge: cartCount, onPress: onCart },
-    { icon: <MessageCircle size={19} color={theme.text} />, title: "Messages", text: "Chat with sellers", badge: profileCounts.unreadMessages, onPress: onMessages },
-    { icon: <Store size={19} color={theme.text} />, title: "Following", text: "Stores you follow", onPress: () => {} },
+    { icon: <ShoppingBag size={19} color={theme.text} />, title: "My orders", badge: profileCounts.buyerOrders, onPress: onOrders },
+    { icon: <ShoppingCart size={19} color={theme.text} />, title: "Cart", badge: cartCount, onPress: onCart },
+    { icon: <MessageCircle size={19} color={theme.text} />, title: "Messages", badge: profileCounts.unreadMessages, onPress: onMessages },
+    { icon: <Heart size={19} color={theme.text} />, title: "Wishlist & saved", onPress: () => {} },
   ];
   const sellerActions = [
-    { icon: <Store size={18} color={theme.accent} />, title: "Seller hub", text: "Manage your store", badge: sellerAttentionCount, onPress: onStore },
-    { icon: <Tag size={18} color={theme.accent} />, title: "Listings", text: "Create & manage listings", badge: profileCounts.listings, onPress: onStore },
-    { icon: <ShoppingBag size={18} color={theme.accent} />, title: "Sales & orders", text: "Review customer orders", badge: profileCounts.sellerOrders, onPress: onOrders },
-    { icon: <MessageCircle size={18} color={theme.accent} />, title: "Buyer messages", text: "Respond to enquiries", badge: profileCounts.unreadMessages, onPress: onMessages },
+    { icon: <Store size={19} color={theme.accent} />, title: "Seller hub", badge: sellerAttentionCount, onPress: onStore },
+    { icon: <Tag size={19} color={theme.accent} />, title: "My listings", badge: profileCounts.listings, onPress: onStore },
+    { icon: <ShoppingBag size={19} color={theme.accent} />, title: "Orders received", badge: profileCounts.sellerOrders, onPress: onOrders },
+    { icon: <MessageCircle size={19} color={theme.accent} />, title: "Buyer messages", badge: profileCounts.unreadMessages, onPress: onMessages },
   ];
   const actions = profileMode === "buyer" ? buyerActions : sellerActions;
 
   return <>
-    <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
-      <View style={[styles.profileHeroCard,{backgroundColor:theme.card,borderColor:theme.border}]}>
-        <View style={styles.profileHeroTop}>
-          <View style={styles.profileAvatarEditWrap}>
-            <ProfileAvatar uri={currentUser?.avatar || currentUser?.avatar_url} initials={initials} size={78} theme={theme} />
-            <Pressable
-              onPress={() => setEditing(true)}
-              accessibilityRole="button"
-              accessibilityLabel="Edit profile photo and details"
-              hitSlop={10}
-              style={({ pressed }) => [
-                styles.profileEditIconButton,
-                {
-                  backgroundColor: BUTTON_BLUE,
-                  borderColor: theme.card,
-                  opacity: pressed ? 0.78 : 1,
-                  transform: [{ scale: pressed ? 0.94 : 1 }],
-                },
-              ]}
-            >
-              <Pencil size={15} color="#fff" strokeWidth={2.5} />
-            </Pressable>
-          </View>
-          <View style={{flex:1,minWidth:0}}>
+    <ScreenScroll
+      theme={theme}
+      contentStyle={styles.profilePageScroll}
+    >
+      <View style={styles.profileBlueHeader} />
+
+      <View style={[styles.profileWhiteCard, { backgroundColor: theme.background }]}>
+        <View style={styles.profileFloatingAvatar}>
+          <ProfileAvatar
+            uri={currentUser?.avatar || currentUser?.avatar_url}
+            initials={initials}
+            size={76}
+            theme={theme}
+          />
+          <Pressable
+            onPress={() => setEditing(true)}
+            style={styles.profileCameraButton}
+            accessibilityRole="button"
+            accessibilityLabel="Edit profile photo"
+          >
+            <Pencil size={13} color="#fff" strokeWidth={2.5} />
+          </Pressable>
+        </View>
+
+        <View style={styles.profileReferenceHeader}>
+          <View style={{ flex: 1, minWidth: 0, paddingTop: 3 }}>
             <View style={styles.profileNameLine}>
-              <Text style={[styles.profileName,{color:theme.text}]} numberOfLines={1}>{displayName}</Text>
-              {currentUser?.is_community_verified && <MetaVerifiedBadge size={18} />}
+              <Text style={[styles.profileName, { color: theme.text }]} numberOfLines={1}>{displayName}</Text>
+              {currentUser?.is_community_verified && <MetaVerifiedBadge size={16} />}
             </View>
-            <Text style={[styles.profileEmail,{color:theme.muted}]} numberOfLines={1}>{currentUser?.email}</Text>
-            <Text style={[styles.profileMember,{color:theme.muted}]}>Marketplace member</Text>
+            <Text style={[styles.profileMember, { color: theme.muted }]}>
+              {currentUser?.email ? currentUser.email : "Marketplace member"}
+            </Text>
           </View>
 
+          <Pressable
+            onPress={() => setEditing(true)}
+            style={styles.profileReferenceEdit}
+            accessibilityRole="button"
+            accessibilityLabel="Edit profile"
+          >
+            <Text style={styles.profileReferenceEditText}>Edit Profile</Text>
+          </Pressable>
         </View>
-      </View>
 
-      <View style={[styles.profileModeSwitch,{backgroundColor:theme.card,borderColor:theme.border}]}>
-        <Pressable onPress={() => setProfileMode("buyer")} style={[styles.profileModeButton, profileMode === "buyer" && {backgroundColor:BUTTON_BLUE}]}><ShoppingBag size={15} color={profileMode === "buyer" ? "#fff" : theme.muted}/><Text style={[styles.profileModeText,{color:profileMode === "buyer" ? "#fff" : theme.muted}]}>Buyer</Text></Pressable>
-        <Pressable onPress={() => setProfileMode("seller")} style={[styles.profileModeButton, profileMode === "seller" && {backgroundColor:BUTTON_BLUE}]}><Store size={15} color={profileMode === "seller" ? "#fff" : theme.muted}/><Text style={[styles.profileModeText,{color:profileMode === "seller" ? "#fff" : theme.muted}]}>Seller</Text>{sellerAttentionCount > 0 && <CountBadge count={sellerAttentionCount} active={profileMode === "seller"} />}</Pressable>
-      </View>
+        <View style={[styles.profileModeSwitchReference, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <Pressable
+            onPress={() => setProfileMode("buyer")}
+            style={[styles.profileModeButtonReference, profileMode === "buyer" && { backgroundColor: "#EEF0FF" }]}
+          >
+            <ShoppingBag size={14} color={profileMode === "buyer" ? BUTTON_BLUE : theme.muted} />
+            <Text style={[styles.profileModeTextReference, { color: profileMode === "buyer" ? BUTTON_BLUE : theme.muted }]}>Buyer</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setProfileMode("seller")}
+            style={[styles.profileModeButtonReference, profileMode === "seller" && { backgroundColor: "#EEF0FF" }]}
+          >
+            <Store size={14} color={profileMode === "seller" ? BUTTON_BLUE : theme.muted} />
+            <Text style={[styles.profileModeTextReference, { color: profileMode === "seller" ? BUTTON_BLUE : theme.muted }]}>Seller</Text>
+            {sellerAttentionCount > 0 && <CountBadge count={sellerAttentionCount} active={profileMode === "seller"} />}
+          </Pressable>
+        </View>
 
-      <View style={styles.profileSectionHeader}>
-        <View><Text style={[styles.profileSectionTitle,{color:theme.text}]}>{profileMode === "buyer" ? "Buyer dashboard" : "Seller workspace"}</Text><Text style={[styles.profileSectionSub,{color:theme.muted}]}>{profileMode === "buyer" ? "Everything you need to shop with confidence." : "Everything you need to run a trusted store."}</Text></View>
-        <View style={[styles.profileRoleBadge,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}><Text style={[styles.profileRoleBadgeText,{color:theme.accent}]}>{profileMode === "buyer" ? "SHOPPING" : "SELLING"}</Text></View>
-      </View>
+        <View style={styles.profileReferenceSection}>
+          <Text style={[styles.profileReferenceSectionTitle, { color: theme.muted }]}>
+            {profileMode === "buyer" ? "ACTIVITY" : "SELLING"}
+          </Text>
 
-      {profileMode === "buyer" ? <>
-        <View style={{ gap: 12 }}>
-          {buyerActions.map((item) => (
+          {actions.map((item) => (
             <ProfileRow
               key={item.title}
               theme={theme}
@@ -3684,35 +3915,39 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
               title={item.title}
               badge={item.badge}
               onPress={item.onPress}
+              referenceStyle
             />
           ))}
-        </View>
-        <ProfileRow theme={theme} icon={<Heart size={19} color={theme.text}/>} title="Wishlist & saved searches" onPress={() => {}} />
-      </> : <>
-        <View style={{ gap: 12 }}>
-          {sellerActions.map((item) => (
-            <ProfileRow
-              key={item.title}
-              theme={theme}
-              icon={item.icon}
-              title={item.title}
-              badge={item.badge}
-              onPress={item.onPress}
-            />
-          ))}
-        </View>
-        <View style={[styles.sellerSetupCard,{backgroundColor:theme.isDark ? "#172554" : "#EFF6FF", borderWidth:1, borderColor:theme.isDark ? "#1E3A8A" : "#BFDBFE"}]}>
-          <View style={{flex:1}}><Text style={styles.sellerSetupEyebrow}>SELLER READINESS</Text><Text style={[styles.sellerSetupTitle,{color:theme.text}]}>Build a store buyers trust.</Text><Text style={[styles.sellerSetupText,{color:theme.muted}]}>Add your store details, listings, delivery options and payout information.</Text></View>
-          <Pressable onPress={onStore} style={[styles.sellerSetupButton,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.sellerSetupButtonText}>Set up</Text><ChevronRight size={16} color="#fff"/></Pressable>
-        </View>
-      </>}
 
-      <View style={styles.profileSectionHeader}><View><Text style={[styles.profileSectionTitle,{color:theme.text}]}>Account</Text><Text style={[styles.profileSectionSub,{color:theme.muted}]}>Preferences, privacy and support.</Text></View></View>
-      <ProfileRow theme={theme} icon={<Settings size={19} color={theme.text}/>} title="Settings & preferences" onPress={onSettings}/>
-      <ProfileRow theme={theme} icon={<LockKeyhole size={19} color={theme.text}/>} title="Security & privacy" onPress={onSecurity} />
-      <ProfileRow theme={theme} icon={<Bell size={19} color={theme.text}/>} title="Notifications" badge={profileCounts.unreadNotifications} onPress={onNotificationPreferences} />
-      <ProfileRow theme={theme} icon={<MessageCircle size={19} color={theme.text}/>} title="Help & support" onPress={onHelp} />
-      {storeLoading && <Text style={[styles.profileLoading,{color:theme.muted}]}>Loading store profile…</Text>}
+          {profileMode === "seller" && (
+            <View style={[styles.sellerSetupCard, { backgroundColor: theme.isDark ? "#172554" : "#EFF6FF", borderWidth: 1, borderColor: theme.isDark ? "#1E3A8A" : "#BFDBFE", marginTop: 4 }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sellerSetupEyebrow}>SELLER</Text>
+                <Text style={[styles.sellerSetupTitle, { color: theme.text }]}>Store setup</Text>
+                <Text style={[styles.sellerSetupText, { color: theme.muted }]}>Keep your store details and contact information up to date.</Text>
+              </View>
+              <Pressable onPress={onStore} style={[styles.sellerSetupButton, { backgroundColor: BUTTON_BLUE }]}>
+                <Text style={styles.sellerSetupButtonText}>Manage</Text>
+                <ChevronRight size={16} color="#fff" />
+              </Pressable>
+            </View>
+          )}
+        </View>
+
+        <View style={[styles.profileReferenceSection, { marginTop: 8 }]}>
+          <Text style={[styles.profileReferenceSectionTitle, { color: theme.muted }]}>ACCOUNT</Text>
+
+          <ProfileRow theme={theme} icon={<User size={18} color={BUTTON_BLUE} />} title="Edit profile" onPress={() => setEditing(true)} referenceStyle />
+          <ProfileRow theme={theme} icon={<Settings size={18} color={BUTTON_BLUE} />} title="Settings" onPress={onSettings} referenceStyle />
+          <ProfileRow theme={theme} icon={<LockKeyhole size={18} color={BUTTON_BLUE} />} title="Security & privacy" onPress={onSecurity} referenceStyle />
+          <ProfileRow theme={theme} icon={<Bell size={18} color={BUTTON_BLUE} />} title="Notifications" badge={profileCounts.unreadNotifications} onPress={onNotifications} referenceStyle />
+          <ProfileRow theme={theme} icon={<CircleHelp size={18} color={BUTTON_BLUE} />} title="Help & support" onPress={onHelp} referenceStyle />
+        </View>
+
+        {storeLoading && (
+          <Text style={[styles.profileLoading, { color: theme.muted }]}>Loading store profile…</Text>
+        )}
+      </View>
     </ScreenScroll>
 
     {editing && currentUser && (
@@ -3735,7 +3970,6 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
         onStoreUpdated={(updatedStore) => setStore(updatedStore)}
       />
     )}
-
   </>;
 }
 
@@ -4333,41 +4567,384 @@ function formatMessageTime(value?: string) {
   return date.toLocaleDateString([], { day: "numeric", month: "short" });
 }
 
-function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null }) {
+const MESSAGE_QUICK_PROMPTS = ["Tell me more about this", "Is this still available?", "Do you deliver this product?"];
+// Real-time chat tuning. Django Channels/WebSockets aren't practical on this
+// project's deployment target (PythonAnywhere, gunicorn/WSGI only, no ASGI
+// server in front of it), so an open conversation is kept live with lightweight
+// polling instead. MESSAGE_POLL_MS also drives how fresh the typing indicator feels.
+const MESSAGE_POLL_MS = 1200;
+const CONVERSATION_LIST_POLL_MS = 4000;
+// Minimum time between "user is typing" pings sent to the server while someone
+// types, so fast typing doesn't flood the API with a request per keystroke.
+const TYPING_PING_THROTTLE_MS = 2000;
+
+function MessageProductCard({ snapshot, theme, compact = false }: { snapshot: MessageProductSnapshot; theme: Theme; compact?: boolean }) {
+  const image = snapshot.image || null;
+  const price = snapshot.price != null ? Number(snapshot.price) : NaN;
+  return <View style={{ flexDirection: "row", gap: 10, padding: compact ? 8 : 10, borderRadius: 14, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.isDark ? "#1F2937" : "#F8FAFC", marginBottom: 8 }}>
+    {image ? <Image source={{ uri: image }} style={{ width: compact ? 54 : 62, height: compact ? 54 : 62, borderRadius: 10 }} /> : <View style={{ width: compact ? 54 : 62, height: compact ? 54 : 62, borderRadius: 10, backgroundColor: theme.border, alignItems: "center", justifyContent: "center" }}><ShoppingBag size={20} color={theme.muted} /></View>}
+    <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
+      <Text style={{ color: theme.text, fontWeight: "900", fontSize: compact ? 12 : 13 }} numberOfLines={2}>{snapshot.title}</Text>
+      {!!snapshot.store_name && <Text style={{ color: theme.muted, fontSize: 10, marginTop: 2 }} numberOfLines={1}>{snapshot.store_name}</Text>}
+      {Number.isFinite(price) && <Text style={{ color: BUTTON_BLUE, fontWeight: "900", fontSize: compact ? 12 : 14, marginTop: 4 }}>{formatCurrencyAmount(price, snapshot.currency || "KES")}</Text>}
+    </View>
+  </View>;
+}
+
+
+type InAppCallHandle = {
+  startCall: (conversation: ConversationItem) => void;
+};
+
+type CallRecord = {
+  id: number;
+  conversation: number;
+  caller: number;
+  receiver: number;
+  status: "ringing" | "accepted" | "declined" | "ended";
+  offer: any;
+  answer: any;
+  ice_candidates: Array<{ id: number | string; sender: number; candidate: any }>;
+};
+
+function getCallWebRTC() {
+  if (Platform.OS === "web") {
+    const g: any = globalThis as any;
+    if (!g.RTCPeerConnection || !g.navigator?.mediaDevices?.getUserMedia) {
+      throw new Error("This browser does not provide WebRTC audio support.");
+    }
+    return {
+      RTCPeerConnection: g.RTCPeerConnection,
+      RTCIceCandidate: g.RTCIceCandidate,
+      RTCSessionDescription: g.RTCSessionDescription,
+      mediaDevices: g.navigator.mediaDevices,
+    };
+  }
+  // react-native-webrtc contains native code and therefore cannot run in Expo Go.
+  // It is deliberately loaded only on native platforms so the existing web build remains usable.
+  const native: any = require("react-native-webrtc");
+  return native;
+}
+
+const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null }>(function InAppCallManager({ theme, auth, currentUser }, ref) {
+  const [call, setCall] = useState<CallRecord | null>(null);
+  const [state, setState] = useState<"idle" | "calling" | "ringing" | "connected" | "ended">("idle");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const peerRef = useRef<any>(null);
+  const localStreamRef = useRef<any>(null);
+  const callRef = useRef<CallRecord | null>(null);
+  const queuedCandidatesRef = useRef<any[]>([]);
+  const seenCandidateIdsRef = useRef<Set<string>>(new Set());
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const remoteAudioRef = useRef<any>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (pollRef.current) clearInterval(pollRef.current);
+    try { peerRef.current?.close?.(); } catch {}
+    try { localStreamRef.current?.getTracks?.().forEach((track: any) => track.stop()); } catch {}
+  }, []);
+
+  useEffect(() => { callRef.current = call; }, [call]);
+
+  const clearCallUi = useCallback(() => {
+    callRef.current = null;
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    try { peerRef.current?.close?.(); } catch {}
+    peerRef.current = null;
+    try { localStreamRef.current?.getTracks?.().forEach((track: any) => track.stop()); } catch {}
+    localStreamRef.current = null;
+    try { if (remoteAudioRef.current) { remoteAudioRef.current.pause?.(); remoteAudioRef.current.srcObject = null; } } catch {}
+    remoteAudioRef.current = null;
+    queuedCandidatesRef.current = [];
+    seenCandidateIdsRef.current.clear();
+  }, []);
+
+  const finishLocal = useCallback((nextState: "ended" = "ended") => {
+    clearCallUi();
+    setState(nextState);
+    setTimeout(() => { if (mountedRef.current) { setState("idle"); setCall(null); } }, 900);
+  }, [clearCallUi]);
+
+  const addRemoteCandidate = useCallback(async (candidate: any) => {
+    const pc = peerRef.current;
+    if (!pc || !candidate) return;
+    try {
+      const { RTCIceCandidate } = getCallWebRTC();
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) {
+      // A candidate can arrive before the remote SDP. Queue it and retry after setRemoteDescription.
+      queuedCandidatesRef.current.push(candidate);
+    }
+  }, []);
+
+  const flushQueuedCandidates = useCallback(async () => {
+    const queued = queuedCandidatesRef.current.splice(0);
+    for (const candidate of queued) await addRemoteCandidate(candidate);
+  }, [addRemoteCandidate]);
+
+  const createPeer = useCallback(async (isCaller: boolean) => {
+    const { RTCPeerConnection, mediaDevices } = getCallWebRTC();
+    const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
+    localStreamRef.current = stream;
+    // STUN is enough for many direct peer-to-peer networks. For reliable calls across
+    // restrictive NATs/mobile carriers, add a TURN service later and expose short-lived
+    // TURN credentials from the backend rather than embedding a permanent secret in the app.
+    const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+    const pc = new RTCPeerConnection({ iceServers });
+    peerRef.current = pc;
+    stream.getTracks().forEach((track: any) => pc.addTrack(track, stream));
+    pc.onicecandidate = async (event: any) => {
+      const candidate = event?.candidate;
+      const activeCall = callRef.current;
+      if (!candidate) return;
+      if (!activeCall?.id || !auth?.access) {
+        queuedCandidatesRef.current.push(candidate.toJSON ? candidate.toJSON() : candidate);
+        return;
+      }
+      await apiRequest(`/api/calls/${activeCall.id}/signal/`, {
+        method: "POST",
+        body: JSON.stringify({ candidate: candidate.toJSON ? candidate.toJSON() : candidate }),
+      }, auth).catch(() => {});
+    };
+    pc.ontrack = (event: any) => {
+      if (Platform.OS === "web" && event?.streams?.[0]) {
+        try {
+          const AudioCtor = (globalThis as any).Audio;
+          if (AudioCtor) {
+            const audio = remoteAudioRef.current || new AudioCtor();
+            audio.autoplay = true;
+            audio.srcObject = event.streams[0];
+            remoteAudioRef.current = audio;
+            void audio.play?.();
+          }
+        } catch {}
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      const connectionState = pc.connectionState;
+      if (!mountedRef.current) return;
+      if (connectionState === "connected") setState("connected");
+      if (["failed", "disconnected", "closed"].includes(connectionState)) {
+        if (callRef.current?.id && auth?.access) {
+          apiRequest(`/api/calls/${callRef.current.id}/end/`, { method: "POST" }, auth).catch(() => {});
+        }
+        finishLocal();
+      }
+    };
+    return { pc, isCaller };
+  }, [auth, finishLocal]);
+
+  const flushPendingIce = useCallback(async () => {
+    const activeCall = callRef.current;
+    if (!activeCall?.id || !auth?.access) return;
+    const queued = queuedCandidatesRef.current.splice(0);
+    for (const candidate of queued) {
+      await apiRequest(`/api/calls/${activeCall.id}/signal/`, {
+        method: "POST",
+        body: JSON.stringify({ candidate: candidate.toJSON ? candidate.toJSON() : candidate }),
+      }, auth).catch(() => {});
+    }
+  }, [auth]);
+
+  const applyRemoteIce = useCallback(async (record: CallRecord) => {
+    for (const entry of record.ice_candidates || []) {
+      if (entry.sender === currentUser?.id) continue;
+      const key = String(entry.id);
+      if (seenCandidateIdsRef.current.has(key)) continue;
+      seenCandidateIdsRef.current.add(key);
+      await addRemoteCandidate(entry.candidate);
+    }
+  }, [addRemoteCandidate, currentUser?.id]);
+
+  const acceptCall = useCallback(async () => {
+    const incoming = callRef.current;
+    if (!incoming || !auth?.access || !currentUser) return;
+    setBusy(true); setError("");
+    try {
+      const { RTCSessionDescription } = getCallWebRTC();
+      await createPeer(false);
+      const pc = peerRef.current;
+      await pc.setRemoteDescription(new RTCSessionDescription(incoming.offer));
+      await flushQueuedCandidates();
+      await applyRemoteIce(incoming);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      const updated = await apiRequest(`/api/calls/${incoming.id}/accept/`, {
+        method: "POST", body: JSON.stringify({ answer: pc.localDescription?.toJSON ? pc.localDescription.toJSON() : pc.localDescription }),
+      }, auth) as CallRecord;
+      callRef.current = updated; setCall(updated); setState("calling");
+      await flushPendingIce();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not accept the call.");
+      try { await apiRequest(`/api/calls/${incoming.id}/end/`, { method: "POST" }, auth); } catch {}
+      finishLocal();
+    } finally { setBusy(false); }
+  }, [applyRemoteIce, auth, createPeer, currentUser, finishLocal, flushPendingIce, flushQueuedCandidates]);
+
+  const declineCall = useCallback(async () => {
+    const incoming = callRef.current;
+    if (!incoming || !auth?.access) return;
+    setBusy(true);
+    try { await apiRequest(`/api/calls/${incoming.id}/decline/`, { method: "POST" }, auth); } catch {}
+    finally { setBusy(false); finishLocal(); }
+  }, [auth, finishLocal]);
+
+  const endCall = useCallback(async () => {
+    const activeCall = callRef.current;
+    if (activeCall?.id && auth?.access) await apiRequest(`/api/calls/${activeCall.id}/end/`, { method: "POST" }, auth).catch(() => {});
+    finishLocal();
+  }, [auth, finishLocal]);
+
+  const startCall = useCallback(async (conversation: ConversationItem) => {
+    if (!auth?.access || !currentUser || callRef.current || busy) return;
+    setBusy(true); setError("");
+    try {
+      await createPeer(true);
+      const pc = peerRef.current;
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
+      await pc.setLocalDescription(offer);
+      const created = await apiRequest("/api/calls/", {
+        method: "POST",
+        body: JSON.stringify({
+          conversation: conversation.id,
+          offer: pc.localDescription?.toJSON ? pc.localDescription.toJSON() : pc.localDescription,
+        }),
+      }, auth) as CallRecord;
+      callRef.current = created; setCall(created); setState("calling");
+      await flushPendingIce();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not start the in-app call.");
+      finishLocal();
+    } finally { setBusy(false); }
+  }, [auth, busy, createPeer, currentUser, finishLocal, flushPendingIce]);
+
+  useImperativeHandle(ref, () => ({ startCall: (conversation) => { void startCall(conversation); } }), [startCall]);
+
+  // Receiver polling is intentionally separate from the chat polling. Existing chat behavior is untouched.
+  useEffect(() => {
+    if (!auth?.access || !currentUser) return;
+    let active = true;
+    const pollIncoming = async () => {
+      if (!active || callRef.current) return;
+      try {
+        const data = await apiRequest("/api/calls/incoming/", {}, auth);
+        const incoming = apiResults<CallRecord>(data);
+        if (incoming[0] && active) {
+          callRef.current = incoming[0]; setCall(incoming[0]); setState("ringing");
+        }
+      } catch {}
+    };
+    void pollIncoming();
+    const timer = setInterval(pollIncoming, 1500);
+    return () => { active = false; clearInterval(timer); };
+  }, [auth?.access, currentUser?.id]);
+
+  // Signaling polling: relay answer and ICE candidates through the existing authenticated Django API.
+  useEffect(() => {
+    const activeCallId = call?.id;
+    if (!activeCallId || !auth?.access) return;
+    const pollCall = async () => {
+      try {
+        const updated = await apiRequest(`/api/calls/${activeCallId}/`, {}, auth) as CallRecord;
+        if (!mountedRef.current) return;
+        callRef.current = updated; setCall(updated);
+        await applyRemoteIce(updated);
+        if (updated.status === "declined" || updated.status === "ended") {
+          finishLocal(); return;
+        }
+        // Caller applies the receiver's SDP answer exactly once.
+        if (updated.answer && peerRef.current && !peerRef.current.currentRemoteDescription) {
+          const { RTCSessionDescription } = getCallWebRTC();
+          await peerRef.current.setRemoteDescription(new RTCSessionDescription(updated.answer));
+          await flushQueuedCandidates();
+          setState("calling");
+        }
+      } catch {}
+    };
+    void pollCall();
+    const timer = setInterval(pollCall, 1000);
+    return () => clearInterval(timer);
+  }, [applyRemoteIce, auth, call?.id, finishLocal, flushQueuedCandidates]);
+
+  const otherName = call ? (call.caller === currentUser?.id ? "Marketplace contact" : "Incoming caller") : "";
+  const label = state === "calling" ? "Calling…" : state === "ringing" ? "Incoming call" : state === "connected" ? "Connected" : state === "ended" ? "Call ended" : "";
+  if (!call || state === "idle") return null;
+  const isIncoming = call.receiver === currentUser?.id && state === "ringing";
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={() => { if (isIncoming) void declineCall(); else void endCall(); }}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,.62)", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <View style={{ width: "100%", maxWidth: 390, borderRadius: 24, padding: 24, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, alignItems: "center" }}>
+          <View style={{ width: 74, height: 74, borderRadius: 37, backgroundColor: theme.isDark ? "#24212B" : "#EFF6FF", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+            <Phone size={30} color={theme.accent} />
+          </View>
+          <Text style={{ color: theme.text, fontSize: 21, fontWeight: "900", textAlign: "center" }}>{isIncoming ? "Incoming call" : "In-app call"}</Text>
+          <Text style={{ color: theme.muted, fontSize: 14, marginTop: 6, textAlign: "center" }}>{otherName}</Text>
+          <Text style={{ color: theme.accent, fontSize: 13, fontWeight: "800", marginTop: 12 }}>{label}</Text>
+          {!!error && <Text style={{ color: "#DC2626", fontSize: 12, textAlign: "center", marginTop: 12 }}>{error}</Text>}
+          {isIncoming ? (
+            <View style={{ flexDirection: "row", gap: 12, marginTop: 22, width: "100%" }}>
+              <Pressable disabled={busy} onPress={() => void declineCall()} style={{ flex: 1, paddingVertical: 13, borderRadius: 14, backgroundColor: theme.isDark ? "#3B1F24" : "#FEE2E2", alignItems: "center" }}><Text style={{ color: "#DC2626", fontWeight: "900" }}>Decline</Text></Pressable>
+              <Pressable disabled={busy} onPress={() => void acceptCall()} style={{ flex: 1, paddingVertical: 13, borderRadius: 14, backgroundColor: "#16A34A", alignItems: "center" }}><Text style={{ color: "#fff", fontWeight: "900" }}>Accept</Text></Pressable>
+            </View>
+          ) : (
+            <Pressable disabled={busy} onPress={() => void endCall()} style={{ marginTop: 22, width: "100%", paddingVertical: 13, borderRadius: 14, backgroundColor: theme.isDark ? "#3B1F24" : "#FEE2E2", alignItems: "center" }}><Text style={{ color: "#DC2626", fontWeight: "900" }}>End call</Text></Pressable>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+});
+
+function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatConsumed, onStartCall }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null; initialChat?: PendingChat | null; onInitialChatConsumed?: () => void; onStartCall?: (conversation: ConversationItem) => void }) {
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedConversation, setSelectedConversation] = useState<ConversationItem | null>(null);
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [messageText, setMessageText] = useState("");
+  const [composeListing, setComposeListing] = useState<Listing | null>(null);
   const [sending, setSending] = useState(false);
   const [search, setSearch] = useState("");
+  const [otherTyping, setOtherTyping] = useState(false);
   const messagesScrollRef = useRef<ScrollView>(null);
   const messageInsets = useSafeAreaInsets();
+  // Highest message id seen so far in the open conversation. Polling asks the
+  // API for messages newer than this id instead of re-fetching the whole
+  // thread every cycle.
+  const lastMessageIdRef = useRef(0);
+  const typingPingAtRef = useRef(0);
+  const pollBusyRef = useRef(false);
 
   useEffect(() => {
     const timer = setTimeout(() => messagesScrollRef.current?.scrollToEnd({ animated: true }), 40);
     return () => clearTimeout(timer);
   }, [messages.length]);
 
-  const loadConversations = async (showSpinner = true) => {
+  const loadConversations = async (showSpinner = true, silent = false) => {
     if (!auth?.access) { setLoading(false); return; }
-    if (showSpinner) setLoading(true); else setRefreshing(true);
+    if (silent) { /* background poll: no spinner, no error alerts */ }
+    else if (showSpinner) setLoading(true); else setRefreshing(true);
     try {
       const data = await apiRequest("/api/conversations/", {}, auth);
       setConversations(apiResults<ConversationItem>(data));
     } catch (error) {
-      Alert.alert("Couldn't load messages", error instanceof Error ? error.message : "Please try again.");
-    } finally { setLoading(false); setRefreshing(false); }
+      if (!silent) Alert.alert("Couldn't load messages", error instanceof Error ? error.message : "Please try again.");
+    } finally { if (!silent) { setLoading(false); setRefreshing(false); } }
   };
 
   const loadMessages = async (conversation: ConversationItem) => {
     if (!auth?.access) return;
     setSelectedConversation(conversation);
+    lastMessageIdRef.current = 0;
+    setOtherTyping(false);
     try {
       const data = await apiRequest(`/api/messages/?conversation=${conversation.id}`, {}, auth);
       const next = apiResults<MessageItem>(data);
       setMessages(next);
+      if (next.length) lastMessageIdRef.current = Math.max(...next.map((m) => m.id));
       const unread = next.filter((m) => !m.is_read && m.sender !== currentUser?.id);
       await Promise.all(unread.map((m) => apiRequest(`/api/messages/${m.id}/`, { method: "PATCH", body: JSON.stringify({ is_read: true }) }, auth).catch(() => null)));
       setConversations((items) => items.map((item) => item.id === conversation.id ? { ...item, unread_count: 0 } : item));
@@ -4376,6 +4953,78 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
     }
   };
 
+  // Poll for new messages + the other participant's typing state while a
+  // conversation is open. Uses `after=<last message id>` so each tick only
+  // downloads what's new, and a busy-flag so a slow response can't cause
+  // overlapping requests to pile up.
+  const pollActiveConversation = async (conversationId: number) => {
+    if (!auth?.access || pollBusyRef.current) return;
+    pollBusyRef.current = true;
+    try {
+      const [messagesData, statusData] = await Promise.all([
+        apiRequest(`/api/messages/?conversation=${conversationId}&after=${lastMessageIdRef.current}`, {}, auth).catch(() => null),
+        apiRequest(`/api/conversations/${conversationId}/status/`, {}, auth).catch(() => null),
+      ]);
+      if (messagesData) {
+        const incoming = apiResults<MessageItem>(messagesData);
+        if (incoming.length) {
+          lastMessageIdRef.current = Math.max(lastMessageIdRef.current, ...incoming.map((m) => m.id));
+          setMessages((items) => [...items, ...incoming]);
+          const lastIncoming = incoming[incoming.length - 1];
+          setConversations((items) => items.map((item) => item.id === conversationId ? {
+            ...item,
+            updated_at: lastIncoming.created_at,
+            last_message: { id: lastIncoming.id, sender: lastIncoming.sender, sender_name: lastIncoming.sender_name, body: lastIncoming.body, created_at: lastIncoming.created_at },
+            unread_count: 0,
+          } : item));
+          const unread = incoming.filter((m) => !m.is_read && m.sender !== currentUser?.id);
+          if (unread.length) {
+            Promise.all(unread.map((m) => apiRequest(`/api/messages/${m.id}/`, { method: "PATCH", body: JSON.stringify({ is_read: true }) }, auth).catch(() => null))).catch(() => {});
+          }
+        }
+      }
+      if (statusData) setOtherTyping(!!statusData.other_typing);
+    } finally {
+      pollBusyRef.current = false;
+    }
+  };
+
+  // Keep the open conversation live: pull new messages/typing state on an
+  // interval instead of requiring a manual refresh.
+  useEffect(() => {
+    if (!selectedConversation?.id || !auth?.access) return;
+    const conversationId = selectedConversation.id;
+    const interval = setInterval(() => { void pollActiveConversation(conversationId); }, MESSAGE_POLL_MS);
+    return () => clearInterval(interval);
+  }, [selectedConversation?.id, auth?.access]);
+
+  // While browsing the conversation list (no chat open), quietly refresh it
+  // so new conversations/messages and unread badges show up on their own.
+  useEffect(() => {
+    if (selectedConversation || !auth?.access) return;
+    const interval = setInterval(() => { void loadConversations(false, true); }, CONVERSATION_LIST_POLL_MS);
+    return () => clearInterval(interval);
+  }, [selectedConversation, auth?.access]);
+
+  // Tell the server the current user is typing, throttled so a burst of
+  // keystrokes results in at most one request every TYPING_PING_THROTTLE_MS.
+  const notifyTyping = () => {
+    if (!selectedConversation || !auth?.access) return;
+    const now = Date.now();
+    if (now - typingPingAtRef.current < TYPING_PING_THROTTLE_MS) return;
+    typingPingAtRef.current = now;
+    apiRequest(`/api/conversations/${selectedConversation.id}/typing/`, { method: "POST" }, auth).catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!initialChat?.conversation?.id) return;
+    setSelectedConversation(initialChat.conversation);
+    setComposeListing(initialChat.listing);
+    setMessageText("");
+    void loadMessages(initialChat.conversation);
+    onInitialChatConsumed?.();
+  }, [initialChat?.conversation?.id]);
+
   useEffect(() => { void loadConversations(); }, [auth?.access]);
 
   const sendMessage = async () => {
@@ -4383,10 +5032,14 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
     if (!body || !selectedConversation || !auth?.access || sending) return;
     setSending(true);
     try {
-      const data = await apiRequest("/api/messages/", { method: "POST", body: JSON.stringify({ conversation: selectedConversation.id, body }) }, auth);
+      const payload: Record<string, any> = { conversation: selectedConversation.id, body };
+      if (composeListing) payload.listing = Number(composeListing.id);
+      const data = await apiRequest("/api/messages/", { method: "POST", body: JSON.stringify(payload) }, auth);
       const sent = data as MessageItem;
       setMessages((items) => [...items, sent]);
+      lastMessageIdRef.current = Math.max(lastMessageIdRef.current, sent.id);
       setMessageText("");
+      setComposeListing(null);
       setConversations((items) => items.map((item) => item.id === selectedConversation.id ? {
         ...item,
         updated_at: sent.created_at,
@@ -4406,6 +5059,43 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
     const otherName = isBuyer ? (selectedConversation.seller_name || "Seller") : (selectedConversation.buyer_name || "Buyer");
     const otherAvatar = isBuyer ? selectedConversation.seller_avatar : selectedConversation.buyer_avatar;
     const initials = otherName.split(/\s+/).map((x) => x[0]).join("").slice(0,2).toUpperCase();
+
+    // The other participant's saved phone number, if one exists. Only the seller side of a
+    // conversation currently has a saved number (via their store profile) -- there's no phone
+    // field for buyers in the data model yet, so this is intentionally null in that direction.
+    const otherPhoneDigits = String((isBuyer ? selectedConversation.store_phone : null) || "").replace(/\D/g, "");
+
+    const openWhatsApp = async () => {
+      if (!otherPhoneDigits) {
+        Alert.alert("No phone number", `${otherName} hasn't added a phone number yet, so WhatsApp isn't available for this conversation.`);
+        return;
+      }
+      try {
+        const text = encodeURIComponent(`Hi ${otherName}, I'm reaching out from Marketplace.`);
+        await Linking.openURL(`https://wa.me/${otherPhoneDigits}?text=${text}`);
+      } catch (error) {
+        Alert.alert("Couldn't open WhatsApp", error instanceof Error ? error.message : "Please make sure WhatsApp is installed and try again.");
+      }
+    };
+
+    const callViaDialer = () => {
+      if (!otherPhoneDigits) {
+        Alert.alert("No phone number", `${otherName} hasn't added a phone number yet, so a direct call isn't available for this conversation.`);
+        return;
+      }
+      Linking.openURL(`tel:${otherPhoneDigits}`).catch(() => {
+        Alert.alert("Couldn't start call", "Please try again.");
+      });
+    };
+
+    const openCallOptions = () => {
+      Alert.alert(`Call ${otherName}`, undefined, [
+        { text: "Phone call", onPress: callViaDialer },
+        { text: "In-app call", onPress: () => { if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before starting an in-app call."); return; } onStartCall?.(selectedConversation); } },
+        { text: "Cancel", style: "cancel" },
+      ]);
+    };
+
     return (
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
         <View style={[styles.chatHeader, { backgroundColor: theme.card, borderColor: theme.border }]}>
@@ -4418,6 +5108,17 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
             {!!selectedConversation.store_name && <StoreNameWithBadge name={selectedConversation.store_name} verified={!!selectedConversation.store_verified} style={[styles.chatStore, { color: theme.muted }]} />}
           </View>
           <View style={[styles.chatOnlineDot, { backgroundColor: "#22C55E" }]} />
+          <View style={styles.chatHeaderActions}>
+            <Pressable onPress={openWhatsApp} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Message ${otherName} on WhatsApp`} style={styles.whatsappActionButton}>
+              <View style={styles.whatsappIconCircle}>
+                <MessageCircle size={18} color="#fff" fill="#25D366" strokeWidth={2.4} />
+                <Phone size={8} color="#fff" strokeWidth={3} style={styles.whatsappPhoneMark} />
+              </View>
+            </Pressable>
+            <Pressable onPress={openCallOptions} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Call ${otherName}`} style={[styles.chatBackButton, { backgroundColor: theme.isDark ? "#24212B" : "#F3F4F6" }]}>
+              <Phone size={17} color={theme.text} />
+            </Pressable>
+          </View>
         </View>
         <ScrollView ref={messagesScrollRef} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, paddingBottom: 18 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
           {messages.length === 0 ? (
@@ -4429,16 +5130,35 @@ function MessagesScreen({ theme, auth, currentUser }: { theme: Theme; auth: Auth
           ) : messages.map((message) => {
             const mine = message.sender === currentUser?.id;
             return <View key={message.id} style={[styles.chatBubbleRow, { justifyContent: mine ? "flex-end" : "flex-start" }]}>
-              <View style={[styles.chatBubble, { backgroundColor: mine ? BUTTON_BLUE : theme.card, borderColor: mine ? BUTTON_BLUE : theme.border, borderBottomRightRadius: mine ? 5 : 18, borderBottomLeftRadius: mine ? 18 : 5 }]}>
+              <View style={[styles.chatBubble, { backgroundColor: mine ? BUTTON_BLUE : theme.card, borderColor: mine ? BUTTON_BLUE : theme.border, borderBottomRightRadius: mine ? 5 : 18, borderBottomLeftRadius: mine ? 18 : 5, maxWidth: "88%" }]}>
+                {!!message.product_snapshot?.id && <MessageProductCard snapshot={message.product_snapshot} theme={theme} compact />}
                 <Text style={[styles.chatBubbleText, { color: mine ? "#fff" : theme.text }]}>{message.body}</Text>
                 <Text style={[styles.chatTime, { color: mine ? "rgba(255,255,255,.72)" : theme.muted }]}>{formatMessageTime(message.created_at)}</Text>
               </View>
             </View>;
           })}
         </ScrollView>
+        {otherTyping && (
+          <View style={styles.chatTypingRow}>
+            <View style={[styles.chatTypingBubble, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <Text style={[styles.chatTypingText, { color: theme.muted }]}>{otherName} is typing…</Text>
+            </View>
+          </View>
+        )}
+        {composeListing && (
+          <View style={{ paddingHorizontal: 14, paddingTop: 10, backgroundColor: theme.card, borderTopWidth: 1, borderTopColor: theme.border }}>
+            <Text style={{ color: theme.text, fontWeight: "900", fontSize: 13, marginBottom: 7 }}>Ask about this listing</Text>
+            <MessageProductCard snapshot={{ id: Number(composeListing.id), title: composeListing.title, image: composeListing.images?.[0] || composeListing.image, price: String(composeListing.isOnOffer && composeListing.offerPrice != null ? composeListing.offerPrice : (composeListing.originalPrice ?? composeListing.price)), currency: composeListing.currency || "KES", original_price: composeListing.originalPrice != null ? String(composeListing.originalPrice) : null, is_on_offer: composeListing.isOnOffer, store_name: composeListing.store }} theme={theme} />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 7, paddingBottom: 9 }}>
+              {MESSAGE_QUICK_PROMPTS.map((prompt) => <Pressable key={prompt} onPress={() => setMessageText(prompt)} style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.isDark ? "#24212B" : "#F8FAFC", paddingHorizontal: 11, paddingVertical: 8, borderRadius: 999 }}>
+                <Text style={{ color: theme.text, fontSize: 11, fontWeight: "700" }}>{prompt}</Text>
+              </Pressable>)}
+            </ScrollView>
+          </View>
+        )}
         <View style={[styles.chatComposer, { backgroundColor: theme.card, borderTopColor: theme.border, paddingBottom: Math.max(8, messageInsets.bottom) }]}>
           <Pressable style={[styles.chatAttach, { backgroundColor: theme.isDark ? "#24212B" : "#F3F4F6" }]} onPress={() => Alert.alert("Attachments", "Photo and document attachments can be added here.")}><Paperclip size={19} color={theme.muted} /></Pressable>
-          <TextInput value={messageText} onChangeText={setMessageText} placeholder="Write a message..." placeholderTextColor={theme.muted} multiline style={[styles.chatInput, { color: theme.text, backgroundColor: theme.isDark ? "#24212B" : "#F7F8FA", borderColor: theme.border }]} />
+          <TextInput value={messageText} onChangeText={(text) => { setMessageText(text); notifyTyping(); }} placeholder="Write a message..." placeholderTextColor={theme.muted} multiline style={[styles.chatInput, { color: theme.text, backgroundColor: theme.isDark ? "#24212B" : "#F7F8FA", borderColor: theme.border }]} />
           <Pressable onPress={sendMessage} disabled={!messageText.trim() || sending} style={[styles.chatSend, { backgroundColor: messageText.trim() && !sending ? BUTTON_BLUE : theme.border }]}>
             {sending ? <ActivityIndicator size="small" color="#fff" /> : <Send size={18} color={messageText.trim() ? "#fff" : theme.muted} />}
           </Pressable>
@@ -4491,65 +5211,574 @@ function PreferenceSwitch({ theme, title, description, value, onValueChange }: {
   </View>;
 }
 
-function SettingsPreferencesScreen({ theme, dark, setDark }: { theme: Theme; dark: boolean; setDark: (v:boolean)=>void }) {
-  const [prefs, setPrefs] = useState<any>({ language: "English", region: "Kenya", currency: "KES", fulfillment: "Both", recommendations: true, recentlyViewed: true, recommendedListings: true, autoplay: true, highQuality: true, dataSaver: false, confirmDelete: true, confirmSignOut: true });
+function SettingsPreferencesScreen({ theme, dark, setDark, auth }: { theme: Theme; dark: boolean; setDark: (v:boolean)=>void; auth: AuthPayload | null }) {
+  const defaults = {
+    theme: "system",
+    language: "English",
+    region: "Kenya",
+    currency: "KES",
+    fulfillment: "Both",
+  };
+  const notificationDefaults = {
+    allow: true, sound: true, vibration: true, messages: true, purchases: true,
+    orders: true, listings: true, cart: true, seller: true, security: true, account: true,
+  };
+  const [prefs, setPrefs] = useState<any>(defaults);
   const [picker, setPicker] = useState<"language"|"country"|"currency"|null>(null);
-  useEffect(() => { AsyncStorage.getItem("marketplace_settings").then(raw => { if (raw) { const loaded = JSON.parse(raw); setPrefs((p:any) => ({ ...p, ...loaded })); setMarketplaceLanguage(loaded.language || "English"); } }).catch(() => {}); }, []);
-  const update = (patch: any) => { const next = { ...prefs, ...patch }; setPrefs(next); if (patch.language) setMarketplaceLanguage(patch.language); void AsyncStorage.setItem("marketplace_settings", JSON.stringify(next)); };
+  const [resetting, setResetting] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem("marketplace_settings").then(raw => {
+      if (!raw) return;
+      try {
+        const loaded = JSON.parse(raw);
+        setPrefs((p:any) => ({ ...p, ...loaded }));
+        setMarketplaceLanguage(loaded.language || "English");
+      } catch {}
+    }).catch(() => {});
+  }, []);
+
+  const update = async (patch: any) => {
+    const next = { ...prefs, ...patch };
+    setPrefs(next);
+    if (patch.language) setMarketplaceLanguage(patch.language);
+    if (patch.currency) {
+      ACTIVE_CURRENCY = String(patch.currency).toUpperCase();
+      REQUEST_CURRENCY_RENDER?.();
+      await refreshCurrencyRates(ACTIVE_CURRENCY, true);
+    }
+    await AsyncStorage.setItem("marketplace_settings", JSON.stringify(next));
+  };
+
   const languages = ["English", "Swahili", "French", "Spanish", "Portuguese", "Arabic", "German", "Italian", "Chinese (Simplified)", "Japanese", "Korean", "Hindi", "Turkish", "Dutch", "Russian"];
+  const languageNames: Record<string, string> = {
+    English: "English", Swahili: "Kiswahili", French: "Français", Spanish: "Español", Portuguese: "Português", Arabic: "العربية", German: "Deutsch",
+    Italian: "Italiano", "Chinese (Simplified)": "简体中文", Japanese: "日本語", Korean: "한국어", Hindi: "हिन्दी", Turkish: "Türkçe", Dutch: "Nederlands", Russian: "Русский",
+  };
   const countries = [
     ["Kenya","KES"],["Uganda","UGX"],["Tanzania","TZS"],["Rwanda","RWF"],["Ethiopia","ETB"],["Nigeria","NGN"],["Ghana","GHS"],["South Africa","ZAR"],["United States","USD"],["Canada","CAD"],["United Kingdom","GBP"],["Australia","AUD"],["India","INR"],["China","CNY"],["Japan","JPY"],["United Arab Emirates","AED"],["Saudi Arabia","SAR"],["Germany","EUR"],["France","EUR"],["Italy","EUR"],["Spain","EUR"]
   ];
   const currencies = ["KES","UGX","TZS","RWF","ETB","NGN","GHS","ZAR","USD","CAD","GBP","AUD","INR","CNY","JPY","AED","SAR","EUR"];
   const pickerTitle = picker === "language" ? "Choose language" : picker === "country" ? "Choose country / region" : "Choose currency";
   const pickerOptions = picker === "language" ? languages : picker === "country" ? countries.map(([name]) => name) : currencies;
-  const choose = (value:string) => {
-    if (picker === "language") update({ language: value });
-    if (picker === "country") { const found = countries.find(([name]) => name === value); update({ region: value, currency: found?.[1] || prefs.currency }); }
-    if (picker === "currency") update({ currency: value });
+
+  const choose = async (value:string) => {
+    if (picker === "language") {
+      await update({ language: value });
+    }
+    if (picker === "country") {
+      const found = countries.find(([name]) => name === value);
+      await update({ region: value, currency: found?.[1] || prefs.currency });
+    }
+    if (picker === "currency") {
+      // Fetch fresh rates BEFORE closing the picker so the product grid can
+      // re-render immediately with the newly selected currency.
+      await update({ currency: value });
+    }
     setPicker(null);
   };
-  return <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
-    <SettingsSection theme={theme} title="Appearance"><SettingRow theme={theme} icon={<Moon size={19} color={theme.text}/>} title="Theme" trailing={<View style={{ flexDirection: "row", gap: 5 }}><ChoiceChip theme={theme} label="System" selected={!dark && prefs.theme !== "light"} onPress={() => { setDark(false); update({ theme: "system" }); }} /><ChoiceChip theme={theme} label="Light" selected={!dark && prefs.theme === "light"} onPress={() => { setDark(false); update({ theme: "light" }); }} /><ChoiceChip theme={theme} label="Dark" selected={dark} onPress={() => { setDark(true); update({ theme: "dark" }); }} /></View>} /></SettingsSection>
-    <SettingsSection theme={theme} title="Language"><Pressable onPress={() => setPicker("language")}><SettingRow theme={theme} icon={<Compass size={19} color={theme.text}/>} title="App language" trailing={<View style={{flexDirection:"row",alignItems:"center",gap:6}}><Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.language}</Text><ChevronRight size={17} color={theme.muted}/></View>} /></Pressable></SettingsSection>
-    <SettingsSection theme={theme} title="Country & Currency">
-      <Pressable onPress={() => setPicker("country")}><SettingRow theme={theme} icon={<MapPin size={19} color={theme.text}/>} title="Country / Region" trailing={<View style={{flexDirection:"row",alignItems:"center",gap:6}}><Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.region}</Text><ChevronRight size={17} color={theme.muted}/></View>} /></Pressable>
-      <Pressable onPress={() => setPicker("currency")}><SettingRow theme={theme} icon={<Tag size={19} color={theme.text}/>} title="Currency" subtitle="Used for displaying marketplace prices." trailing={<View style={{flexDirection:"row",alignItems:"center",gap:6}}><Text style={[styles.preferenceValue,{color:theme.accent}]}>{prefs.currency}</Text><ChevronRight size={17} color={theme.muted}/></View>} /></Pressable>
-    </SettingsSection>
-    <SettingsSection theme={theme} title="Marketplace Preferences"><ChoiceRow theme={theme} title="Preferred fulfillment" options={["Pickup","Delivery","Both"]} value={prefs.fulfillment} onChange={(v)=>update({fulfillment:v})} /><PreferenceSwitch theme={theme} title="Personalized recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})} /><PreferenceSwitch theme={theme} title="Recently viewed items" value={prefs.recentlyViewed} onValueChange={(v)=>update({recentlyViewed:v})} /><PreferenceSwitch theme={theme} title="Show recommended listings" value={prefs.recommendedListings} onValueChange={(v)=>update({recommendedListings:v})} /></SettingsSection>
-    <SettingsSection theme={theme} title="Media & Data"><PreferenceSwitch theme={theme} title="Autoplay listing videos" value={prefs.autoplay} onValueChange={(v)=>update({autoplay:v})} /><PreferenceSwitch theme={theme} title="Load high-quality images" value={prefs.highQuality} onValueChange={(v)=>update({highQuality:v})} /><PreferenceSwitch theme={theme} title="Data saver mode" value={prefs.dataSaver} onValueChange={(v)=>update({dataSaver:v})} /><Pressable onPress={() => Alert.alert("Clear cached data", "No separate app cache is currently exposed by the existing storage system.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><RotateCcw size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Clear cached data</Text></Pressable></SettingsSection>
-    <SettingsSection theme={theme} title="App Behavior"><PreferenceSwitch theme={theme} title="Confirm before deleting a listing" value={prefs.confirmDelete} onValueChange={(v)=>update({confirmDelete:v})} /><PreferenceSwitch theme={theme} title="Confirm before signing out" value={prefs.confirmSignOut} onValueChange={(v)=>update({confirmSignOut:v})} /><Pressable onPress={() => Alert.alert("Reset app preferences", "Reset all locally stored Marketplace preferences?", [{text:"Cancel",style:"cancel"},{text:"Reset",style:"destructive",onPress:async()=>{await AsyncStorage.removeItem("marketplace_settings");setPrefs({ language:"English",region:"Kenya",currency:"KES",fulfillment:"Both",recommendations:true,recentlyViewed:true,recommendedListings:true,autoplay:true,highQuality:true,dataSaver:false,confirmDelete:true,confirmSignOut:true });setDark(false);setMarketplaceLanguage("English");}}])} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><RotateCcw size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Reset app preferences</Text></Pressable></SettingsSection>
+
+  const resetPreferences = async () => {
+    if (resetting) return;
+
+    // Start the visual state immediately. A short minimum duration keeps
+    // the loading state visible even when AsyncStorage resolves instantly.
+    setResetting(true);
+    const startedAt = Date.now();
+
+    const privacyDefaults = {
+      profileVisibility: true,
+      contact: true,
+      activity: true,
+    };
+
+    try {
+      await Promise.all([
+        AsyncStorage.setItem("marketplace_settings", JSON.stringify(defaults)),
+        AsyncStorage.setItem("marketplace_notification_preferences", JSON.stringify(notificationDefaults)),
+        AsyncStorage.setItem("marketplace_privacy", JSON.stringify(privacyDefaults)),
+      ]);
+
+      // Keep the server-side privacy preferences in sync when the user is
+      // signed in, so reopening Security & Privacy does not restore the old values.
+      if (auth?.access) {
+        try {
+          await apiRequest("/api/auth/preferences/", {
+            method: "PATCH",
+            body: JSON.stringify({ settings: privacyDefaults }),
+          }, auth);
+        } catch {
+          // Local reset still succeeds if the server is temporarily unavailable.
+        }
+      }
+
+      setPrefs({ ...defaults });
+      setDark(false);
+      setMarketplaceLanguage("English");
+      ACTIVE_CURRENCY = "KES";
+      await refreshCurrencyRates("KES");
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < 800) {
+        await new Promise(resolve => setTimeout(resolve, 800 - elapsed));
+      }
+
+      Alert.alert("Preferences reset", "All Marketplace preferences have been restored to their defaults.");
+    } catch {
+      Alert.alert("Reset failed", "We couldn't restore your preferences. Please try again.");
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const settingCard = (children: React.ReactNode) => (
+    <View style={{ backgroundColor: theme.card, borderColor: theme.border, borderWidth: 1, borderRadius: 22, overflow: "hidden", marginBottom: 16 }}>
+      {children}
+    </View>
+  );
+
+  const settingButton = (icon: React.ReactNode, title: string, subtitle: string, onPress: () => void, value?: string) => (
+    <Pressable onPress={onPress} style={({pressed}) => ({ flexDirection:"row", alignItems:"center", gap:12, padding:14, minHeight:70, opacity: pressed ? .78 : 1 })}>
+      <View style={{ width:42, height:42, borderRadius:14, backgroundColor:theme.isDark ? "rgba(96,165,250,.12)" : "#EFF6FF", alignItems:"center", justifyContent:"center" }}>{icon}</View>
+      <View style={{flex:1,minWidth:0}}>
+        <Text style={{fontSize:13,fontWeight:"900",color:theme.text}}>{title}</Text>
+        <Text style={{fontSize:11,lineHeight:16,color:theme.muted,marginTop:3}}>{subtitle}</Text>
+      </View>
+      {value && <Text style={{fontSize:12,fontWeight:"900",color:theme.accent}}>{value}</Text>}
+      <ChevronRight size={17} color={theme.muted}/>
+    </Pressable>
+  );
+
+  return <ScreenScroll theme={theme} contentStyle={{ paddingHorizontal: 14, paddingBottom: 120 }}>
+    <View style={{ marginBottom:16, padding:18, borderRadius:24, backgroundColor:theme.isDark ? "#18233D" : "#EEF4FF", borderWidth:1, borderColor:theme.isDark ? "#26395F" : "#D8E6FF" }}>
+      <View style={{flexDirection:"row",alignItems:"center",gap:12}}>
+        <View style={{width:46,height:46,borderRadius:16,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"}}><Settings size={23} color="#fff"/></View>
+        <View style={{flex:1}}>
+          <Text style={{fontSize:18,fontWeight:"900",color:theme.text,letterSpacing:-.3}}>Make Marketplace yours</Text>
+          <Text style={{fontSize:11.5,lineHeight:17,color:theme.muted,marginTop:3}}>Control how the app looks, what you see and where you shop.</Text>
+        </View>
+      </View>
+    </View>
+
+    <Text style={[styles.settingsSectionTitle,{color:theme.text}]}>APPEARANCE</Text>
+    <SettingRow theme={theme} icon={<Moon size={19} color={theme.text}/>} title="Theme" subtitle="Choose how Marketplace looks on your device." trailing={<View style={{flexDirection:"row",gap:5}}><ChoiceChip theme={theme} label="System" selected={!dark && prefs.theme !== "light"} onPress={() => { setDark(false); update({theme:"system"}); }} /><ChoiceChip theme={theme} label="Light" selected={!dark && prefs.theme === "light"} onPress={() => { setDark(false); update({theme:"light"}); }} /><ChoiceChip theme={theme} label="Dark" selected={dark} onPress={() => { setDark(true); update({theme:"dark"}); }} /></View>} />
+
+    <Text style={[styles.settingsSectionTitle,{color:theme.text}]}>LANGUAGE & REGION</Text>
+    {settingCard(<>
+      {settingButton(<Compass size={19} color={theme.text}/>, "App language", "Language used across the Marketplace interface.", () => setPicker("language"), prefs.language)}
+      <View style={{height:1,backgroundColor:theme.border}}/>
+      {settingButton(<MapPin size={19} color={theme.text}/>, "Country / region", "Used to keep your Marketplace location preference.", () => setPicker("country"), prefs.region)}
+      <View style={{height:1,backgroundColor:theme.border}}/>
+      {settingButton(<Tag size={19} color={theme.text}/>, "Currency", CURRENCY_RATES_UPDATED_AT ? `Prices convert using recent market rates · updated ${new Date(CURRENCY_RATES_UPDATED_AT).toLocaleString(ACTIVE_LOCALE, { dateStyle: "medium", timeStyle: "short" })}.` : "Prices convert using recent market rates.", () => setPicker("currency"), prefs.currency)}
+    </>)}
+
+    <Text style={[styles.settingsSectionTitle,{color:theme.text}]}>SHOPPING</Text>
+    {settingCard(<>
+      <View style={{padding:14,paddingBottom:10}}>
+        <View style={{flexDirection:"row",alignItems:"center",gap:12}}>
+          <View style={{width:42,height:42,borderRadius:14,backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF",alignItems:"center",justifyContent:"center"}}><ShoppingBag size={19} color={theme.text}/></View>
+          <View style={{flex:1}}><Text style={{fontSize:13,fontWeight:"900",color:theme.text}}>Preferred fulfillment</Text><Text style={{fontSize:11,lineHeight:16,color:theme.muted,marginTop:3}}>Preselect your usual way to receive orders.</Text></View>
+        </View>
+        <View style={{flexDirection:"row",gap:8,marginTop:12}}>{["Pickup","Delivery","Both"].map(o => <ChoiceChip key={o} theme={theme} label={o} selected={prefs.fulfillment===o} onPress={()=>update({fulfillment:o})}/>)}</View>
+      </View>
+    </>)}
+
+    <Pressable
+      disabled={resetting}
+      onPress={() => { void resetPreferences(); }}
+      accessibilityRole="button"
+      accessibilityLabel={resetting ? "Resetting preferences" : "Reset preferences"}
+      style={({pressed})=>({height:50,borderRadius:16,borderWidth:1,borderColor:theme.border,backgroundColor:theme.card,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:8,marginBottom:18,opacity:resetting ? .7 : (pressed?.75:1)})}
+    >
+      {resetting ? <ActivityIndicator size="small" color={theme.accent}/> : <RotateCcw size={17} color={theme.muted}/>}
+      <Text style={{fontSize:12,fontWeight:"900",color:theme.text}}>{resetting ? "Resetting…" : "Reset preferences"}</Text>
+    </Pressable>
+    <Text style={{fontSize:10.5,lineHeight:16,color:theme.muted,textAlign:"center",paddingHorizontal:18}}>Your choices are saved on this device and restored when you return to the app.</Text>
+
     <Modal visible={picker !== null} transparent animationType="slide" onRequestClose={() => setPicker(null)}>
       <View style={{flex:1,backgroundColor:"rgba(0,0,0,.48)",justifyContent:"flex-end"}}>
         <View style={{maxHeight:"82%",backgroundColor:theme.card,borderTopLeftRadius:24,borderTopRightRadius:24,padding:18}}>
           <View style={{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12}}><Text style={{fontSize:19,fontWeight:"900",color:theme.text}}>{pickerTitle}</Text><Pressable onPress={()=>setPicker(null)} style={styles.topIcon}><X size={20} color={theme.text}/></Pressable></View>
-          <ScrollView showsVerticalScrollIndicator={false}>{pickerOptions.map((option:string)=><Pressable key={option} onPress={()=>choose(option)} style={{paddingVertical:14,paddingHorizontal:12,borderBottomWidth:1,borderBottomColor:theme.border,flexDirection:"row",alignItems:"center",justifyContent:"space-between"}}><Text style={{fontSize:15,fontWeight:"700",color:theme.text}}>{option}</Text>{((picker==="language"&&prefs.language===option)||(picker==="country"&&prefs.region===option)||(picker==="currency"&&prefs.currency===option))&&<Check size={18} color={BUTTON_BLUE}/>}</Pressable>)}</ScrollView>
+          <ScrollView showsVerticalScrollIndicator={false}>{pickerOptions.map((option:string)=><Pressable key={option} onPress={()=>choose(option)} style={{paddingVertical:14,paddingHorizontal:12,borderBottomWidth:1,borderBottomColor:theme.border,flexDirection:"row",alignItems:"center",justifyContent:"space-between"}}><Text style={{fontSize:15,fontWeight:"700",color:theme.text}}>{picker === "language" ? languageNames[option] || option : option}</Text>{((picker==="language"&&prefs.language===option)||(picker==="country"&&prefs.region===option)||(picker==="currency"&&prefs.currency===option))&&<Check size={18} color={BUTTON_BLUE}/>}</Pressable>)}</ScrollView>
         </View>
       </View>
     </Modal>
   </ScreenScroll>;
 }
-function SecurityPrivacyScreen({ theme, auth, onSignOut }: { theme: Theme; auth: AuthPayload | null; onSignOut: () => void }) {
-  const [prefs, setPrefs] = useState<any>({ profileVisibility: true, contact: true, activity: true, recommendations: true, sharing: false });
-  useEffect(() => { AsyncStorage.getItem("marketplace_privacy").then(raw => { if(raw) setPrefs((p:any)=>({...p,...JSON.parse(raw)})); }).catch(()=>{}); }, []);
-  const update=(patch:any)=>{const next={...prefs,...patch};setPrefs(next);void AsyncStorage.setItem("marketplace_privacy",JSON.stringify(next));};
-  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}>
-    <SettingsSection theme={theme} title="Account Security"><PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.text}/>} title="Change password" description="Use the existing password recovery flow." onPress={() => Alert.alert("Change password", "Password change requires backend support. You can use Forgot Password from the login screen while the account endpoint is unavailable.")} /><PreferenceActionRow theme={theme} icon={<RotateCcw size={18} color={theme.text}/>} title="Forgot / reset password" description="Start the existing recovery flow." onPress={() => Alert.alert("Password recovery", "Sign out and use Forgot Password from the existing login screen.")} /><PreferenceActionRow theme={theme} icon={<Check size={18} color={theme.text}/>} title="Google account connection" description={"Google authentication is configured through the existing OAuth flow."} /><PreferenceActionRow theme={theme} icon={<LogOut size={18} color={theme.text}/>} title="Sign out of this device" onPress={onSignOut} /><PreferenceActionRow theme={theme} icon={<Users size={18} color={theme.text}/>} title="Sign out of all devices" description="No backend endpoint is exposed for this operation." onPress={() => Alert.alert("Unavailable", "Sign out of all devices is not available because the current backend does not expose that endpoint.")} /></SettingsSection>
-    <SettingsSection theme={theme} title="Privacy"><PreferenceSwitch theme={theme} title="Profile visibility" value={prefs.profileVisibility} onValueChange={(v)=>update({profileVisibility:v})} /><PreferenceSwitch theme={theme} title="Who can contact me" value={prefs.contact} onValueChange={(v)=>update({contact:v})} /><PreferenceSwitch theme={theme} title="Show online / activity status" value={prefs.activity} onValueChange={(v)=>update({activity:v})} /><PreferenceSwitch theme={theme} title="Personalized recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})} /><PreferenceSwitch theme={theme} title="Data sharing / preferences" value={prefs.sharing} onValueChange={(v)=>update({sharing:v})} /></SettingsSection>
-    <SettingsSection theme={theme} title="Account Management"><PreferenceActionRow theme={theme} icon={<Share2 size={18} color={theme.text}/>} title="Download / export account data" description="Backend export endpoint is not currently available." onPress={() => Alert.alert("Unavailable", "Account data export is not currently supported by the backend." )} /><PreferenceActionRow theme={theme} icon={<Trash2 size={18} color="#D33D3D"/>} title="Delete account" description="This is permanent and destructive." destructive onPress={() => Alert.alert("Delete account", "Deleting your account is permanent. No deletion endpoint is currently available, so nothing will be changed.", [{text:"Cancel",style:"cancel"},{text:"I understand",style:"destructive"}])} /></SettingsSection>
-  </ScreenScroll>;
+function SecurityPrivacyScreen({ theme, auth, onSignOut, onGoogle }: { theme: Theme; auth: AuthPayload | null; onSignOut: () => void; onGoogle: () => void }) {
+  const [prefs, setPrefs] = useState<any>({ profileVisibility: true, contact: true, activity: true });
+  const [busy, setBusy] = useState<string | null>(null);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [resetEmail, setResetEmail] = useState(auth?.user?.email || "");
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    const loadPreferences = async () => {
+      if (auth?.access) {
+        try {
+          const data = await apiRequest("/api/auth/preferences/", {}, auth);
+          const serverPrefs = data?.settings || {};
+          if (active) {
+            setPrefs((p: any) => ({ ...p, ...serverPrefs }));
+            await AsyncStorage.setItem("marketplace_privacy", JSON.stringify({
+              profileVisibility: serverPrefs.profileVisibility,
+              contact: serverPrefs.contact,
+              activity: serverPrefs.activity,
+            }));
+          }
+          return;
+        } catch {
+          // Fall back to the local copy if the server is temporarily unavailable.
+        }
+      }
+      try {
+        const raw = await AsyncStorage.getItem("marketplace_privacy");
+        if (active && raw) setPrefs((p: any) => ({ ...p, ...JSON.parse(raw) }));
+      } catch {}
+    };
+    void loadPreferences();
+    return () => { active = false; };
+  }, [auth?.access]);
+
+  const update = async (patch: any) => {
+    const next = { ...prefs, ...patch };
+    setPrefs(next);
+    await AsyncStorage.setItem("marketplace_privacy", JSON.stringify({
+      profileVisibility: next.profileVisibility,
+      contact: next.contact,
+      activity: next.activity,
+    }));
+    if (auth?.access) {
+      try {
+        await apiRequest("/api/auth/preferences/", {
+          method: "PATCH",
+          body: JSON.stringify({ settings: {
+            profileVisibility: next.profileVisibility,
+            contact: next.contact,
+            activity: next.activity,
+          } }),
+        }, auth);
+      } catch {
+        Alert.alert("Saved on this device", "We couldn't sync this privacy change to the server. It will be retried when you open this page again.");
+      }
+    }
+  };
+
+  const accountEmail = auth?.user?.email || "Your marketplace account";
+
+  const closePasswordModal = () => {
+    setChangePasswordOpen(false);
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+  };
+
+  const changePassword = async () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      Alert.alert("Complete the form", "Enter your current password, a new password, and the confirmation.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert("Passwords don't match", "Make sure the new password and confirmation are identical.");
+      return;
+    }
+    setBusy("change-password");
+    try {
+      await apiRequest("/api/auth/change-password/", {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword, new_password_confirm: confirmPassword }),
+      }, auth);
+      closePasswordModal();
+      Alert.alert("Password changed", "Your password was changed successfully. Please sign in again.", [{ text: "Continue", onPress: onSignOut }]);
+    } catch (error) {
+      Alert.alert("Couldn't change password", error instanceof Error ? error.message : "Please check your current password and try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sendResetLink = async () => {
+    if (!resetEmail.trim()) {
+      Alert.alert("Email required", "Enter the email address linked to your Marketplace account.");
+      return;
+    }
+    setBusy("reset-password");
+    try {
+      await apiRequest("/api/auth/password-reset/", {
+        method: "POST",
+        body: JSON.stringify({ email: resetEmail.trim().toLowerCase() }),
+      });
+      setResetPasswordOpen(false);
+      Alert.alert("Check your email", "If an account exists for this address, Marketplace has sent password-reset instructions.");
+    } catch (error) {
+      Alert.alert("Couldn't start recovery", error instanceof Error ? error.message : "Please try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteAccount = async () => {
+    if (deleteConfirmation.trim().toUpperCase() !== "DELETE") {
+      Alert.alert("Confirmation required", 'Type DELETE to permanently remove your Marketplace account.');
+      return;
+    }
+    setBusy("delete-account");
+    try {
+      await apiRequest("/api/auth/delete-account/", {
+        method: "POST",
+        body: JSON.stringify({ confirmation: "DELETE", password: deletePassword || undefined }),
+      }, auth);
+      setDeleteAccountOpen(false);
+      Alert.alert("Account deleted", "Your Marketplace account has been permanently deleted.", [{ text: "OK", onPress: onSignOut }]);
+    } catch (error) {
+      Alert.alert("Couldn't delete account", error instanceof Error ? error.message : "Please try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const actionCard = (
+    icon: React.ReactNode,
+    title: string,
+    description: string | undefined,
+    onPress: () => void,
+    options?: { accent?: string; destructive?: boolean; disabled?: boolean }
+  ) => {
+    const accent = options?.accent || theme.accent;
+    return (
+      <Pressable
+        onPress={onPress}
+        disabled={options?.disabled}
+        style={({ pressed }) => [{
+          backgroundColor: theme.card,
+          borderWidth: 1,
+          borderColor: theme.border,
+          borderRadius: 18,
+          padding: 14,
+          marginBottom: 10,
+          flexDirection: "row",
+          alignItems: "center",
+          minHeight: 72,
+          opacity: options?.disabled ? 0.65 : pressed ? 0.86 : 1,
+        }]}
+      >
+        <View style={{ width: 44, height: 44, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: options?.destructive ? "rgba(220,38,38,.08)" : theme.isDark ? "rgba(96,165,250,.12)" : "#EEF4FF", marginRight: 12 }}>
+          {React.cloneElement(icon as React.ReactElement, { color: options?.destructive ? "#DC2626" : accent, size: 20 })}
+        </View>
+        <View style={{ flex: 1, paddingRight: 10 }}>
+          <Text style={{ fontSize: 14, fontWeight: "800", color: options?.destructive ? "#DC2626" : theme.text }}>{title}</Text>
+          {description && <Text style={{ fontSize: 12, lineHeight: 17, color: theme.muted, marginTop: 3 }}>{description}</Text>}
+        </View>
+        {!options?.disabled && <ChevronRight size={18} color={theme.muted} />}
+      </Pressable>
+    );
+  };
+
+  const privacyRow = (icon: React.ReactNode, title: string, description: string, value: boolean, onValueChange: (value: boolean) => void) => (
+    <View style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, borderRadius: 18, padding: 14, marginBottom: 10, flexDirection: "row", alignItems: "center" }}>
+      <View style={{ width: 42, height: 42, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: theme.isDark ? "rgba(96,165,250,.12)" : "#F1F6FF", marginRight: 12 }}>
+        {React.cloneElement(icon as React.ReactElement, { color: theme.accent, size: 19 })}
+      </View>
+      <View style={{ flex: 1, paddingRight: 10 }}>
+        <Text style={{ fontSize: 14, fontWeight: "800", color: theme.text }}>{title}</Text>
+        <Text style={{ fontSize: 12, lineHeight: 16, color: theme.muted, marginTop: 3 }}>{description}</Text>
+      </View>
+      <Switch value={value} onValueChange={onValueChange} disabled={busy === "privacy"} thumbColor={value ? "#fff" : "#f4f3f4"} trackColor={{ false: theme.isDark ? "#3A3D47" : "#D9DEE8", true: theme.accent }} />
+    </View>
+  );
+
+  const field = (label: string, value: string, onChangeText: (value: string) => void, secure = false) => (
+    <View style={{ marginBottom: 13 }}>
+      <Text style={{ color: theme.text, fontSize: 12, fontWeight: "800", marginBottom: 6 }}>{label}</Text>
+      <TextInput value={value} onChangeText={onChangeText} secureTextEntry={secure} autoCapitalize="none" style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.background, color: theme.text, borderRadius: 13, paddingHorizontal: 13, paddingVertical: 11, fontSize: 14 }} placeholderTextColor={theme.muted} />
+    </View>
+  );
+
+  const modal = (visible: boolean, title: string, children: React.ReactNode, onClose: () => void) => (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,.38)", justifyContent: "flex-end" }}>
+        <View style={{ backgroundColor: theme.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 28, maxHeight: "88%" }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+            <Text style={{ color: theme.text, fontSize: 19, fontWeight: "900" }}>{title}</Text>
+            <Pressable onPress={onClose} style={{ width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: theme.background }}><X size={18} color={theme.text} /></Pressable>
+          </View>
+          {children}
+        </View>
+      </View>
+    </Modal>
+  );
+
+  return (
+    <>
+      <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
+        <View style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, borderRadius: 22, padding: 18, marginBottom: 22 }}>
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            <View style={{ width: 48, height: 48, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: theme.isDark ? "rgba(96,165,250,.14)" : "#EEF4FF", marginRight: 13 }}><ShieldCheck size={24} color={theme.accent} strokeWidth={2.1} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 17, fontWeight: "900", color: theme.text }}>Account security</Text>
+              <Text style={{ fontSize: 12, color: theme.muted, marginTop: 3 }} numberOfLines={1}>{accountEmail}</Text>
+            </View>
+            <CheckCircle2 size={22} color="#16A34A" strokeWidth={2.2} />
+          </View>
+          <Text style={{ fontSize: 12, lineHeight: 17, color: theme.muted, marginTop: 13 }}>Manage your password, recovery options, sign-in provider, and privacy controls from one place.</Text>
+        </View>
+
+        <Text style={[styles.settingsSectionTitle, { color: theme.text, marginBottom: 10 }]}>SIGN-IN & SECURITY</Text>
+        {actionCard(<LockKeyhole />, "Change password", "Update your password using your current password.", () => setChangePasswordOpen(true))}
+        {actionCard(<RotateCcw />, "Reset password", "Send a secure recovery link to your email.", () => { setResetEmail(auth?.user?.email || ""); setResetPasswordOpen(true); })}
+        {actionCard(<CheckCircle2 />, "Google account", "Google authentication is available through Marketplace sign-in.", onGoogle, { accent: "#16A34A" })}
+        {actionCard(<LogOut />, "Sign out", "Sign out of this device and return to the profile screen.", onSignOut, { accent: "#DC2626", destructive: true })}
+
+        <Text style={[styles.settingsSectionTitle, { color: theme.text, marginTop: 10, marginBottom: 10 }]}>PRIVACY</Text>
+        {privacyRow(<Eye />, "Profile visibility", "Allow other members to view your marketplace profile.", !!prefs.profileVisibility, (v) => { void update({ profileVisibility: v }); })}
+        {privacyRow(<MessageCircle />, "Who can contact me", "Control whether other members can start conversations with you.", !!prefs.contact, (v) => { void update({ contact: v }); })}
+        {privacyRow(<Zap />, "Activity status", "Show when you were recently active in Marketplace.", !!prefs.activity, (v) => { void update({ activity: v }); })}
+
+        <Text style={[styles.settingsSectionTitle, { color: theme.text, marginTop: 10, marginBottom: 10 }]}>ACCOUNT</Text>
+        {actionCard(<Trash2 />, "Delete account", "Permanently delete your Marketplace account and its associated data.", () => { setDeletePassword(""); setDeleteConfirmation(""); setDeleteAccountOpen(true); }, { accent: "#DC2626", destructive: true })}
+        <View style={{ flexDirection: "row", alignItems: "flex-start", backgroundColor: theme.isDark ? "rgba(148,163,184,.08)" : "#F8FAFC", borderRadius: 16, padding: 13, marginTop: 4 }}>
+          <ShieldCheck size={17} color={theme.muted} style={{ marginTop: 1, marginRight: 9 }} />
+          <Text style={{ flex: 1, fontSize: 11, lineHeight: 16, color: theme.muted }}>Privacy settings sync to your Marketplace account when you are signed in. Password and account actions are handled by the backend.</Text>
+        </View>
+      </ScreenScroll>
+
+      {modal(changePasswordOpen, "Change password", <>
+        {field("Current password", currentPassword, setCurrentPassword, true)}
+        {field("New password", newPassword, setNewPassword, true)}
+        {field("Confirm new password", confirmPassword, setConfirmPassword, true)}
+        <Pressable disabled={busy === "change-password"} onPress={() => void changePassword()} style={{ backgroundColor: theme.accent, borderRadius: 14, paddingVertical: 13, alignItems: "center", opacity: busy === "change-password" ? 0.65 : 1 }}><Text style={{ color: "#fff", fontSize: 14, fontWeight: "900" }}>{busy === "change-password" ? "Changing…" : "Change password"}</Text></Pressable>
+      </>, closePasswordModal)}
+
+      {modal(resetPasswordOpen, "Reset password", <>
+        <Text style={{ color: theme.muted, fontSize: 13, lineHeight: 18, marginBottom: 14 }}>We'll send a secure recovery link to the email address on your Marketplace account.</Text>
+        {field("Email address", resetEmail, setResetEmail)}
+        <Pressable disabled={busy === "reset-password"} onPress={() => void sendResetLink()} style={{ backgroundColor: theme.accent, borderRadius: 14, paddingVertical: 13, alignItems: "center", opacity: busy === "reset-password" ? 0.65 : 1 }}><Text style={{ color: "#fff", fontSize: 14, fontWeight: "900" }}>{busy === "reset-password" ? "Sending…" : "Send reset link"}</Text></Pressable>
+      </>, () => setResetPasswordOpen(false))}
+
+      {modal(deleteAccountOpen, "Delete account", <>
+        <View style={{ backgroundColor: "rgba(220,38,38,.08)", borderRadius: 14, padding: 13, marginBottom: 15 }}><Text style={{ color: "#DC2626", fontSize: 12, lineHeight: 17, fontWeight: "700" }}>This action is permanent. Your Marketplace account will be deleted.</Text></View>
+        {field("Password (optional for accounts without a password)", deletePassword, setDeletePassword, true)}
+        {field('Type "DELETE" to confirm', deleteConfirmation, setDeleteConfirmation)}
+        <Pressable disabled={busy === "delete-account"} onPress={() => void deleteAccount()} style={{ backgroundColor: "#DC2626", borderRadius: 14, paddingVertical: 13, alignItems: "center", opacity: busy === "delete-account" ? 0.65 : 1 }}><Text style={{ color: "#fff", fontSize: 14, fontWeight: "900" }}>{busy === "delete-account" ? "Deleting…" : "Delete my account"}</Text></Pressable>
+      </>, () => setDeleteAccountOpen(false))}
+    </>
+  );
 }
 
 function NotificationPreferencesScreen({ theme }: { theme: Theme }) {
-  const defaults={allow:true,sound:true,vibration:true,messages:true,purchases:true,orders:true,listings:true,cart:true,seller:true,security:true,account:true,promotions:false,recommendations:true,offers:false,quiet:false};
-  const [prefs,setPrefs]=useState<any>(defaults);
-  useEffect(()=>{AsyncStorage.getItem("marketplace_notification_preferences").then(raw=>{if(raw)setPrefs((p:any)=>({...p,...JSON.parse(raw)}));}).catch(()=>{});},[]);
-  const update=(patch:any)=>{const next={...prefs,...patch};setPrefs(next);void AsyncStorage.setItem("marketplace_notification_preferences",JSON.stringify(next));};
-  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><SettingsSection theme={theme} title="Global"><PreferenceSwitch theme={theme} title="Allow notifications" value={prefs.allow} onValueChange={(v)=>update({allow:v})}/><PreferenceSwitch theme={theme} title="Notification sound" value={prefs.sound} onValueChange={(v)=>update({sound:v})}/><PreferenceSwitch theme={theme} title="Notification vibration" value={prefs.vibration} onValueChange={(v)=>update({vibration:v})}/></SettingsSection><SettingsSection theme={theme} title="Marketplace Activity"><PreferenceSwitch theme={theme} title="New messages" value={prefs.messages} onValueChange={(v)=>update({messages:v})}/><PreferenceSwitch theme={theme} title="Purchase requests" value={prefs.purchases} onValueChange={(v)=>update({purchases:v})}/><PreferenceSwitch theme={theme} title="Order updates" value={prefs.orders} onValueChange={(v)=>update({orders:v})}/><PreferenceSwitch theme={theme} title="Listing activity" value={prefs.listings} onValueChange={(v)=>update({listings:v})}/><PreferenceSwitch theme={theme} title="Cart updates" value={prefs.cart} onValueChange={(v)=>update({cart:v})}/><PreferenceSwitch theme={theme} title="Seller activity" value={prefs.seller} onValueChange={(v)=>update({seller:v})}/></SettingsSection><SettingsSection theme={theme} title="Security"><PreferenceSwitch theme={theme} title="Login / security alerts" value={prefs.security} onValueChange={(v)=>update({security:v})}/><PreferenceSwitch theme={theme} title="Account changes" value={prefs.account} onValueChange={(v)=>update({account:v})}/></SettingsSection><SettingsSection theme={theme} title="Marketing"><PreferenceSwitch theme={theme} title="Promotions" value={prefs.promotions} onValueChange={(v)=>update({promotions:v})}/><PreferenceSwitch theme={theme} title="Marketplace recommendations" value={prefs.recommendations} onValueChange={(v)=>update({recommendations:v})}/><PreferenceSwitch theme={theme} title="Special offers" value={prefs.offers} onValueChange={(v)=>update({offers:v})}/></SettingsSection><SettingsSection theme={theme} title="Quiet Hours"><PreferenceSwitch theme={theme} title="Enable quiet hours" value={prefs.quiet} onValueChange={(v)=>update({quiet:v})}/><Text style={[styles.preferenceDescription,{color:theme.muted,padding:14}]}>Start and end time controls can be connected to the Android notification scheduler when one is available; no second notification system is introduced here.</Text></SettingsSection><Pressable onPress={()=>Alert.alert("Mark all as read","This action is supported by the existing notifications feed when authenticated.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><Check size={18} color={theme.accent}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Mark all notifications as read</Text></Pressable><Pressable onPress={()=>Alert.alert("Notification history","History clearing is only available if the backend/feed exposes that operation.")} style={[styles.preferenceAction,{backgroundColor:theme.card,borderColor:theme.border}]}><Trash2 size={18} color={theme.text}/><Text style={[styles.preferenceActionText,{color:theme.text}]}>Clear notification history</Text></Pressable></ScreenScroll>;
+  const defaults = { allow: true, sound: true, vibration: true, messages: true, purchases: true, orders: true, listings: true, cart: true, seller: true, security: true, account: true };
+  const [prefs, setPrefs] = useState<any>(defaults);
+  useEffect(() => {
+    AsyncStorage.getItem("marketplace_notification_preferences").then(raw => {
+      if (raw) setPrefs((p: any) => ({ ...p, ...JSON.parse(raw) }));
+    }).catch(() => {});
+  }, []);
+
+  const update = (patch: any) => {
+    const next = { ...prefs, ...patch };
+    setPrefs(next);
+    void AsyncStorage.setItem("marketplace_notification_preferences", JSON.stringify(next));
+  };
+
+  const row = (icon: React.ReactNode, title: string, description: string, key: string, disabled = false) => (
+    <View style={{ flexDirection: "row", alignItems: "center", paddingVertical: 14, opacity: disabled ? 0.5 : 1 }}>
+      <View style={{ width: 42, height: 42, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: theme.isDark ? "rgba(96,165,250,.12)" : "#EFF5FF", marginRight: 12 }}>
+        {React.cloneElement(icon as React.ReactElement, { color: theme.accent, size: 19, strokeWidth: 2.1 })}
+      </View>
+      <View style={{ flex: 1, paddingRight: 10 }}>
+        <Text style={{ color: theme.text, fontSize: 14, fontWeight: "800" }}>{title}</Text>
+        <Text style={{ color: theme.muted, fontSize: 11, lineHeight: 15, marginTop: 3 }}>{description}</Text>
+      </View>
+      <Switch
+        value={!!prefs[key]}
+        onValueChange={(v) => update({ [key]: v })}
+        disabled={disabled}
+        trackColor={{ false: theme.isDark ? "#3A3D47" : "#D7DCE7", true: theme.accent }}
+        thumbColor="#FFFFFF"
+      />
+    </View>
+  );
+
+  return (
+    <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
+      <View style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, borderRadius: 22, padding: 18, marginBottom: 22 }}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <View style={{ width: 48, height: 48, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: theme.isDark ? "rgba(96,165,250,.14)" : "#EEF4FF", marginRight: 13 }}>
+            <Bell size={24} color={theme.accent} strokeWidth={2.1} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: theme.text, fontSize: 17, fontWeight: "900" }}>Stay informed</Text>
+            <Text style={{ color: theme.muted, fontSize: 12, lineHeight: 17, marginTop: 3 }}>Choose the marketplace updates that matter to you.</Text>
+          </View>
+        </View>
+        <View style={{ height: 1, backgroundColor: theme.border, marginVertical: 16 }} />
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <View style={{ flex: 1, paddingRight: 12 }}>
+            <Text style={{ color: theme.text, fontSize: 14, fontWeight: "900" }}>Notifications</Text>
+            <Text style={{ color: theme.muted, fontSize: 11, marginTop: 3 }}>{prefs.allow ? "Notifications are enabled" : "Notifications are turned off"}</Text>
+          </View>
+          <Switch value={!!prefs.allow} onValueChange={(v) => update({ allow: v })} trackColor={{ false: theme.isDark ? "#3A3D47" : "#D7DCE7", true: theme.accent }} thumbColor="#FFFFFF" />
+        </View>
+      </View>
+
+      <Text style={[styles.settingsSectionTitle, { color: theme.text, marginBottom: 9 }]}>MARKETPLACE</Text>
+      <View style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, borderRadius: 20, paddingHorizontal: 15, marginBottom: 22 }}>
+        {row(<MessageCircle />, "Messages", "New conversations and replies.", "messages", !prefs.allow)}
+        <View style={{ height: 1, backgroundColor: theme.border }} />
+        {row(<ShoppingBag />, "Orders & requests", "Order updates, purchase requests and confirmations.", "orders", !prefs.allow)}
+        <View style={{ height: 1, backgroundColor: theme.border }} />
+        {row(<Store />, "Seller activity", "Updates about your listings and seller activity.", "seller", !prefs.allow)}
+      </View>
+
+      <Text style={[styles.settingsSectionTitle, { color: theme.text, marginBottom: 9 }]}>SECURITY</Text>
+      <View style={{ backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, borderRadius: 20, paddingHorizontal: 15, marginBottom: 22 }}>
+        {row(<ShieldCheck />, "Security alerts", "Important sign-in and account security notifications.", "security", !prefs.allow)}
+      </View>
+
+      <View style={{ flexDirection: "row", alignItems: "flex-start", backgroundColor: theme.isDark ? "rgba(148,163,184,.08)" : "#F8FAFC", borderRadius: 16, padding: 13 }}>
+        <Bell size={17} color={theme.muted} style={{ marginTop: 1, marginRight: 9 }} />
+        <Text style={{ flex: 1, color: theme.muted, fontSize: 11, lineHeight: 16 }}>Your notification choices are saved on this device. Security alerts may still be required for important account activity.</Text>
+      </View>
+    </ScreenScroll>
+  );
 }
 
 function HelpSupportScreen({ theme, onFAQ, onSafety, onReport, onTerms, onPrivacy }: { theme: Theme; onFAQ:()=>void; onSafety:()=>void; onReport:()=>void; onTerms:()=>void; onPrivacy:()=>void }) {
-  return <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}><SettingsSection theme={theme} title="Help Center"><PreferenceActionRow theme={theme} icon={<MessageCircle size={18} color={theme.text}/>} title="Frequently Asked Questions" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<ShoppingBag size={18} color={theme.text}/>} title="Buying on Marketplace" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<Store size={18} color={theme.text}/>} title="Selling on Marketplace" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<Tag size={18} color={theme.text}/>} title="Making / editing a listing" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<ShoppingBag size={18} color={theme.text}/>} title="Managing orders" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<MessageCircle size={18} color={theme.text}/>} title="Messages" onPress={onFAQ}/><PreferenceActionRow theme={theme} icon={<User size={18} color={theme.text}/>} title="Account & login help" onPress={onFAQ}/></SettingsSection><SettingsSection theme={theme} title="Safety"><PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.text}/>} title="Marketplace safety tips" onPress={onSafety}/><PreferenceActionRow theme={theme} icon={<AlertCircle size={18} color={theme.text}/>} title="Avoiding scams" onPress={onSafety}/><PreferenceActionRow theme={theme} icon={<Check size={18} color={theme.text}/>} title="Safe payments & meetups" onPress={onSafety}/><PreferenceActionRow theme={theme} icon={<AlertCircle size={18} color={theme.text}/>} title="Report suspicious users / listings" onPress={onReport}/></SettingsSection><SettingsSection theme={theme} title="Reporting"><PreferenceActionRow theme={theme} icon={<AlertCircle size={18} color={theme.text}/>} title="Report a listing" onPress={onReport}/><PreferenceActionRow theme={theme} icon={<User size={18} color={theme.text}/>} title="Report a user" onPress={onReport}/><PreferenceActionRow theme={theme} icon={<AlertCircle size={18} color={theme.text}/>} title="Report a problem" onPress={onReport}/></SettingsSection><SettingsSection theme={theme} title="Support"><PreferenceActionRow theme={theme} icon={<MessageCircle size={18} color={theme.text}/>} title="Contact Support" description="No dedicated support endpoint or contact address is configured in the current app." onPress={()=>Alert.alert("Contact Support","A support contact method has not been configured in the existing project.")}/></SettingsSection><SettingsSection theme={theme} title="Legal"><PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.text}/>} title="Terms of Service" onPress={onTerms}/><PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.text}/>} title="Privacy Policy" onPress={onPrivacy}/><PreferenceActionRow theme={theme} icon={<Check size={18} color={theme.text}/>} title="Community / Safety Guidelines" onPress={onSafety}/></SettingsSection><SettingsSection theme={theme} title="App Information"><Text style={[styles.appInfoText,{color:theme.muted}]}>Marketplace mobile application</Text><Text style={[styles.appInfoText,{color:theme.muted}]}>Version: 1.0.0</Text><Text style={[styles.appInfoText,{color:theme.muted}]}>Expo SDK 54 compatible project</Text></SettingsSection></ScreenScroll>;
+  return (
+    <ScreenScroll theme={theme} contentStyle={{paddingBottom:120}}>
+      <View style={[styles.safetyHero,{backgroundColor:theme.card,borderColor:theme.border,marginBottom:18}]}>
+        <View style={[styles.preferenceActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF",width:44,height:44,borderRadius:14}]}>
+          <CircleHelp size={23} color={theme.accent}/>
+        </View>
+        <Text style={[styles.profileAuthTitle,{color:theme.text,marginTop:12}]}>How can we help?</Text>
+        <Text style={[styles.profileAuthText,{color:theme.muted}]}>Find answers about buying, selling, your account and staying safe on Marketplace.</Text>
+      </View>
+
+      <SettingsSection theme={theme} title="HELP CENTER">
+        <PreferenceActionRow theme={theme} icon={<CircleHelp size={18} color={theme.accent}/>} title="Frequently Asked Questions" description="Quick answers to common Marketplace questions." onPress={onFAQ}/>
+        <PreferenceActionRow theme={theme} icon={<ShoppingBag size={18} color={theme.accent}/>} title="Buying & orders" description="Buying an item, cart and order questions." onPress={onFAQ}/>
+        <PreferenceActionRow theme={theme} icon={<Store size={18} color={theme.accent}/>} title="Selling & listings" description="Create, edit and manage your listings." onPress={onFAQ}/>
+        <PreferenceActionRow theme={theme} icon={<User size={18} color={theme.accent}/>} title="Account & login" description="Password, sign-in and account questions." onPress={onFAQ}/>
+      </SettingsSection>
+
+      <SettingsSection theme={theme} title="SAFETY & TRUST">
+        <PreferenceActionRow theme={theme} icon={<ShieldCheck size={18} color={theme.accent}/>} title="Marketplace safety" description="Practical tips for safer buying, selling and meetups." onPress={onSafety}/>
+        <PreferenceActionRow theme={theme} icon={<Flag size={18} color={theme.accent}/>} title="Report a listing or user" description="Report scams, suspicious listings or unsafe behaviour." onPress={onReport}/>
+      </SettingsSection>
+
+      <SettingsSection theme={theme} title="LEGAL">
+        <PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.accent}/>} title="Terms of Service" description="Rules for using Marketplace." onPress={onTerms}/>
+        <PreferenceActionRow theme={theme} icon={<LockKeyhole size={18} color={theme.accent}/>} title="Privacy Policy" description="How account and marketplace information is handled." onPress={onPrivacy}/>
+      </SettingsSection>
+    </ScreenScroll>
+  );
 }
 
 const FAQ_DATA = [
@@ -5118,6 +6347,7 @@ function StoreListingCard({ listing, theme, onPress, onEdit }: { listing: Listin
 function ListingEditorSheet({ theme, auth, listing, onClose, onSaved, onDeleted, onBoosted }: { theme: Theme; auth: AuthPayload; listing: Listing; onClose: () => void; onSaved: (listing: Listing) => void; onDeleted: (id: string) => void; onBoosted: (listing: Listing) => void }) {
   const [title, setTitle] = useState(listing.title);
   const [price, setPrice] = useState(listing.originalPrice != null ? String(listing.originalPrice) : String(Number(listing.price.replace(/[^0-9.]/g, "")) || ""));
+  const [currency, setCurrency] = useState(listing.currency || "KES");
   const [stock, setStock] = useState(String(Number(listing.stock ?? 0)));
   const [description, setDescription] = useState(listing.description || "");
   const [location, setLocation] = useState(listing.location || "");
@@ -5171,7 +6401,7 @@ function ListingEditorSheet({ theme, auth, listing, onClose, onSaved, onDeleted,
     if (!photos.length) { setError("Add at least one photo."); return; }
     setSaving(true); setError("");
     try {
-      const body = { title: title.trim(), description: description.trim(), price: regularPrice, original_price: regularPrice, offer_price: isOnOffer ? salePrice : null, is_on_offer: Boolean(isOnOffer), negotiable, stock: stockValue, is_available: stockValue > 0, location: location.trim(), image_urls: photos };
+      const body = { title: title.trim(), description: description.trim(), price: regularPrice, original_price: regularPrice, offer_price: isOnOffer ? salePrice : null, is_on_offer: Boolean(isOnOffer), currency: currency || "KES", negotiable, stock: stockValue, is_available: stockValue > 0, location: location.trim(), image_urls: photos };
       const data = await apiRequest(`/api/listings/${listing.id}/`, { method: "PATCH", body: JSON.stringify(body) }, auth);
       onSaved(mapApiListing(data));
     } catch (e) { setError(e instanceof Error ? e.message : "Could not save listing changes."); }
@@ -5196,12 +6426,14 @@ function ListingEditorSheet({ theme, auth, listing, onClose, onSaved, onDeleted,
       <View style={[styles.profileSheetHeader, { borderBottomColor: theme.border }]}><View style={{ flex: 1 }}><Text style={[styles.profileSheetTitle, { color: theme.text }]}>Edit listing</Text><Text style={[styles.profileSheetSub, { color: theme.muted }]}>Update details, photos, offers and visibility.</Text></View><Pressable onPress={onClose} disabled={saving || boosting} style={[styles.profileSheetClose, { backgroundColor: theme.isDark ? "#26222F" : "#F1F5F9" }]}><X size={18} color={theme.text} /></Pressable></View>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 16, paddingBottom: 24 }} keyboardShouldPersistTaps="handled">
         <Field label="Listing name" value={title} onChangeText={setTitle} theme={theme} />
-        <Field label="Regular price (KES)" value={price} onChangeText={setPrice} theme={theme} keyboardType="decimal-pad" />
+        <Field label={`Regular price (${currency})`} value={price} onChangeText={setPrice} theme={theme} keyboardType="decimal-pad" />
         <Field label="Items in stock" value={stock} onChangeText={(value) => setStock(value.replace(/[^0-9]/g, ""))} theme={theme} keyboardType="number-pad" placeholder="0" />
         <Field label="Description" value={description} onChangeText={setDescription} theme={theme} multiline />
         <Field label="Location" value={location} onChangeText={setLocation} theme={theme} />
+        <Text style={[styles.fieldLabel,{color:theme.text,marginTop:10}]}>Listing currency</Text>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:8,marginBottom:10}}>{LISTING_CURRENCIES.map(([code,name]) => <Pressable key={code} onPress={()=>setCurrency(code)} style={[styles.optionPill,{borderColor:theme.border,backgroundColor:theme.background},currency===code&&{backgroundColor:theme.accent,borderColor:theme.accent}]}><Text style={[styles.optionPillText,{color:currency===code?"#fff":theme.text}]}>{code}</Text></Pressable>)}</View>
         <Pressable onPress={() => setNegotiable(!negotiable)} style={[styles.listingEditorToggle, { backgroundColor: theme.background, borderColor: theme.border }]}><View><Text style={[styles.storeToolTitle, { color: theme.text }]}>Price is negotiable</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>Let buyers know you are open to offers.</Text></View><View style={[styles.listingToggle, { backgroundColor: negotiable ? BUTTON_BLUE : theme.border }]}><View style={[styles.listingToggleKnob, { transform: [{ translateX: negotiable ? 18 : 2 }] }]} /></View></Pressable>
-        <View style={[styles.listingEditorSection, { borderColor: theme.border, backgroundColor: theme.isDark ? "#17141D" : "#F8FAFF" }]}><View style={styles.listingEditorSectionHeader}><View><Text style={[styles.storeToolTitle, { color: theme.text }]}>Special offer</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>Show a lower promotional price to buyers.</Text></View><Pressable onPress={() => setIsOnOffer(!isOnOffer)} style={[styles.listingToggle, { backgroundColor: isOnOffer ? "#16A34A" : theme.border }]}><View style={[styles.listingToggleKnob, { transform: [{ translateX: isOnOffer ? 18 : 2 }] }]} /></Pressable></View>{isOnOffer && <Field label="Offer price (KES)" value={offerPrice} onChangeText={setOfferPrice} theme={theme} keyboardType="decimal-pad" />}</View>
+        <View style={[styles.listingEditorSection, { borderColor: theme.border, backgroundColor: theme.isDark ? "#17141D" : "#F8FAFF" }]}><View style={styles.listingEditorSectionHeader}><View><Text style={[styles.storeToolTitle, { color: theme.text }]}>Special offer</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>Show a lower promotional price to buyers.</Text></View><Pressable onPress={() => setIsOnOffer(!isOnOffer)} style={[styles.listingToggle, { backgroundColor: isOnOffer ? "#16A34A" : theme.border }]}><View style={[styles.listingToggleKnob, { transform: [{ translateX: isOnOffer ? 18 : 2 }] }]} /></Pressable></View>{isOnOffer && <Field label={`Offer price (${currency})`} value={offerPrice} onChangeText={setOfferPrice} theme={theme} keyboardType="decimal-pad" />}</View>
         <View style={[styles.listingEditorSection, { borderColor: theme.border, backgroundColor: theme.isDark ? "#17141D" : "#F8FAFF" }]}><View style={styles.listingEditorSectionHeader}><View style={{ flex: 1 }}><Text style={[styles.storeToolTitle, { color: theme.text }]}>Photos</Text><Text style={[styles.storeToolText, { color: theme.muted }]}>First photo is your cover. Rearrange with the arrows.</Text></View><Pressable onPress={() => void addPhotos()} disabled={isUploading || saving} style={[styles.profileBlueButton, { backgroundColor: BUTTON_BLUE, marginBottom: 0, opacity: isUploading || saving ? 0.7 : 1 }]}>{isUploading ? <ActivityIndicator size="small" color="#fff" /> : <Plus size={14} color="#fff" />}<Text style={styles.profileBlueButtonText}>{isUploading ? "Uploading…" : "Add"}</Text></Pressable></View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingTop: 12 }}>{photos.map((uri, index) => <View key={`${uri}-${index}`} style={[styles.listingEditPhoto, { borderColor: index === 0 ? BUTTON_BLUE : theme.border }]}><Image source={{ uri }} style={styles.listingEditPhotoImage} />{index === 0 && <View style={styles.listingEditCover}><Text style={styles.coverBadgeText}>COVER</Text></View>}<View style={styles.listingEditPhotoActions}><Pressable disabled={index === 0} onPress={() => movePhoto(index, -1)} style={[styles.listingPhotoAction, { backgroundColor: theme.card, opacity: index === 0 ? 0.35 : 1 }]}><ChevronUp size={13} color={theme.text} /></Pressable><Pressable disabled={index === photos.length - 1} onPress={() => movePhoto(index, 1)} style={[styles.listingPhotoAction, { backgroundColor: theme.card, opacity: index === photos.length - 1 ? 0.35 : 1 }]}><ChevronDown size={13} color={theme.text} /></Pressable><Pressable onPress={() => removePhoto(index)} style={[styles.listingPhotoAction, { backgroundColor: "#FEE2E2" }]}><Trash2 size={13} color="#DC2626" /></Pressable></View></View>)}</ScrollView>
         </View>
@@ -5263,7 +6495,7 @@ function CountBadge({ count, active = false }: { count?: number; active?: boolea
   return <View style={[styles.countBadge, { backgroundColor: active ? "#FFFFFF" : BUTTON_BLUE }]}><Text style={[styles.countBadgeText, { color: active ? BUTTON_BLUE : "#FFFFFF" }]}>{count > 99 ? "99+" : count}</Text></View>;
 }
 
-function ProfileRow({ theme, icon, title, badge, onPress }: { theme:Theme; icon:React.ReactNode; title:string; badge?:number; onPress:()=>void }) { return <Pressable onPress={onPress} style={[styles.profileRow,{backgroundColor:theme.card,borderColor:theme.border}]}>{icon}<Text style={[styles.profileRowText,{color:theme.text,flex:1}]}>{title}</Text><CountBadge count={badge}/><ChevronRight size={18} color={theme.muted}/></Pressable>; }
+function ProfileRow({ theme, icon, title, badge, onPress, referenceStyle = false }: { theme:Theme; icon:React.ReactNode; title:string; badge?:number; onPress:()=>void; referenceStyle?:boolean }) { return <Pressable onPress={onPress} style={[styles.profileRow,{backgroundColor:theme.card,borderColor:theme.border},referenceStyle && styles.profileRowReference]}>{icon}<Text style={[styles.profileRowText,{color:theme.text,flex:1},referenceStyle && styles.profileRowTextReference]}>{title}</Text><CountBadge count={badge}/><ChevronRight size={18} color={theme.muted}/></Pressable>; }
 function SettingRow({ theme, icon, title, subtitle, trailing, onPress }: { theme:Theme; icon:React.ReactNode; title:string; subtitle?:string; trailing:React.ReactNode; onPress?:()=>void }) {
   const content = (
     <View style={styles.settingRowInner}>
@@ -5285,17 +6517,13 @@ function SettingRow({ theme, icon, title, subtitle, trailing, onPress }: { theme
 }
 
 function Badge({ text, theme }: { text:string; theme:Theme }) { const color=text==="Completed"?"#2B9E63":text==="Pending"?"#D77E00":"#3B82F6"; return <View style={[styles.badge,{backgroundColor:darken(color,0.9)}]}><Text style={[styles.badgeText,{color}]}>{text}</Text></View>; }
-function EmptyState({ theme, title, text, actionLabel, onAction, icon = "sparkles" }: { theme:Theme; title:string; text:string; actionLabel?:string; onAction?:()=>void; icon?:"sparkles"|"search"|"bookmark"|"cart"|"orders"|"notifications"|"messages" }) {
-  const Icon = icon === "search" ? Search : icon === "bookmark" ? Bookmark : icon === "cart" ? ShoppingCart : icon === "orders" ? ShoppingBag : icon === "notifications" ? Bell : icon === "messages" ? MessageCircle : Sparkles;
-  return <View style={[styles.energyEmpty,{backgroundColor:theme.card,borderColor:theme.border}]}>
-    <View style={[styles.energyEmptyGlow,{backgroundColor:theme.isDark?"rgba(96,165,250,.10)":"rgba(37,99,235,.07)"}]} />
-    <View style={[styles.energyEmptyIcon,{backgroundColor:theme.isDark?"#24212B":"#EFF6FF"}]}><Icon size={30} color={BUTTON_BLUE} strokeWidth={2.2}/></View>
-    <View style={styles.energyEmptyCopy}>
-      <Text style={[styles.energyEmptyEyebrow,{color:BUTTON_BLUE}]}>MARKETPLACE</Text>
-      <Text style={[styles.energyEmptyTitle,{color:theme.text}]}>{title}</Text>
-      <Text style={[styles.energyEmptyText,{color:theme.muted}]}>{text}</Text>
-      {!!actionLabel && !!onAction && <Pressable onPress={onAction} style={[styles.energyEmptyButton,{backgroundColor:BUTTON_BLUE}]}><Text style={styles.energyEmptyButtonText}>{actionLabel}</Text><ChevronRight size={16} color="#fff"/></Pressable>}
-    </View>
+function EmptyState({ theme, title, text, actionLabel, onAction }: { theme:Theme; title:string; text:string; actionLabel?:string; onAction?:()=>void; icon?:string }) {
+  return <View style={styles.emptyTextState}>
+    <Text style={[styles.emptyTextTitle,{color:theme.text}]}>{title}</Text>
+    <Text style={[styles.emptyTextBody,{color:theme.muted}]}>{text}</Text>
+    {!!actionLabel && !!onAction && <Pressable onPress={onAction} hitSlop={8} style={styles.emptyTextAction}>
+      <Text style={[styles.emptyTextActionLabel,{color:BUTTON_BLUE}]}>{actionLabel}</Text>
+    </Pressable>}
   </View>;
 }
 function darken(hex: string, ratio: number) { return hex; }
@@ -5308,6 +6536,11 @@ export default App;
 
 const styles = StyleSheet.create({
   container:{flex:1,alignItems:"center",justifyContent:"center"},
+  emptyTextState:{alignItems:"center",justifyContent:"center",paddingHorizontal:24,paddingVertical:54},
+  emptyTextTitle:{fontSize:18,fontWeight:"900",textAlign:"center",letterSpacing:-0.2},
+  emptyTextBody:{fontSize:12,lineHeight:18,textAlign:"center",maxWidth:340,marginTop:7},
+  emptyTextAction:{marginTop:14,paddingVertical:4,paddingHorizontal:6},
+  emptyTextActionLabel:{fontSize:12,fontWeight:"900"},
   shell:{width:"100%",maxWidth:480,flex:1,paddingHorizontal:12,paddingBottom:8},
   topBar:{height:48,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:8},
   topIcon:{width:34,height:34,borderRadius:17,alignItems:"center",justifyContent:"center"},
@@ -5366,7 +6599,22 @@ compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"cente
   detailImage:{width:"100%",height:330,borderRadius:20,backgroundColor:"#EEE"},detailGallery:{height:330,borderRadius:24,overflow:"hidden",position:"relative",alignSelf:"center",marginBottom:2},detailGalleryImage:{height:330,backgroundColor:"#EEE"},detailGalleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},productTitle:{fontSize:20,fontWeight:"800",lineHeight:26},bigPrice:{fontSize:28,fontWeight:"900",marginTop:8},storePill:{borderWidth:1,borderRadius:999,paddingHorizontal:9,paddingVertical:6,alignSelf:"flex-start",marginTop:12,flexDirection:"row",alignItems:"center",gap:7,maxWidth:"90%"},detailStoreAvatar:{width:24,height:24,borderRadius:12,alignItems:"center",justifyContent:"center",overflow:"hidden"},detailStoreAvatarImage:{width:"100%",height:"100%"},detailStoreAvatarText:{fontSize:9,fontWeight:"900"},storePillText:{fontSize:12,fontWeight:"800",flexShrink:1},detailText:{fontSize:14,lineHeight:22,marginTop:14},detailButtons:{flexDirection:"row",gap:8,marginTop:18},rowBetween:{flexDirection:"row",alignItems:"flex-start",justifyContent:"space-between",gap:12},
   formHint:{fontSize:13,lineHeight:19,marginBottom:8},fieldLabel:{fontSize:12,fontWeight:"800",marginBottom:7},input:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,fontSize:14},uploadBox:{height:120,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",gap:8,marginBottom:14},
   createHeader:{flexDirection:"row",alignItems:"flex-start",gap:12,marginTop:4},createTitle:{fontSize:28,fontWeight:"900",letterSpacing:-0.5},createSub:{fontSize:12,lineHeight:18,marginTop:4,maxWidth:280},createStepBadge:{paddingHorizontal:10,paddingVertical:7,borderRadius:999},createStepText:{fontSize:11,fontWeight:"900"},progressRail:{marginTop:14,marginBottom:2},progressTrack:{height:5,borderRadius:999,overflow:"hidden"},progressFill:{height:5,borderRadius:999},progressLabels:{flexDirection:"row",justifyContent:"space-between",marginTop:7},progressLabel:{fontSize:10,fontWeight:"700"},progressLabelActive:{fontSize:10,fontWeight:"900"},progressStepButton:{paddingHorizontal:6,paddingVertical:4},typeCard:{borderWidth:1,borderRadius:20,padding:14},inlineLabel:{flexDirection:"row",alignItems:"center",gap:8},cardTitle:{fontSize:15,fontWeight:"900"},cardHint:{fontSize:11,lineHeight:17,marginTop:4,marginBottom:12},segmented:{borderWidth:1,borderRadius:16,padding:4,flexDirection:"row",gap:4},segment:{flex:1,height:42,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},segmentText:{fontSize:13,fontWeight:"800"},formCard:{borderWidth:1,borderRadius:20,padding:14},photoCover:{height:174,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",padding:14},photoCoverImage:{height:210,borderWidth:1,borderRadius:18,overflow:"hidden",position:"relative"},photoCoverImageFill:{width:"100%",height:"100%"},coverBadge:{position:"absolute",top:10,left:10,backgroundColor:"rgba(37,99,235,.95)",paddingHorizontal:9,paddingVertical:5,borderRadius:999},coverBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",letterSpacing:.7},coverEditHint:{position:"absolute",bottom:10,left:10,right:10,flexDirection:"row",alignItems:"center",gap:5},coverEditText:{color:"#fff",fontSize:10,fontWeight:"800",textShadowColor:"rgba(0,0,0,.7)",textShadowOffset:{width:0,height:1},textShadowRadius:3},coverHelper:{fontSize:10,lineHeight:15,marginTop:6},uploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.52)",alignItems:"center",justifyContent:"center",gap:7},uploadOverlayText:{color:"#fff",fontSize:11,fontWeight:"800"},uploadDoneBadge:{position:"absolute",right:10,bottom:10,width:27,height:27,borderRadius:14,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoThumbRowWide:{flexDirection:"row",gap:8,marginTop:10,flexWrap:"wrap"},photoThumbLarge:{width:62,height:62,borderWidth:1,borderRadius:13,overflow:"hidden",position:"relative"},photoThumbImage:{width:"100%",height:"100%"},photoAddThumb:{alignItems:"center",justifyContent:"center",borderStyle:"dashed"},thumbnailUploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.5)",alignItems:"center",justifyContent:"center"},thumbnailDoneBadge:{position:"absolute",right:4,bottom:4,width:19,height:19,borderRadius:10,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoAddedState:{alignItems:"center",justifyContent:"center"},photoUploadIcon:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center"},photoUploadTitle:{fontSize:14,fontWeight:"900",marginTop:10},photoAddedText:{fontSize:14,fontWeight:"900",marginTop:9},photoHint:{fontSize:11,marginTop:4,textAlign:"center"},photoThumbRow:{flexDirection:"row",gap:8,marginTop:9},photoThumb:{height:50,flex:1,borderWidth:1,borderRadius:13,alignItems:"center",justifyContent:"center"},fieldRow:{flexDirection:"row",gap:12,alignItems:"center"},selectField:{minHeight:56,borderWidth:1,borderRadius:14,paddingHorizontal:13,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10,marginBottom:12},selectValue:{fontSize:13,fontWeight:"800"},selectHint:{fontSize:10,marginTop:2},dropdownModalRoot:{flex:1,justifyContent:"flex-end"},dropdownBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(0,0,0,.45)"},dropdownSheet:{borderTopLeftRadius:26,borderTopRightRadius:26,borderWidth:1,paddingHorizontal:16,paddingTop:9,paddingBottom:12,maxHeight:"72%"},dropdownSheetHandle:{width:42,height:4,borderRadius:999,backgroundColor:"#CBD5E1",alignSelf:"center",marginBottom:14},dropdownHeader:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},dropdownTitle:{fontSize:19,fontWeight:"900"},dropdownSubtitle:{fontSize:11,lineHeight:16,marginTop:3},dropdownClose:{width:36,height:36,borderRadius:18,alignItems:"center",justifyContent:"center"},dropdownOption:{minHeight:54,borderWidth:1,borderRadius:15,paddingHorizontal:11,flexDirection:"row",alignItems:"center",gap:10},dropdownOptionIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},dropdownOptionText:{flex:1,fontSize:13,fontWeight:"800"},switchWrapModern:{width:96,alignItems:"center",justifyContent:"center",marginBottom:10},switchLabel:{fontSize:10,fontWeight:"800",marginBottom:2},categoryPicker:{gap:8,paddingBottom:10},categoryChip:{borderWidth:1,borderRadius:999,paddingHorizontal:11,paddingVertical:8},categoryChipText:{fontSize:11,fontWeight:"800"},optionRow:{flexDirection:"row",gap:8,marginBottom:12},optionPill:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:14,alignItems:"center",justifyContent:"center"},optionPillText:{fontSize:12,fontWeight:"800"},inlineFieldLabel:{flexDirection:"row",alignItems:"center",gap:6,marginBottom:7},fieldLabelNoMargin:{fontSize:12,fontWeight:"800"},descriptionInput:{minHeight:190,borderWidth:1,borderRadius:14,padding:12,fontSize:14,lineHeight:20,textAlignVertical:"top"},characterHint:{fontSize:10,textAlign:"right",marginTop:5},tipCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"flex-start",gap:10},tipTitle:{fontSize:13,fontWeight:"800"},tipText:{fontSize:11,lineHeight:17,marginTop:3},publishSheet:{borderWidth:1,borderRadius:18,padding:10,flexDirection:"row",alignItems:"center",gap:8,marginTop:2}, publishSheetFixed:{position:"absolute",left:0,right:0,bottom:0,borderTopWidth:1,paddingHorizontal:12,paddingTop:10,paddingBottom:14,flexDirection:"row",alignItems:"center",gap:8,zIndex:50,elevation:12},publishSheetTitle:{fontSize:12,fontWeight:"900"},publishSheetSub:{fontSize:10,lineHeight:15,marginTop:2},  photoRemoveButton:{position:"absolute",top:2,right:2,width:22,height:22,borderRadius:11,backgroundColor:"rgba(0,0,0,.65)",alignItems:"center",justifyContent:"center"}, photoRemoveText:{color:"#fff",fontSize:14,fontWeight:"800"}, successScreen:{flex:1,alignItems:"center",justifyContent:"center",paddingHorizontal:20,gap:26}, verifiedAnimationWrap:{width:190,height:190,alignItems:"center",justifyContent:"center",position:"relative"}, successHalo:{position:"absolute",width:178,height:178,borderRadius:89,borderWidth:8}, verifiedBadge:{width:126,height:126,borderRadius:63,alignItems:"center",justifyContent:"center",elevation:10,shadowOpacity:0.2,shadowRadius:18,shadowOffset:{width:0,height:8}}, successSparkle:{position:"absolute",width:10,height:10,borderRadius:5}, sparkleTop:{top:12},sparkleRight:{right:14},sparkleBottom:{bottom:18},sparkleLeft:{left:14}, successCheckOuter:{width:170,height:170,borderRadius:85,alignItems:"center",justifyContent:"center",borderWidth:1}, successCheckCircle:{width:118,height:118,borderRadius:59,alignItems:"center",justifyContent:"center"}, successTitle:{fontSize:30,fontWeight:"900",textAlign:"center",letterSpacing:-0.5}, successSub:{fontSize:14,lineHeight:21,textAlign:"center",marginTop:8,paddingHorizontal:10}, successActions:{flexDirection:"row",gap:10,marginTop:24}, profileAuthCard:{borderWidth:1,borderRadius:28,padding:24,marginTop:12,marginHorizontal:2,alignItems:"center",shadowColor:"#000",shadowOpacity:.08,shadowRadius:18,shadowOffset:{width:0,height:8},elevation:5},profileAuthIcon:{width:72,height:72,borderRadius:24,alignItems:"center",justifyContent:"center",marginBottom:16},profileAuthTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.6,textAlign:"center"},profileAuthText:{fontSize:13,lineHeight:20,textAlign:"center",marginTop:8,maxWidth:340},profileAuthButton:{width:"100%",minHeight:52,borderWidth:1,borderRadius:16,alignItems:"center",justifyContent:"center",marginTop:10,paddingHorizontal:16},profileAuthButtonText:{fontSize:14,fontWeight:"900"},
- settingsSectionTitle:{fontSize:13,fontWeight:"900",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:6},preferenceBlock:{borderWidth:1,borderRadius:18,padding:14,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionRow:{minHeight:68,borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionIcon:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},preferenceTitle:{fontSize:13,fontWeight:"900"},preferenceDescription:{fontSize:10.5,lineHeight:16,marginTop:3},choiceChip:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:13,alignItems:"center",justifyContent:"center"},faqRow:{minHeight:58,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12,paddingVertical:11,paddingHorizontal:4},faqQuestion:{fontSize:13,fontWeight:"800",lineHeight:19},faqAnswer:{fontSize:11.5,lineHeight:18,marginTop:7},reportInput:{minHeight:120,borderWidth:1,borderRadius:16,padding:13,fontSize:13,textAlignVertical:"top",marginBottom:9},reportInputSingle:{height:48,borderWidth:1,borderRadius:14,paddingHorizontal:13,fontSize:13,marginBottom:9},safetyHero:{borderWidth:1,borderRadius:24,padding:20,alignItems:"flex-start",marginBottom:10},safetyTip:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"flex-start",gap:11,marginBottom:9},safetyNumber:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},legalCard:{borderWidth:1,borderRadius:24,padding:20,marginTop:8},legalTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.5},legalHeading:{fontSize:14,fontWeight:"900",marginTop:20,marginBottom:6},legalText:{fontSize:12.5,lineHeight:20}, profileHeader:{flexDirection:"row",alignItems:"center",gap:14,paddingVertical:8},profileAvatar:{width:76,height:76,borderRadius:38,alignItems:"center",justifyContent:"center"},profileAvatarText:{fontSize:18,fontWeight:"900",color:"#fff"},profileHeroCard:{borderWidth:1,borderRadius:26,padding:18,marginBottom:13,shadowColor:"#000",shadowOpacity:.07,shadowRadius:16,shadowOffset:{width:0,height:7},elevation:4},profileHeroTop:{flexDirection:"row",alignItems:"center",gap:12},profileAvatarEditWrap:{width:78,height:78,position:"relative"},profileEditIconButton:{position:"absolute",right:-5,bottom:-5,width:32,height:32,borderRadius:16,borderWidth:2,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:5},profileAvatarLarge:{width:64,height:64,borderRadius:22,alignItems:"center",justifyContent:"center"},profileAvatarTextLarge:{fontSize:20,fontWeight:"900",color:"#fff"},profileNameLine:{flexDirection:"row",alignItems:"center",gap:7},profileName:{fontSize:18,fontWeight:"900",letterSpacing:-0.3,flexShrink:1},profileEmail:{fontSize:11,marginTop:3},profileMember:{fontSize:10,marginTop:3},profileVerified:{flexDirection:"row",alignItems:"center",gap:3,paddingHorizontal:7,paddingVertical:4,borderRadius:999},profileVerifiedText:{fontSize:9,fontWeight:"900"},metaVerifiedBadge:{backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,.55)"},profileIdentityHint:{fontSize:9.5,lineHeight:14,marginTop:-4,marginBottom:10},profileEditButton:{width:34,height:34,borderWidth:1,borderRadius:12,alignItems:"center",justifyContent:"center"},profileTrustRow:{borderTopWidth:1,marginTop:14,paddingTop:12,flexDirection:"row",alignItems:"center",gap:10},profileTrustItem:{flex:1,flexDirection:"row",alignItems:"center",gap:8},profileShieldIcon:{width:26,height:26,borderRadius:9,alignItems:"center",justifyContent:"center"},profileTrustDivider:{width:1,height:28},profileTrustTitle:{fontSize:10,fontWeight:"900"},profileTrustText:{fontSize:8.5,marginTop:2},profileModeSwitch:{height:52,borderWidth:1,borderRadius:17,padding:4,flexDirection:"row",gap:4,marginBottom:16},profileModeButton:{flex:1,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:6},profileModeText:{fontSize:12,fontWeight:"900"},countBadge:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:999,alignItems:"center",justifyContent:"center",marginLeft:4},countBadgeText:{fontSize:10,fontWeight:"900"},profileSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:5,marginBottom:10},profileSectionTitle:{fontSize:18,fontWeight:"900",letterSpacing:-0.2},profileSectionSub:{fontSize:10,lineHeight:15,marginTop:3,maxWidth:290},profileRoleBadge:{paddingHorizontal:8,paddingVertical:5,borderRadius:999},profileRoleBadgeText:{fontSize:8,fontWeight:"900",letterSpacing:1},profileActionGrid:{flexDirection:"row",flexWrap:"wrap",gap:9},profileActionTile:{flexBasis:"48%",flexGrow:1,minWidth:145,minHeight:100,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:9},profileActionIcon:{width:40,height:40,borderRadius:11,alignItems:"center",justifyContent:"center"},profileActionTitle:{fontSize:13,fontWeight:"900",letterSpacing:-.1},profileActionText:{fontSize:10.5,lineHeight:15,marginTop:4},profileFeatureCard:{borderWidth:1,borderRadius:18,padding:13,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:10},profileFeatureIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},profileFeatureTitle:{fontSize:12,fontWeight:"900"},profileFeatureText:{fontSize:9.5,lineHeight:15,marginTop:4},sellerSetupCard:{borderRadius:20,padding:15,marginTop:12,flexDirection:"row",alignItems:"center",gap:12},sellerSetupEyebrow:{fontSize:8,fontWeight:"900",letterSpacing:1.4,color:"#93C5FD"},sellerSetupTitle:{fontSize:17,fontWeight:"900",color:"#FFFFFF",marginTop:5,letterSpacing:-0.3},sellerSetupText:{fontSize:9.5,lineHeight:15,color:"#CBD5E1",marginTop:4},sellerSetupButton:{height:38,paddingHorizontal:12,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:3},sellerSetupButtonText:{fontSize:11,fontWeight:"900"},profileEssentialsRow:{flexDirection:"row",gap:9,alignItems:"stretch"},profileMiniFeature:{flex:1,minWidth:0,borderWidth:1,borderRadius:18,padding:13,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},profileMiniTitle:{fontSize:11,fontWeight:"900",marginTop:8},profileMiniText:{fontSize:9,lineHeight:14,marginTop:3},profileRow:{minHeight:62,borderWidth:1,borderRadius:18,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12,marginBottom:8},profileRowText:{fontSize:14,fontWeight:"700"},logoutRow:{minHeight:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12},logoutText:{color:"#D33D3D",fontSize:14,fontWeight:"800"},
+ settingsSectionTitle:{fontSize:13,fontWeight:"900",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:6},preferenceBlock:{borderWidth:1,borderRadius:18,padding:14,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionRow:{minHeight:68,borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionIcon:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},preferenceTitle:{fontSize:13,fontWeight:"900"},preferenceDescription:{fontSize:10.5,lineHeight:16,marginTop:3},choiceChip:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:13,alignItems:"center",justifyContent:"center"},faqRow:{minHeight:58,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12,paddingVertical:11,paddingHorizontal:4},faqQuestion:{fontSize:13,fontWeight:"800",lineHeight:19},faqAnswer:{fontSize:11.5,lineHeight:18,marginTop:7},reportInput:{minHeight:120,borderWidth:1,borderRadius:16,padding:13,fontSize:13,textAlignVertical:"top",marginBottom:9},reportInputSingle:{height:48,borderWidth:1,borderRadius:14,paddingHorizontal:13,fontSize:13,marginBottom:9},safetyHero:{borderWidth:1,borderRadius:24,padding:20,alignItems:"flex-start",marginBottom:10},safetyTip:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"flex-start",gap:11,marginBottom:9},safetyNumber:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},legalCard:{borderWidth:1,borderRadius:24,padding:20,marginTop:8},legalTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.5},legalHeading:{fontSize:14,fontWeight:"900",marginTop:20,marginBottom:6},legalText:{fontSize:12.5,lineHeight:20}, profileHeader:{flexDirection:"row",alignItems:"center",gap:14,paddingVertical:8},profileAvatar:{width:76,height:76,borderRadius:38,alignItems:"center",justifyContent:"center"},profileAvatarText:{fontSize:18,fontWeight:"900",color:"#fff"},profileHeroCard:{borderWidth:1,borderRadius:26,padding:18,marginBottom:13,shadowColor:"#000",shadowOpacity:.07,shadowRadius:16,shadowOffset:{width:0,height:7},elevation:4},profilePageScroll:{paddingTop:0,paddingBottom:0,gap:0},
+  profileBlueHeader:{height:82,backgroundColor:"#4B52E8",position:"relative",overflow:"hidden"},
+  profileWhiteCard:{marginTop:-1,borderTopLeftRadius:24,borderTopRightRadius:24,minHeight:620,paddingHorizontal:18,paddingTop:0,paddingBottom:100},
+  profileFloatingAvatar:{position:"absolute",left:22,top:-38,width:82,height:82,borderRadius:41,backgroundColor:"#fff",padding:3,zIndex:5,elevation:7,shadowColor:"#000",shadowOpacity:.16,shadowRadius:9,shadowOffset:{width:0,height:4}},
+  profileCameraButton:{position:"absolute",right:-1,bottom:1,width:25,height:25,borderRadius:13,backgroundColor:"#4B52E8",alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},
+  profileReferenceHeader:{paddingTop:50,flexDirection:"row",alignItems:"center",gap:12},
+  profileReferenceEdit:{height:34,paddingHorizontal:15,borderRadius:18,backgroundColor:"#EEF0FF",alignItems:"center",justifyContent:"center"},
+  profileReferenceEditText:{fontSize:11,fontWeight:"800",color:"#4B52E8"},
+  profileModeSwitchReference:{height:42,borderWidth:1,borderRadius:21,padding:3,flexDirection:"row",gap:3,marginTop:17},
+  profileModeButtonReference:{flex:1,borderRadius:18,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5},
+  profileModeTextReference:{fontSize:11,fontWeight:"800"},
+  profileReferenceSection:{marginTop:20},
+  profileReferenceSectionTitle:{fontSize:9,fontWeight:"900",letterSpacing:1.2,marginBottom:3},
+  profileRowReference:{minHeight:48,borderWidth:0,borderBottomWidth:1,borderRadius:0,paddingHorizontal:2,backgroundColor:"transparent",gap:11},
+  profileRowTextReference:{fontSize:12,fontWeight:"600"},
+  profileHeroTop:{flexDirection:"row",alignItems:"center",gap:12},profileAvatarEditWrap:{width:78,height:78,position:"relative"},profileEditIconButton:{position:"absolute",right:-5,bottom:-5,width:32,height:32,borderRadius:16,borderWidth:2,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:5},profileAvatarLarge:{width:64,height:64,borderRadius:22,alignItems:"center",justifyContent:"center"},profileAvatarTextLarge:{fontSize:20,fontWeight:"900",color:"#fff"},profileNameLine:{flexDirection:"row",alignItems:"center",gap:7},profileName:{fontSize:18,fontWeight:"900",letterSpacing:-0.3,flexShrink:1},profileEmail:{fontSize:11,marginTop:3},profileMember:{fontSize:10,marginTop:3},profileVerified:{flexDirection:"row",alignItems:"center",gap:3,paddingHorizontal:7,paddingVertical:4,borderRadius:999},profileVerifiedText:{fontSize:9,fontWeight:"900"},metaVerifiedBadge:{backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,.55)"},profileIdentityHint:{fontSize:9.5,lineHeight:14,marginTop:-4,marginBottom:10},profileEditButton:{width:34,height:34,borderWidth:1,borderRadius:12,alignItems:"center",justifyContent:"center"},profileTrustRow:{borderTopWidth:1,marginTop:14,paddingTop:12,flexDirection:"row",alignItems:"center",gap:10},profileTrustItem:{flex:1,flexDirection:"row",alignItems:"center",gap:8},profileShieldIcon:{width:26,height:26,borderRadius:9,alignItems:"center",justifyContent:"center"},profileTrustDivider:{width:1,height:28},profileTrustTitle:{fontSize:10,fontWeight:"900"},profileTrustText:{fontSize:8.5,marginTop:2},profileModeSwitch:{height:52,borderWidth:1,borderRadius:17,padding:4,flexDirection:"row",gap:4,marginBottom:16},profileModeButton:{flex:1,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:6},profileModeText:{fontSize:12,fontWeight:"900"},countBadge:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:999,alignItems:"center",justifyContent:"center",marginLeft:4},countBadgeText:{fontSize:10,fontWeight:"900"},profileSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:5,marginBottom:10},profileSectionTitle:{fontSize:18,fontWeight:"900",letterSpacing:-0.2},profileSectionSub:{fontSize:10,lineHeight:15,marginTop:3,maxWidth:290},profileRoleBadge:{paddingHorizontal:8,paddingVertical:5,borderRadius:999},profileRoleBadgeText:{fontSize:8,fontWeight:"900",letterSpacing:1},profileActionGrid:{flexDirection:"row",flexWrap:"wrap",gap:9},profileActionTile:{flexBasis:"48%",flexGrow:1,minWidth:145,minHeight:100,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:9},profileActionIcon:{width:40,height:40,borderRadius:11,alignItems:"center",justifyContent:"center"},profileActionTitle:{fontSize:13,fontWeight:"900",letterSpacing:-.1},profileActionText:{fontSize:10.5,lineHeight:15,marginTop:4},profileFeatureCard:{borderWidth:1,borderRadius:18,padding:13,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:10},profileFeatureIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},profileFeatureTitle:{fontSize:12,fontWeight:"900"},profileFeatureText:{fontSize:9.5,lineHeight:15,marginTop:4},sellerSetupCard:{borderRadius:20,padding:15,marginTop:12,flexDirection:"row",alignItems:"center",gap:12},sellerSetupEyebrow:{fontSize:8,fontWeight:"900",letterSpacing:1.4,color:"#93C5FD"},sellerSetupTitle:{fontSize:17,fontWeight:"900",color:"#FFFFFF",marginTop:5,letterSpacing:-0.3},sellerSetupText:{fontSize:9.5,lineHeight:15,color:"#CBD5E1",marginTop:4},sellerSetupButton:{height:38,paddingHorizontal:12,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:3},sellerSetupButtonText:{fontSize:11,fontWeight:"900"},profileEssentialsRow:{flexDirection:"row",gap:9,alignItems:"stretch"},profileMiniFeature:{flex:1,minWidth:0,borderWidth:1,borderRadius:18,padding:13,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},profileMiniTitle:{fontSize:11,fontWeight:"900",marginTop:8},profileMiniText:{fontSize:9,lineHeight:14,marginTop:3},profileRow:{minHeight:62,borderWidth:1,borderRadius:18,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12,marginBottom:8},profileRowText:{fontSize:14,fontWeight:"700"},logoutRow:{minHeight:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12},logoutText:{color:"#D33D3D",fontSize:14,fontWeight:"800"},
   profileLoading:{fontSize:10,textAlign:"center",marginTop:2,marginBottom:4},storeVerificationOverlay:{flex:1,alignItems:"center",justifyContent:"center",padding:20},storeVerificationBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(15,23,42,.58)"},storeVerificationCard:{width:"100%",maxWidth:420,borderWidth:1,borderRadius:24,padding:20,shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:8},elevation:24},storeVerificationIconWrap:{width:50,height:50,borderRadius:25,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center",marginBottom:12},storeVerificationTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},storeVerificationText:{fontSize:11,lineHeight:17,marginTop:6},storeVerificationEmail:{marginTop:15,borderWidth:1,borderRadius:14,padding:12,flexDirection:"row",alignItems:"center",gap:10},storeVerificationEmailLabel:{fontSize:9,fontWeight:"800",textTransform:"uppercase",letterSpacing:.4},storeVerificationEmailValue:{fontSize:12,fontWeight:"800",marginTop:2},storeVerificationSuccess:{marginTop:15,borderWidth:1,borderRadius:14,padding:12,flexDirection:"row",alignItems:"center",gap:10},storeVerificationSuccessTitle:{fontSize:12,fontWeight:"900"},storeVerificationSuccessText:{fontSize:10,lineHeight:15,marginTop:2},storeVerificationPrimary:{height:46,borderRadius:13,marginTop:15,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeVerificationPrimaryText:{fontSize:12.5,fontWeight:"900",color:"#fff"},storeVerificationFieldLabel:{fontSize:11,fontWeight:"900",marginTop:15,marginBottom:6},storeVerificationInput:{height:48,borderWidth:1,borderRadius:13,paddingHorizontal:14,fontSize:18,fontWeight:"900",letterSpacing:4,textAlign:"center"},storeVerificationActions:{flexDirection:"row",gap:9,marginTop:14},profileSheetOverlay:{position:"absolute",left:0,right:0,top:0,bottom:0,zIndex:100,elevation:100,justifyContent:"flex-end"},profileSheetKeyboard:{width:"100%",flex:1,justifyContent:"flex-end"},profileSheetBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(0,0,0,.58)"},profileSheet:{height:"92%",maxHeight:"92%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:-8},elevation:24},profileSheetHeader:{minHeight:68,borderBottomWidth:1,paddingHorizontal:16,paddingVertical:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},profileEditTabs:{height:50,borderBottomWidth:1,flexDirection:"row",paddingHorizontal:10},profileEditTab:{flex:1,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,borderBottomWidth:2,borderBottomColor:"transparent"},profileEditTabText:{fontSize:11,fontWeight:"900"},profileSheetTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},profileSheetSub:{fontSize:10,marginTop:3},profileSheetClose:{width:34,height:34,borderRadius:17,alignItems:"center",justifyContent:"center"},profileEditSectionTitle:{fontSize:13,fontWeight:"900",marginBottom:8},profileEditCard:{borderWidth:1,borderRadius:18,padding:13},profileEditAvatarRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileEditAvatar:{width:74,height:74,borderRadius:37,alignItems:"center",justifyContent:"center"},profileEditAvatarWrap:{width:74,height:74,borderRadius:37,position:"relative"},profilePhotoAction:{position:"absolute",right:-3,bottom:-3,width:29,height:29,borderRadius:15,borderWidth:3,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:4},profileEditLabel:{fontSize:12,fontWeight:"900"},profileEditHint:{fontSize:9.5,lineHeight:14,marginTop:3},profileBlueButton:{height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,alignSelf:"flex-start",marginTop:7},profileBlueButtonText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileLockedField:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:7},profileLockedText:{fontSize:13,flex:1,marginRight:8},profileCoverPreview:{height:138,borderWidth:1,borderRadius:16,overflow:"hidden",alignItems:"center",justifyContent:"center",marginBottom:13},profileEditCoverLogoHolder:{position:"absolute",left:12,bottom:10,width:72,height:72,borderRadius:36,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},profileEditCoverLogo:{width:"100%",height:"100%",borderRadius:36},profileCoverButton:{position:"absolute",right:10,bottom:10,height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5},profileMediaAction:{position:"absolute",right:10,bottom:10,minHeight:34,borderRadius:12,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,borderWidth:2,shadowColor:"#000",shadowOpacity:.18,shadowRadius:6,shadowOffset:{width:0,height:2},elevation:4},profileMediaActionText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileStoreLogoWrap:{width:64,height:64,borderRadius:32,position:"relative"},profileStoreLogoRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileStoreLogo:{width:64,height:64,borderRadius:32,alignItems:"center",justifyContent:"center",overflow:"hidden"},countryPickerOverlay:{flex:1,justifyContent:"flex-end",backgroundColor:"rgba(15,23,42,.45)"},countryPickerBackdrop:{...StyleSheet.absoluteFillObject},countryPickerSheet:{height:"78%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.22,shadowRadius:16,shadowOffset:{width:0,height:-4},elevation:12},countryPickerHeader:{paddingHorizontal:18,paddingVertical:14,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12},countrySearchBox:{margin:12,borderWidth:1,borderRadius:13,minHeight:46,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:9},countryPickerRow:{minHeight:62,paddingHorizontal:18,flexDirection:"row",alignItems:"center",gap:12,borderBottomWidth:StyleSheet.hairlineWidth},countryFlag:{fontSize:25,width:36,textAlign:"center"},countryName:{fontSize:14,fontWeight:"700"},countryCode:{fontSize:12,marginTop:2},profileEditError:{borderWidth:1,borderRadius:14,padding:11,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:8},profileEditErrorText:{flex:1,fontSize:10.5,lineHeight:16,fontWeight:"700"},profileSheetActions:{borderTopWidth:1,paddingHorizontal:16,paddingTop:10,flexDirection:"row",gap:9},profileCancelButton:{height:46,borderWidth:1,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center"},profileCancelText:{fontSize:13,fontWeight:"900"},profileSaveButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},profileSaveText:{fontSize:13,fontWeight:"900",color:"#fff"},
   storeTabBar: { flexDirection: "row", padding: 4, borderWidth: 1, borderRadius: 14, marginTop: 14, gap: 4 },
   storeTab: { flex: 1, minHeight: 42, alignItems: "center", justifyContent: "center", borderRadius: 10, paddingHorizontal: 8 },
@@ -5376,7 +6624,7 @@ compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"cente
   storeTrendMetricLabel: { fontSize: 12, marginTop: 3, fontWeight: "700" },
   storeTrendCard: { borderWidth: 1, borderRadius: 16, padding: 16 },
   storeTrendTitle: { fontSize: 16, fontWeight: "900" },
-  storePageCard:{borderWidth:1,borderRadius:26,overflow:"hidden",marginBottom:12},storeCover:{height:150,position:"relative",overflow:"hidden"},storeCoverLogoHolder:{position:"absolute",left:16,bottom:-2,width:82,height:82,borderRadius:41,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},storeCoverLogoImage:{width:"100%",height:"100%",borderRadius:41},storeCoverGlow:{position:"absolute",width:230,height:230,borderRadius:115,backgroundColor:"rgba(37,99,235,.28)",right:-70,top:-110},storeCoverShade:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(2,6,23,.18)"},storeCoverTopRow:{position:"absolute",left:12,right:12,top:12,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},storeStatusPill:{height:30,paddingHorizontal:10,borderRadius:999,backgroundColor:"rgba(2,6,23,.48)",flexDirection:"row",alignItems:"center",gap:6},storeStatusDot:{width:7,height:7,borderRadius:4},storeStatusText:{fontSize:10,fontWeight:"900",color:"#fff"},storeCircleButton:{width:34,height:34,borderRadius:17,backgroundColor:"rgba(2,6,23,.48)",alignItems:"center",justifyContent:"center"},storeIdentityBlock:{paddingHorizontal:16,paddingTop:0,paddingBottom:14,flexDirection:"row",gap:12},storeLogoLarge:{width:72,height:72,borderRadius:22,borderWidth:4,alignItems:"center",justifyContent:"center",marginTop:-34,overflow:"hidden"},storeLogoImage:{width:"100%",height:"100%"},storeLogoLetter:{fontSize:24,fontWeight:"900",color:"#fff"},storeIdentityText:{flex:1,paddingTop:8,minWidth:0},storeNameRow:{flexDirection:"row",alignItems:"center",gap:7},storePageTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4,flexShrink:1},storeVerifiedBadge:{width:19,height:19,borderRadius:10,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},storeIdentityLabelRow:{flexDirection:"row",alignItems:"center",gap:7,marginBottom:4},storeIdentityLabel:{fontSize:8,fontWeight:"900",letterSpacing:1.2},storeOwnerLabel:{fontSize:8.5},storePageDescription:{fontSize:11,lineHeight:17,marginTop:4},storeMetaLine:{flexDirection:"row",alignItems:"center",gap:4,marginTop:6},storeMetaText:{fontSize:10,flexShrink:1},storeStatsRow:{marginHorizontal:16,borderTopWidth:1,borderBottomWidth:1,minHeight:62,flexDirection:"row",alignItems:"center",justifyContent:"space-around"},storeStat:{flex:1,alignItems:"center"},storeStatValue:{fontSize:17,fontWeight:"900"},storeStatLabel:{fontSize:9,fontWeight:"700",marginTop:2},storeStatDivider:{width:1,height:28},storeQuickActions:{padding:12,flexDirection:"row",gap:8},storePrimaryAction:{height:44,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storePrimaryActionText:{color:"#fff",fontSize:12,fontWeight:"900"},storeSecondaryAction:{height:44,borderRadius:13,paddingHorizontal:15,borderWidth:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeSecondaryActionText:{fontSize:12,fontWeight:"900"},storeToolsCard:{borderWidth:1,borderRadius:22,padding:14,marginBottom:14},storeToolsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},storeToolsTitle:{fontSize:15,fontWeight:"900"},storeToolsSubtitle:{fontSize:10,lineHeight:15,marginTop:3},storeToolsIcon:{width:36,height:36,borderRadius:12,alignItems:"center",justifyContent:"center"},storeToolGrid:{flexDirection:"row",flexWrap:"wrap",gap:8},storeToolItem:{width:"48.5%",minHeight:100,borderRadius:15,padding:11},storeToolTitle:{fontSize:11,fontWeight:"900",marginTop:8},storeToolText:{fontSize:9,lineHeight:14,marginTop:3},storeListingsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:4,marginBottom:10},storeListingsTitle:{fontSize:17,fontWeight:"900",letterSpacing:-.2},storeListingsSubtitle:{fontSize:10,marginTop:3},storeCountPill:{minWidth:32,height:30,paddingHorizontal:9,borderRadius:999,alignItems:"center",justifyContent:"center"},storeCountText:{fontSize:12,fontWeight:"900"},storeLoadingCard:{minHeight:150,borderWidth:1,borderRadius:20,alignItems:"center",justifyContent:"center",gap:9},storeLoadingText:{fontSize:11,fontWeight:"700"},storeErrorCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:10},storeErrorTitle:{fontSize:12,fontWeight:"900"},storeErrorText:{fontSize:9.5,lineHeight:14,marginTop:3},storeRetryButton:{height:34,paddingHorizontal:12,borderRadius:10,alignItems:"center",justifyContent:"center"},storeRetryText:{fontSize:10,fontWeight:"900",color:"#fff"},storeEmptyCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",justifyContent:"center",minHeight:200},storeEmptyIcon:{width:52,height:52,borderRadius:17,alignItems:"center",justifyContent:"center",marginBottom:12},storeEmptyTitle:{fontSize:14,fontWeight:"900",textAlign:"center"},storeEmptyText:{fontSize:10.5,lineHeight:16,textAlign:"center",marginTop:5,maxWidth:280},storeListingGrid:{flexDirection:"row",flexWrap:"wrap",gap:10},storeListingCard:{width:"48%",borderWidth:1,borderRadius:18,overflow:"hidden"},storeListingImageWrap:{height:145,position:"relative"},storeListingImage:{width:"100%",height:"100%",backgroundColor:"#E5E7EB"},storeListingType:{position:"absolute",left:8,bottom:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(2,6,23,.58)"},storeListingTypeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeOutOfStockBadge:{position:"absolute",left:8,bottom:8,paddingHorizontal:8,paddingVertical:5,borderRadius:8,backgroundColor:"#DC2626",shadowOpacity:.12,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:2},storeOutOfStockBadgeText:{fontSize:7.5,fontWeight:"900",letterSpacing:.35,color:"#fff"},storeListingBody:{padding:10},storeOfferPill:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:"#DCFCE7"},storeOfferPillText:{fontSize:8,fontWeight:"900",color:"#15803D"},storeBoostPill:{position:"absolute",right:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:BUTTON_BLUE},storeBoostPillText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingEditButton:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},storeListingOriginalPrice:{fontSize:9,textDecorationLine:"line-through",marginTop:2},storeListingStockRow:{marginTop:5,minHeight:17,justifyContent:"center"},storeListingStockText:{fontSize:9.5,fontWeight:"800"},listingEditorToggle:{minHeight:62,borderWidth:1,borderRadius:16,paddingHorizontal:12,paddingVertical:10,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},listingToggle:{width:40,height:23,borderRadius:999,justifyContent:"center"},listingToggleKnob:{width:19,height:19,borderRadius:10,backgroundColor:"#fff"},listingEditorSection:{borderWidth:1,borderRadius:18,padding:12,marginBottom:12},listingEditorSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10},listingEditPhoto:{width:118,height:150,borderWidth:2,borderRadius:14,overflow:"hidden",position:"relative"},listingEditPhotoImage:{width:"100%",height:"100%"},listingEditCover:{position:"absolute",left:6,top:6,paddingHorizontal:6,paddingVertical:4,borderRadius:7,backgroundColor:"rgba(37,99,235,.92)"},listingEditPhotoActions:{position:"absolute",left:5,right:5,bottom:5,flexDirection:"row",justifyContent:"center",gap:5},listingPhotoAction:{width:28,height:28,borderRadius:9,alignItems:"center",justifyContent:"center"},listingBoostCard:{borderWidth:1,borderRadius:18,padding:12,flexDirection:"row",alignItems:"center",gap:9,marginBottom:12},listingBoostIcon:{width:36,height:36,borderRadius:11,alignItems:"center",justifyContent:"center"},storeListingTitle:{fontSize:11.5,fontWeight:"900",lineHeight:16,minHeight:32},storeListingPrice:{fontSize:15,fontWeight:"900",marginTop:6},storeListingMeta:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:6},storeListingMetaText:{fontSize:8.5,flex:1,marginRight:4},  messagesIntro:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:14},messagesTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.5},messagesSubtitle:{fontSize:11,marginTop:3},messagesRefresh:{width:38,height:38,borderRadius:12,borderWidth:1,alignItems:"center",justifyContent:"center"},messagesSearch:{height:48,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:9,marginBottom:12},messagesSearchInput:{flex:1,fontSize:13},messageSkeleton:{height:82,borderWidth:1,borderRadius:18,marginBottom:9,opacity:.65},messagesEmptyCard:{borderWidth:1,borderRadius:22,padding:28,alignItems:"center",justifyContent:"center",marginTop:26,minHeight:250},messagesEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},messagesEmptyTitle:{fontSize:16,fontWeight:"900"},messagesEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",maxWidth:300,marginTop:5},messageConversationRow:{minHeight:78,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9},messageAvatar:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center",overflow:"hidden"},messageAvatarImage:{width:"100%",height:"100%"},messageAvatarText:{fontSize:14,fontWeight:"900"},messageRowTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:7},messageConversationName:{fontSize:13,fontWeight:"900",flex:1},messageTime:{fontSize:9},messageStoreName:{fontSize:9.5,fontWeight:"800",marginTop:2},messagePreview:{fontSize:10.5,marginTop:4},messageUnread:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:11,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},messageUnreadText:{fontSize:9,fontWeight:"900",color:"#fff"},chatHeader:{minHeight:64,borderWidth:1,borderRadius:18,marginBottom:8,padding:9,flexDirection:"row",alignItems:"center",gap:9},chatBackButton:{width:38,height:38,borderRadius:12,alignItems:"center",justifyContent:"center"},chatAvatar:{width:42,height:42,borderRadius:14,alignItems:"center",justifyContent:"center",overflow:"hidden"},chatAvatarImage:{width:"100%",height:"100%"},chatAvatarText:{fontSize:12,fontWeight:"900"},chatName:{fontSize:13,fontWeight:"900"},chatStore:{fontSize:9.5,marginTop:2},chatOnlineDot:{width:8,height:8,borderRadius:4,marginRight:3},chatEmpty:{alignItems:"center",justifyContent:"center",paddingTop:90,paddingHorizontal:30},chatEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},chatEmptyTitle:{fontSize:16,fontWeight:"900"},chatEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",marginTop:5},chatBubbleRow:{flexDirection:"row",marginBottom:8},chatBubble:{maxWidth:"82%",borderWidth:1,borderRadius:18,paddingHorizontal:12,paddingVertical:9},chatBubbleText:{fontSize:12,lineHeight:18},chatTime:{fontSize:8,alignSelf:"flex-end",marginTop:4},chatComposer:{borderTopWidth:1,paddingTop:8,paddingBottom:8,flexDirection:"row",alignItems:"flex-end",gap:7},chatAttach:{width:40,height:40,borderRadius:12,alignItems:"center",justifyContent:"center"},chatInput:{flex:1,minHeight:40,maxHeight:105,borderWidth:1,borderRadius:13,paddingHorizontal:11,paddingVertical:9,fontSize:12},chatSend:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},  sellerProfileHero:{alignItems:"center",paddingVertical:22,paddingHorizontal:18,borderRadius:24},publicStoreStat:{flex:1,minHeight:48,borderRadius:14,alignItems:"center",justifyContent:"center",gap:3},publicStoreStatValue:{fontSize:16,fontWeight:"900"},publicStoreStatLabel:{fontSize:9,fontWeight:"800"},sellerProfileAvatarWrap:{position:"relative"},sellerProfileAvatar:{width:88,height:88,borderRadius:44},sellerOnlineDot:{position:"absolute",right:2,bottom:4,width:16,height:16,borderRadius:8,backgroundColor:"#22C55E",borderWidth:3,borderColor:"#fff"},sellerStatsRow:{width:"100%",flexDirection:"row",alignItems:"center",justifyContent:"space-around",marginTop:20,paddingVertical:14,borderTopWidth:1,borderBottomWidth:1},sellerStat:{alignItems:"center",minWidth:70},sellerStatValue:{fontSize:19,fontWeight:"900"},sellerStatLabel:{fontSize:10,marginTop:3,fontWeight:"700"},sellerStatDivider:{width:1,height:28},notificationBadge:{position:"absolute",top:-4,right:-5,minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:"#DC2626",alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},notificationBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",lineHeight:11},productInfoRow:{flexDirection:"row",alignItems:"center",paddingHorizontal:2,paddingVertical:14,borderBottomWidth:StyleSheet.hairlineWidth},productMetaLine:{flexDirection:"row",alignItems:"center",flexWrap:"wrap",gap:5,marginTop:6},productMetaValue:{fontSize:16,fontWeight:"900"},productMetaSecondary:{fontSize:12,fontWeight:"600"},productMetaDot:{fontSize:12,fontWeight:"700"},productTopBar:{height:52,flexDirection:"row",alignItems:"center",paddingHorizontal:2},productTopIcon:{width:40,height:40,borderRadius:13,borderWidth:1,alignItems:"center",justifyContent:"center"},productTopLabel:{fontSize:14,fontWeight:"900"},productTitleActionRow:{minHeight:54,flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10,paddingHorizontal:2,marginBottom:10},productTitleActions:{flexDirection:"row",alignItems:"center",gap:8},productActionIcon:{width:46,height:46,borderRadius:15,borderWidth:1,alignItems:"center",justifyContent:"center"},reviewScoreBadge:{width:34,height:34,borderRadius:12,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center"},reviewScoreText:{fontSize:18,fontWeight:"900",color:BUTTON_BLUE},storeLinkCard:{width:"100%",maxWidth:"100%",alignSelf:"stretch",marginTop:14,paddingHorizontal:12,paddingVertical:10,borderRadius:18},reportActionsWrap:{marginTop:18},reportSectionLabel:{fontSize:10,fontWeight:"800",marginBottom:8,letterSpacing:.2},reportActionsRow:{gap:9},reportActionCard:{minHeight:62,borderWidth:1,borderRadius:18,paddingHorizontal:11,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10},reportActionIcon:{width:38,height:38,borderRadius:13,backgroundColor:"#FEF2F2",alignItems:"center",justifyContent:"center"},reportActionTitle:{fontSize:11.5,fontWeight:"900"},reportActionSub:{fontSize:9.5,marginTop:2},detailSectionCard:{borderWidth:1,borderRadius:18,padding:14,marginTop:14},detailSectionTitle:{fontSize:16,fontWeight:"900"},detailSectionSub:{fontSize:10,marginTop:3},detailSectionEmpty:{fontSize:11,lineHeight:17,marginTop:12},reviewRow:{borderTopWidth:1,paddingTop:10,marginTop:10},reviewName:{fontSize:11,fontWeight:"900"},reviewText:{fontSize:10.5,lineHeight:16,marginTop:4},relatedCard:{width:150,borderWidth:1,borderRadius:16,overflow:"hidden",paddingBottom:9},relatedImage:{width:150,height:130,backgroundColor:"#E5E7EB"},relatedTitle:{fontSize:11,fontWeight:"800",lineHeight:15,paddingHorizontal:9,marginTop:7},relatedPrice:{fontSize:13,fontWeight:"900",paddingHorizontal:9,marginTop:5},reportSheet:{maxHeight:"88%",borderTopLeftRadius:26,borderTopRightRadius:26,overflow:"hidden"},reportHero:{padding:16,flexDirection:"row",alignItems:"center",gap:11},reportHeroIcon:{width:42,height:42,borderRadius:14,backgroundColor:"#FEE2E2",alignItems:"center",justifyContent:"center"},reportTitle:{fontSize:18,fontWeight:"900"},reportSubtitle:{fontSize:10.5,marginTop:3},reportLabel:{fontSize:12,fontWeight:"900",marginTop:3},reportReasonGrid:{gap:8},reportReason:{minHeight:44,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},reportReasonText:{fontSize:11,fontWeight:"800"},reportInput:{minHeight:105,borderWidth:1,borderRadius:14,padding:12,textAlignVertical:"top",fontSize:12},reportSubmitButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},  ordersHero:{borderWidth:1,borderRadius:22,padding:16,marginBottom:16,flexDirection:"row",alignItems:"center",gap:12},ordersHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},ordersCountPill:{minWidth:52,paddingHorizontal:9,paddingVertical:7,borderRadius:14,alignItems:"center",justifyContent:"center"},ordersCountText:{fontSize:16,fontWeight:"900"},ordersCountLabel:{fontSize:8,fontWeight:"800",marginTop:1},professionalOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},professionalOrderTop:{flexDirection:"row",alignItems:"center",gap:10},professionalOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},professionalOrderTitle:{fontSize:14,fontWeight:"900"},professionalOrderMeta:{fontSize:9.5,marginTop:3},professionalOrderInfo:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},professionalOrderLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},professionalOrderValue:{fontSize:11,fontWeight:"800",marginTop:3},orderMessageBox:{borderRadius:12,padding:10,marginTop:11},orderMessageLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},orderMessageText:{fontSize:10.5,lineHeight:16,marginTop:4},sellerOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},sellerOrderTop:{flexDirection:"row",alignItems:"center",gap:10},sellerOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},sellerOrderTitle:{fontSize:14,fontWeight:"900"},sellerOrderMeta:{fontSize:9.5,marginTop:3},sellerOrderStatus:{paddingHorizontal:9,paddingVertical:6,borderRadius:999},sellerOrderStatusText:{fontSize:9,fontWeight:"900"},sellerOrderInfoGrid:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},sellerOrderInfo:{flex:1},sellerOrderInfoLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},sellerOrderInfoValue:{fontSize:10.5,fontWeight:"800",marginTop:3},sellerOrderHint:{fontSize:9.5,lineHeight:15,marginTop:10},storeOrderLoading:{minHeight:120,borderWidth:1,borderRadius:18,alignItems:"center",justifyContent:"center",gap:8},  orderCard:{minHeight:68,borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:10},badge:{paddingHorizontal:10,paddingVertical:6,borderRadius:999},badgeText:{fontSize:11,fontWeight:"800"},notificationCard:{borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:12},notificationIcon:{width:38,height:38,borderRadius:19,alignItems:"center",justifyContent:"center"},messageRow:{borderWidth:1,borderRadius:16,padding:12,flexDirection:"row",alignItems:"center",gap:12},settingsHero:{borderWidth:1,borderRadius:22,padding:17,marginBottom:20,flexDirection:"row",alignItems:"center",gap:13,shadowOpacity:0.04,shadowRadius:12,shadowOffset:{width:0,height:4},elevation:1},
+  storePageCard:{borderWidth:1,borderRadius:26,overflow:"hidden",marginBottom:12},storeCover:{height:150,position:"relative",overflow:"hidden"},storeCoverLogoHolder:{position:"absolute",left:16,bottom:-2,width:82,height:82,borderRadius:41,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},storeCoverLogoImage:{width:"100%",height:"100%",borderRadius:41},storeCoverGlow:{position:"absolute",width:230,height:230,borderRadius:115,backgroundColor:"rgba(37,99,235,.28)",right:-70,top:-110},storeCoverShade:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(2,6,23,.18)"},storeCoverTopRow:{position:"absolute",left:12,right:12,top:12,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},storeStatusPill:{height:30,paddingHorizontal:10,borderRadius:999,backgroundColor:"rgba(2,6,23,.48)",flexDirection:"row",alignItems:"center",gap:6},storeStatusDot:{width:7,height:7,borderRadius:4},storeStatusText:{fontSize:10,fontWeight:"900",color:"#fff"},storeCircleButton:{width:34,height:34,borderRadius:17,backgroundColor:"rgba(2,6,23,.48)",alignItems:"center",justifyContent:"center"},storeIdentityBlock:{paddingHorizontal:16,paddingTop:0,paddingBottom:14,flexDirection:"row",gap:12},storeLogoLarge:{width:72,height:72,borderRadius:22,borderWidth:4,alignItems:"center",justifyContent:"center",marginTop:-34,overflow:"hidden"},storeLogoImage:{width:"100%",height:"100%"},storeLogoLetter:{fontSize:24,fontWeight:"900",color:"#fff"},storeIdentityText:{flex:1,paddingTop:8,minWidth:0},storeNameRow:{flexDirection:"row",alignItems:"center",gap:7},storePageTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4,flexShrink:1},storeVerifiedBadge:{width:19,height:19,borderRadius:10,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},storeIdentityLabelRow:{flexDirection:"row",alignItems:"center",gap:7,marginBottom:4},storeIdentityLabel:{fontSize:8,fontWeight:"900",letterSpacing:1.2},storeOwnerLabel:{fontSize:8.5},storePageDescription:{fontSize:11,lineHeight:17,marginTop:4},storeMetaLine:{flexDirection:"row",alignItems:"center",gap:4,marginTop:6},storeMetaText:{fontSize:10,flexShrink:1},storeStatsRow:{marginHorizontal:16,borderTopWidth:1,borderBottomWidth:1,minHeight:62,flexDirection:"row",alignItems:"center",justifyContent:"space-around"},storeStat:{flex:1,alignItems:"center"},storeStatValue:{fontSize:17,fontWeight:"900"},storeStatLabel:{fontSize:9,fontWeight:"700",marginTop:2},storeStatDivider:{width:1,height:28},storeQuickActions:{padding:12,flexDirection:"row",gap:8},storePrimaryAction:{height:44,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storePrimaryActionText:{color:"#fff",fontSize:12,fontWeight:"900"},storeSecondaryAction:{height:44,borderRadius:13,paddingHorizontal:15,borderWidth:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeSecondaryActionText:{fontSize:12,fontWeight:"900"},storeToolsCard:{borderWidth:1,borderRadius:22,padding:14,marginBottom:14},storeToolsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},storeToolsTitle:{fontSize:15,fontWeight:"900"},storeToolsSubtitle:{fontSize:10,lineHeight:15,marginTop:3},storeToolsIcon:{width:36,height:36,borderRadius:12,alignItems:"center",justifyContent:"center"},storeToolGrid:{flexDirection:"row",flexWrap:"wrap",gap:8},storeToolItem:{width:"48.5%",minHeight:100,borderRadius:15,padding:11},storeToolTitle:{fontSize:11,fontWeight:"900",marginTop:8},storeToolText:{fontSize:9,lineHeight:14,marginTop:3},storeListingsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:4,marginBottom:10},storeListingsTitle:{fontSize:17,fontWeight:"900",letterSpacing:-.2},storeListingsSubtitle:{fontSize:10,marginTop:3},storeCountPill:{minWidth:32,height:30,paddingHorizontal:9,borderRadius:999,alignItems:"center",justifyContent:"center"},storeCountText:{fontSize:12,fontWeight:"900"},storeLoadingCard:{minHeight:150,borderWidth:1,borderRadius:20,alignItems:"center",justifyContent:"center",gap:9},storeLoadingText:{fontSize:11,fontWeight:"700"},storeErrorCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:10},storeErrorTitle:{fontSize:12,fontWeight:"900"},storeErrorText:{fontSize:9.5,lineHeight:14,marginTop:3},storeRetryButton:{height:34,paddingHorizontal:12,borderRadius:10,alignItems:"center",justifyContent:"center"},storeRetryText:{fontSize:10,fontWeight:"900",color:"#fff"},storeEmptyCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",justifyContent:"center",minHeight:200},storeEmptyIcon:{width:52,height:52,borderRadius:17,alignItems:"center",justifyContent:"center",marginBottom:12},storeEmptyTitle:{fontSize:14,fontWeight:"900",textAlign:"center"},storeEmptyText:{fontSize:10.5,lineHeight:16,textAlign:"center",marginTop:5,maxWidth:280},storeListingGrid:{flexDirection:"row",flexWrap:"wrap",gap:10},storeListingCard:{width:"48%",borderWidth:1,borderRadius:18,overflow:"hidden"},storeListingImageWrap:{height:145,position:"relative"},storeListingImage:{width:"100%",height:"100%",backgroundColor:"#E5E7EB"},storeListingType:{position:"absolute",left:8,bottom:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(2,6,23,.58)"},storeListingTypeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeOutOfStockBadge:{position:"absolute",left:8,bottom:8,paddingHorizontal:8,paddingVertical:5,borderRadius:8,backgroundColor:"#DC2626",shadowOpacity:.12,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:2},storeOutOfStockBadgeText:{fontSize:7.5,fontWeight:"900",letterSpacing:.35,color:"#fff"},storeListingBody:{padding:10},storeOfferPill:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:"#DCFCE7"},storeOfferPillText:{fontSize:8,fontWeight:"900",color:"#15803D"},storeBoostPill:{position:"absolute",right:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:BUTTON_BLUE},storeBoostPillText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingEditButton:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},storeListingOriginalPrice:{fontSize:9,textDecorationLine:"line-through",marginTop:2},storeListingStockRow:{marginTop:5,minHeight:17,justifyContent:"center"},storeListingStockText:{fontSize:9.5,fontWeight:"800"},listingEditorToggle:{minHeight:62,borderWidth:1,borderRadius:16,paddingHorizontal:12,paddingVertical:10,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},listingToggle:{width:40,height:23,borderRadius:999,justifyContent:"center"},listingToggleKnob:{width:19,height:19,borderRadius:10,backgroundColor:"#fff"},listingEditorSection:{borderWidth:1,borderRadius:18,padding:12,marginBottom:12},listingEditorSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10},listingEditPhoto:{width:118,height:150,borderWidth:2,borderRadius:14,overflow:"hidden",position:"relative"},listingEditPhotoImage:{width:"100%",height:"100%"},listingEditCover:{position:"absolute",left:6,top:6,paddingHorizontal:6,paddingVertical:4,borderRadius:7,backgroundColor:"rgba(37,99,235,.92)"},listingEditPhotoActions:{position:"absolute",left:5,right:5,bottom:5,flexDirection:"row",justifyContent:"center",gap:5},listingPhotoAction:{width:28,height:28,borderRadius:9,alignItems:"center",justifyContent:"center"},listingBoostCard:{borderWidth:1,borderRadius:18,padding:12,flexDirection:"row",alignItems:"center",gap:9,marginBottom:12},listingBoostIcon:{width:36,height:36,borderRadius:11,alignItems:"center",justifyContent:"center"},storeListingTitle:{fontSize:11.5,fontWeight:"900",lineHeight:16,minHeight:32},storeListingPrice:{fontSize:15,fontWeight:"900",marginTop:6},storeListingMeta:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:6},storeListingMetaText:{fontSize:8.5,flex:1,marginRight:4},  messagesIntro:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:14},messagesTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.5},messagesSubtitle:{fontSize:11,marginTop:3},messagesRefresh:{width:38,height:38,borderRadius:12,borderWidth:1,alignItems:"center",justifyContent:"center"},messagesSearch:{height:48,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:9,marginBottom:12},messagesSearchInput:{flex:1,fontSize:13},messageSkeleton:{height:82,borderWidth:1,borderRadius:18,marginBottom:9,opacity:.65},messagesEmptyCard:{borderWidth:1,borderRadius:22,padding:28,alignItems:"center",justifyContent:"center",marginTop:26,minHeight:250},messagesEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},messagesEmptyTitle:{fontSize:16,fontWeight:"900"},messagesEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",maxWidth:300,marginTop:5},messageConversationRow:{minHeight:78,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9},messageAvatar:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center",overflow:"hidden"},messageAvatarImage:{width:"100%",height:"100%"},messageAvatarText:{fontSize:14,fontWeight:"900"},messageRowTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:7},messageConversationName:{fontSize:13,fontWeight:"900",flex:1},messageTime:{fontSize:9},messageStoreName:{fontSize:9.5,fontWeight:"800",marginTop:2},messagePreview:{fontSize:10.5,marginTop:4},messageUnread:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:11,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},messageUnreadText:{fontSize:9,fontWeight:"900",color:"#fff"},chatHeader:{minHeight:64,borderWidth:1,borderRadius:18,marginBottom:8,padding:9,flexDirection:"row",alignItems:"center",gap:9},chatBackButton:{width:38,height:38,borderRadius:12,alignItems:"center",justifyContent:"center"},chatAvatar:{width:42,height:42,borderRadius:14,alignItems:"center",justifyContent:"center",overflow:"hidden"},chatAvatarImage:{width:"100%",height:"100%"},chatAvatarText:{fontSize:12,fontWeight:"900"},chatName:{fontSize:13,fontWeight:"900"},chatStore:{fontSize:9.5,marginTop:2},chatOnlineDot:{width:8,height:8,borderRadius:4,marginRight:3},chatHeaderActions:{flexDirection:"row",alignItems:"center",gap:8},chatEmpty:{alignItems:"center",justifyContent:"center",paddingTop:90,paddingHorizontal:30},chatEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},chatEmptyTitle:{fontSize:16,fontWeight:"900"},chatEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",marginTop:5},chatBubbleRow:{flexDirection:"row",marginBottom:8},chatBubble:{maxWidth:"82%",borderWidth:1,borderRadius:18,paddingHorizontal:12,paddingVertical:9},chatBubbleText:{fontSize:12,lineHeight:18},chatTime:{fontSize:8,alignSelf:"flex-end",marginTop:4},chatTypingRow:{paddingHorizontal:14,paddingBottom:6},chatTypingBubble:{alignSelf:"flex-start",borderWidth:1,borderRadius:14,paddingHorizontal:11,paddingVertical:7},chatTypingText:{fontSize:11,fontWeight:"700",fontStyle:"italic"},chatComposer:{borderTopWidth:1,paddingTop:8,paddingBottom:8,flexDirection:"row",alignItems:"flex-end",gap:7},chatAttach:{width:40,height:40,borderRadius:12,alignItems:"center",justifyContent:"center"},chatInput:{flex:1,minHeight:40,maxHeight:105,borderWidth:1,borderRadius:13,paddingHorizontal:11,paddingVertical:9,fontSize:12},chatSend:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},  sellerProfileHero:{alignItems:"center",paddingVertical:22,paddingHorizontal:18,borderRadius:24},publicStoreStat:{flex:1,minHeight:48,borderRadius:14,alignItems:"center",justifyContent:"center",gap:3},publicStoreStatValue:{fontSize:16,fontWeight:"900"},publicStoreStatLabel:{fontSize:9,fontWeight:"800"},sellerProfileAvatarWrap:{position:"relative"},sellerProfileAvatar:{width:88,height:88,borderRadius:44},sellerOnlineDot:{position:"absolute",right:2,bottom:4,width:16,height:16,borderRadius:8,backgroundColor:"#22C55E",borderWidth:3,borderColor:"#fff"},sellerStatsRow:{width:"100%",flexDirection:"row",alignItems:"center",justifyContent:"space-around",marginTop:20,paddingVertical:14,borderTopWidth:1,borderBottomWidth:1},sellerStat:{alignItems:"center",minWidth:70},sellerStatValue:{fontSize:19,fontWeight:"900"},sellerStatLabel:{fontSize:10,marginTop:3,fontWeight:"700"},sellerStatDivider:{width:1,height:28},notificationBadge:{position:"absolute",top:-4,right:-5,minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:"#DC2626",alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},notificationBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",lineHeight:11},productInfoRow:{flexDirection:"row",alignItems:"center",paddingHorizontal:2,paddingVertical:14,borderBottomWidth:StyleSheet.hairlineWidth},productMetaLine:{flexDirection:"row",alignItems:"center",flexWrap:"wrap",gap:5,marginTop:6},productMetaValue:{fontSize:16,fontWeight:"900"},productMetaSecondary:{fontSize:12,fontWeight:"600"},productMetaDot:{fontSize:12,fontWeight:"700"},productTopBar:{height:52,flexDirection:"row",alignItems:"center",paddingHorizontal:2},productTopIcon:{width:40,height:40,borderRadius:13,borderWidth:1,alignItems:"center",justifyContent:"center"},productTopLabel:{fontSize:14,fontWeight:"900"},productTitleActionRow:{minHeight:54,flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10,paddingHorizontal:2,marginBottom:10},productTitleActions:{flexDirection:"row",alignItems:"center",gap:8},productActionIcon:{width:46,height:46,borderRadius:15,borderWidth:1,alignItems:"center",justifyContent:"center"},reviewScoreBadge:{width:34,height:34,borderRadius:12,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center"},reviewScoreText:{fontSize:18,fontWeight:"900",color:BUTTON_BLUE},storeLinkCard:{width:"100%",maxWidth:"100%",alignSelf:"stretch",marginTop:14,paddingHorizontal:12,paddingVertical:10,borderRadius:18},reportActionsWrap:{marginTop:18},reportSectionLabel:{fontSize:10,fontWeight:"800",marginBottom:8,letterSpacing:.2},reportActionsRow:{gap:9},reportActionCard:{minHeight:62,borderWidth:1,borderRadius:18,paddingHorizontal:11,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10},reportActionIcon:{width:38,height:38,borderRadius:13,backgroundColor:"#FEF2F2",alignItems:"center",justifyContent:"center"},reportActionTitle:{fontSize:11.5,fontWeight:"900"},reportActionSub:{fontSize:9.5,marginTop:2},detailSectionCard:{borderWidth:1,borderRadius:18,padding:14,marginTop:14},detailSectionTitle:{fontSize:16,fontWeight:"900"},detailSectionSub:{fontSize:10,marginTop:3},detailSectionEmpty:{fontSize:11,lineHeight:17,marginTop:12},reviewRow:{borderTopWidth:1,paddingTop:10,marginTop:10},reviewName:{fontSize:11,fontWeight:"900"},reviewText:{fontSize:10.5,lineHeight:16,marginTop:4},relatedCard:{width:150,borderWidth:1,borderRadius:16,overflow:"hidden",paddingBottom:9},relatedImage:{width:150,height:130,backgroundColor:"#E5E7EB"},relatedTitle:{fontSize:11,fontWeight:"800",lineHeight:15,paddingHorizontal:9,marginTop:7},relatedPrice:{fontSize:13,fontWeight:"900",paddingHorizontal:9,marginTop:5},reportSheet:{maxHeight:"88%",borderTopLeftRadius:26,borderTopRightRadius:26,overflow:"hidden"},reportHero:{padding:16,flexDirection:"row",alignItems:"center",gap:11},reportHeroIcon:{width:42,height:42,borderRadius:14,backgroundColor:"#FEE2E2",alignItems:"center",justifyContent:"center"},reportTitle:{fontSize:18,fontWeight:"900"},reportSubtitle:{fontSize:10.5,marginTop:3},reportLabel:{fontSize:12,fontWeight:"900",marginTop:3},reportReasonGrid:{gap:8},reportReason:{minHeight:44,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},reportReasonText:{fontSize:11,fontWeight:"800"},reportInput:{minHeight:105,borderWidth:1,borderRadius:14,padding:12,textAlignVertical:"top",fontSize:12},reportSubmitButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},  ordersHero:{borderWidth:1,borderRadius:22,padding:16,marginBottom:16,flexDirection:"row",alignItems:"center",gap:12},ordersHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},ordersCountPill:{minWidth:52,paddingHorizontal:9,paddingVertical:7,borderRadius:14,alignItems:"center",justifyContent:"center"},ordersCountText:{fontSize:16,fontWeight:"900"},ordersCountLabel:{fontSize:8,fontWeight:"800",marginTop:1},professionalOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},professionalOrderTop:{flexDirection:"row",alignItems:"center",gap:10},professionalOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},professionalOrderTitle:{fontSize:14,fontWeight:"900"},professionalOrderMeta:{fontSize:9.5,marginTop:3},professionalOrderInfo:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},professionalOrderLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},professionalOrderValue:{fontSize:11,fontWeight:"800",marginTop:3},orderMessageBox:{borderRadius:12,padding:10,marginTop:11},orderMessageLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},orderMessageText:{fontSize:10.5,lineHeight:16,marginTop:4},sellerOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},sellerOrderTop:{flexDirection:"row",alignItems:"center",gap:10},sellerOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},sellerOrderTitle:{fontSize:14,fontWeight:"900"},sellerOrderMeta:{fontSize:9.5,marginTop:3},sellerOrderStatus:{paddingHorizontal:9,paddingVertical:6,borderRadius:999},sellerOrderStatusText:{fontSize:9,fontWeight:"900"},sellerOrderInfoGrid:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},sellerOrderInfo:{flex:1},sellerOrderInfoLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},sellerOrderInfoValue:{fontSize:10.5,fontWeight:"800",marginTop:3},sellerOrderHint:{fontSize:9.5,lineHeight:15,marginTop:10},storeOrderLoading:{minHeight:120,borderWidth:1,borderRadius:18,alignItems:"center",justifyContent:"center",gap:8},  orderCard:{minHeight:68,borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:10},badge:{paddingHorizontal:10,paddingVertical:6,borderRadius:999},badgeText:{fontSize:11,fontWeight:"800"},notificationCard:{borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:12},notificationIcon:{width:38,height:38,borderRadius:19,alignItems:"center",justifyContent:"center"},messageRow:{borderWidth:1,borderRadius:16,padding:12,flexDirection:"row",alignItems:"center",gap:12},settingsHero:{borderWidth:1,borderRadius:22,padding:17,marginBottom:20,flexDirection:"row",alignItems:"center",gap:13,shadowOpacity:0.04,shadowRadius:12,shadowOffset:{width:0,height:4},elevation:1},
   settingsHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},
   settingsHeroTitle:{fontSize:21,fontWeight:"900",letterSpacing:-0.3},
   settingsHeroSubtitle:{fontSize:12,lineHeight:18,marginTop:3},
