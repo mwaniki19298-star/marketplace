@@ -7,6 +7,10 @@ module.exports = ({ config }) => {
   const googleIosUrlScheme = googleIosClientId
     ? `com.googleusercontent.apps.${googleIosClientId.replace(/\.apps\.googleusercontent\.com$/, '')}`
     : '';
+  const googleAndroidClientId = (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || '').trim();
+  const googleAndroidUrlScheme = googleAndroidClientId
+    ? `com.googleusercontent.apps.${googleAndroidClientId.replace(/\.apps\.googleusercontent\.com$/, '')}`
+    : '';
 
   return {
     ...config,
@@ -46,14 +50,19 @@ module.exports = ({ config }) => {
         monochromeImage: './assets/android-icon-monochrome.png',
       },
       predictiveBackGestureEnabled: false,
-      ...(domain ? {
-        intentFilters: [{
+      intentFilters: [
+        ...(domain ? [{
           action: 'VIEW',
           autoVerify: true,
           data: [{ scheme: 'https', host: domain, pathPrefix: '/listing' }],
           category: ['BROWSABLE', 'DEFAULT'],
-        }],
-      } : {}),
+        }] : []),
+        ...(googleAndroidUrlScheme ? [{
+          action: 'VIEW',
+          data: [{ scheme: googleAndroidUrlScheme, pathPrefix: '/oauthredirect' }],
+          category: ['BROWSABLE', 'DEFAULT'],
+        }] : []),
+      ],
     },
     web: {
       ...(config.web || {}),

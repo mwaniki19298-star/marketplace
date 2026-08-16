@@ -456,8 +456,8 @@ def marketplace_feed(request):
         best_idx = 0
         if len(ranked) < first_window:
             for idx, (_, item) in enumerate(remaining):
-                store_count = sum(x.store_id == item.store_id for x in ranked[-10:])
-                cat_count = sum(x.category_id == item.category_id for x in ranked[-10:])
+                store_count = sum(x[1].store_id == item.store_id for x in ranked[-10:])
+                cat_count = sum(x[1].category_id == item.category_id for x in ranked[-10:])
                 if store_count < 2 and cat_count < 3:
                     best_idx = idx
                     break

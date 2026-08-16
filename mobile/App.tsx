@@ -17,6 +17,7 @@ import {
   MapPin,
   Tag,
   Eye,
+  EyeOff,
   Truck,
   LogOut,
   Menu,
@@ -1518,7 +1519,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
       <StatusBar style={dark ? "light" : "dark"} backgroundColor={theme.background} translucent={false} />
 
       <View style={[styles.shell, { paddingTop: insets.top + 8, backgroundColor: theme.background }]}> 
-        {screen !== "login" && screen !== "messages" && screen !== "search" && (
+        {screen !== "login" && screen !== "messages" && screen !== "search" && !(screen === "profile" && !isLoggedIn) && (
         <View style={styles.topBar}>
           {screen !== "home" && screen !== "browse" ? (
             <Pressable onPress={goBack} style={styles.topIcon}>
@@ -1548,7 +1549,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         </View>
         )}
 
-        {menuOpen && screen !== "login" && screen !== "messages" && screen !== "search" && (
+        {menuOpen && screen !== "login" && screen !== "messages" && screen !== "search" && !(screen === "profile" && !isLoggedIn) && (
           <View style={[styles.menu, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <MenuItem label="Home" icon={<HomeIcon size={18} color={theme.text} />} onPress={() => go("home")} theme={theme} />
             <MenuItem label="My Orders" icon={<ShoppingBag size={18} color={theme.text} />} onPress={() => go("orders")} theme={theme} />
@@ -1623,9 +1624,9 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
           <CartScreen theme={theme} auth={auth} cartItems={cartItems} onOpenProduct={openProduct} onRemove={removeFromCart} onQuantityChange={updateCartQuantity} onCheckout={placeCartOrder} onRefresh={async () => { try { setCartItems(apiResults<CartItem>(await apiRequest("/api/cart/", {}, auth))); } catch {} }} />
         )}
         {screen === "login" && <LoginScreen theme={theme} onBack={goBack} initialMode={loginMode} autoGoogle={autoGoogleLogin} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); go("profile"); }} />}
-        {screen === "create" && <CreateScreen theme={theme} auth={auth} onDone={async () => { await refreshMarketplaceData(auth); go("publishSuccess"); }} />}
+        {screen === "create" && <CreateScreen theme={theme} auth={auth} onStore={() => go("store")} onDone={async () => { await refreshMarketplaceData(auth); go("publishSuccess"); }} />}
         {screen === "publishSuccess" && <PublishSuccessScreen theme={theme} onBrowse={() => go("browse")} onHome={() => go("home")} />}
-        {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onStore={() => go("store")} onMessages={() => go("messages")} onCart={() => go("cart")} cartCount={cartItems.length} />}
+        {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); }} onBack={goBack} onStore={() => go("store")} onMessages={() => go("messages")} onCart={() => go("cart")} cartCount={cartItems.length} />}
         {screen === "product" && selected && <ProductScreen theme={theme} listing={selected} inCart={cartIds.includes(selected.id)} liked={likedIds.includes(selected.id)} onAddToCart={() => addToCart(selected.id)} onToggleLike={() => toggleLike(selected.id)} onContactSeller={() => openConversationForListing(selected)} onOpenProduct={(item) => { setSelected(item); go("product"); }} onBack={goBack} auth={auth} />}
         {screen === "orders" && <OrdersScreen theme={theme} auth={auth} currentUser={currentUser} onRestock={() => go("store")} />}
         {screen === "notifications" && <NotificationsScreen theme={theme} auth={auth} />}
@@ -1644,7 +1645,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         {screen === "publicStore" && selected && <PublicStoreScreen theme={theme} auth={auth} listing={selected} onOpenProduct={openProduct} />}
         {screen === "sellerProfile" && selected && <SellerProfileScreen theme={theme} auth={auth} listing={selected} onOpenStore={() => go("publicStore")} />}
 
-        {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && screen !== "messages" && screen !== "search" && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
+        {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && screen !== "messages" && screen !== "search" && !(screen === "profile" && !isLoggedIn) && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
           {[
             [HomeIcon, "Home", "home" as Screen],
             [Compass, "Browse", "browse" as Screen],
@@ -1731,6 +1732,7 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [name, setName] = useState("");
   const emailCheck = useMemo(() => validateMarketplaceEmail(email), [email]);
   const passwordCheck = useMemo(() => passwordQuality(password), [password]);
@@ -1754,18 +1756,28 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
   const androidClientId = (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || googleExtra.androidClientId || "").trim();
   const iosClientId = (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || googleExtra.iosClientId || "").trim();
   const googleConfigured = Platform.OS === "android" ? !!androidClientId : Platform.OS === "ios" ? !!iosClientId : !!googleClientId;
-  const googleRedirectUri = makeRedirectUri({
-    scheme: "marketplace",
-    path: "oauthredirect",
-  });
+  const googleWebBaseUrl = (process.env.EXPO_PUBLIC_WEB_BASE_URL || "").trim().replace(/\/$/, "");
+  // Google must receive the exact redirect URI that is registered for the
+  // current platform. Native builds use the Marketplace deep-link scheme;
+  // production web uses the deployed Marketplace origin.
+  const googleNativeScheme = Platform.OS === "android"
+    ? (androidClientId ? `com.googleusercontent.apps.${androidClientId.replace(/\.apps\.googleusercontent\.com$/, "")}` : "")
+    : (iosClientId ? `com.googleusercontent.apps.${iosClientId.replace(/\.apps\.googleusercontent\.com$/, "")}` : "");
+  const googleRedirectUri = Platform.OS === "web"
+    ? `${googleWebBaseUrl || (typeof window !== "undefined" ? window.location.origin : "")}/oauthredirect`
+    : makeRedirectUri({
+        scheme: googleNativeScheme || "marketplace",
+        path: "oauthredirect",
+      });
   const [googleRequest, googleResponse, promptGoogleAsync] = useGoogleAuthRequest({
     androidClientId: androidClientId || undefined,
     iosClientId: iosClientId || undefined,
     webClientId: googleClientId || undefined,
-    // Use Google's authorization-code flow. Expo's Google provider can
-    // exchange the code automatically and return an ID token on native.
-    responseType: ResponseType.Code,
-    shouldAutoExchangeCode: true,
+    // Native Google clients use the authorization-code + PKCE flow. Expo
+    // automatically exchanges the code for tokens on installed Android/iOS
+    // apps; the resulting ID token is then sent to Django for verification.
+    responseType: Platform.OS === "web" ? ResponseType.IdToken : ResponseType.Code,
+    shouldAutoExchangeCode: Platform.OS !== "web",
     scopes: ["openid", "profile", "email"],
     selectAccount: true,
     redirectUri: googleRedirectUri,
@@ -1790,7 +1802,11 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
         }
         return;
       }
-      const idToken = googleResponse.params?.id_token || googleResponse.authentication?.idToken;
+      const idToken =
+        googleResponse.params?.id_token ||
+        googleResponse.authentication?.idToken ||
+        (googleResponse.authentication as any)?.id_token ||
+        (googleResponse as any).authentication?.rawResponse?.id_token;
       if (!idToken) {
         setGoogleLoading(false);
         setGoogleError({ title: "Google sign-in could not finish", message: "Google did not return the authentication details Marketplace needs. Please try again." });
@@ -1943,20 +1959,45 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
           <PasswordRecoveryScreen theme={theme} email={email} onRetry={() => setShowPasswordRecovery(false)} onReset={() => { setShowReset(true); setShowPasswordRecovery(false); setResetEmail(email); setResetSent(false); }} />
         ) : (
         <>
-          <View style={[styles.authMode, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <Pressable onPress={() => { setMode("login"); setShowPasswordRecovery(false); }} style={[styles.authModeItem, mode === "login" && { backgroundColor: BUTTON_BLUE }]}><Text style={[styles.authModeText, { color: mode === "login" ? "#fff" : theme.muted }]}>Log in</Text></Pressable>
-            <Pressable onPress={() => { setMode("signup"); setShowPasswordRecovery(false); }} style={[styles.authModeItem, mode === "signup" && { backgroundColor: BUTTON_BLUE }]}><Text style={[styles.authModeText, { color: mode === "signup" ? "#fff" : theme.muted }]}>Create account</Text></Pressable>
-          </View>
+          {mode === "login" && (
+            <View style={styles.authEnterpriseHero}>
+              <View style={[styles.authEnterpriseBadge, { backgroundColor: theme.accent + (theme.isDark ? "26" : "12") }]}>
+                <ShieldCheck size={17} color={theme.accent} strokeWidth={2.4} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.authEnterpriseEyebrow, { color: theme.accent }]}>SECURE MARKETPLACE ACCESS</Text>
+                <Text style={[styles.authEnterpriseTitle, { color: theme.text }]}>Welcome back</Text>
+                <Text style={[styles.authEnterpriseSubtitle, { color: theme.muted }]}>Sign in to manage your marketplace account securely.</Text>
+              </View>
+            </View>
+          )}
+
+          <View style={styles.authLoginForm}>
+            <View style={[styles.authMode, { backgroundColor: theme.background, borderColor: theme.border }]}>
+              <Pressable onPress={() => { setMode("login"); setShowPasswordRecovery(false); }} style={[styles.authModeItem, mode === "login" && { backgroundColor: BUTTON_BLUE }]}><Text style={[styles.authModeText, { color: mode === "login" ? "#fff" : theme.muted }]}>Log in</Text></Pressable>
+              <Pressable onPress={() => { setMode("signup"); setShowPasswordRecovery(false); }} style={[styles.authModeItem, mode === "signup" && { backgroundColor: BUTTON_BLUE }]}><Text style={[styles.authModeText, { color: mode === "signup" ? "#fff" : theme.muted }]}>Create account</Text></Pressable>
+            </View>
 
           {mode === "signup" && <Field label="Full name" value={name} onChangeText={setName} theme={theme} placeholder="Your name" />}
-          <Field label="Email address" value={email} onChangeText={(value) => { setEmail(value); if (googleError?.title === "Check your email") setGoogleError(null); }} theme={theme} keyboardType="email-address" placeholder="you@example.com" />
+          {mode === "login" ? (
+            <>
+              <AuthInputField label="Email address" value={email} onChangeText={(value) => { setEmail(value); if (googleError?.title === "Check your email") setGoogleError(null); }} theme={theme} keyboardType="email-address" placeholder="you@example.com" icon={<Mail size={18} color={theme.muted} strokeWidth={2} />} />
+              <AuthInputField label="Password" value={password} onChangeText={(value) => { setPassword(value); if (googleError?.title === "Password needs attention") setGoogleError(null); }} theme={theme} placeholder="Enter your password" secureTextEntry={!showPassword} icon={<LockKeyhole size={18} color={theme.muted} strokeWidth={2} />} rightElement={
+                <Pressable onPress={() => setShowPassword((value) => !value)} hitSlop={10} accessibilityLabel={showPassword ? "Hide password" : "Show password"}>
+                  {showPassword ? <EyeOff size={19} color={theme.muted} /> : <Eye size={19} color={theme.muted} />}
+                </Pressable>
+              } />
+            </>
+          ) : (
+            <Field label="Email address" value={email} onChangeText={(value) => { setEmail(value); if (googleError?.title === "Check your email") setGoogleError(null); }} theme={theme} keyboardType="email-address" placeholder="you@example.com" />
+          )}
           {mode === "signup" && email.length > 0 && (
             <View style={[styles.validationRow, { marginTop: -8, marginBottom: 12 }]}>
               <View style={[styles.validationDot, { backgroundColor: emailCheck.valid ? "#16A34A" : "#D97706" }]} />
               <Text style={[styles.validationText, { color: emailCheck.valid ? "#16A34A" : theme.muted }]}>{emailCheck.valid ? "Email address looks valid" : (emailCheck.reason || "Check your email address")}</Text>
             </View>
           )}
-          <Field label="Password" value={password} onChangeText={(value) => { setPassword(value); if (googleError?.title === "Password needs attention") setGoogleError(null); }} theme={theme} placeholder="Enter your password" />
+          {mode === "signup" && <Field label="Password" value={password} onChangeText={(value) => { setPassword(value); if (googleError?.title === "Password needs attention") setGoogleError(null); }} theme={theme} placeholder="Enter your password" secureTextEntry /> }
           {mode === "signup" && password.length > 0 && (
             <View style={[styles.passwordQuality, { marginTop: -7, marginBottom: 12, borderColor: theme.border, backgroundColor: theme.card }]}>
               <View style={styles.passwordQualityTop}>
@@ -2025,7 +2066,7 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
               </Pressable>
             </View>
           )}
-
+          </View>
 
           <View style={styles.authTrust}>
             <Check size={16} color={theme.accent} />
@@ -2954,23 +2995,26 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
   );
 }
 
-function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload | null; onDone: () => Promise<void> | void }) {
-  const scrollRef = useRef<ScrollView>(null);
-  const [activeStep, setActiveStep] = useState<0 | 1 | 2>(0);
-  const [sectionY, setSectionY] = useState({ details: 0, photos: 0, publish: 0 });
+function CreateScreen({ theme, auth, onDone, onStore }: { theme: Theme; auth: AuthPayload | null; onDone: () => Promise<void> | void; onStore: () => void }) {
+  const Animated = require("react-native").Animated;
+  const [step, setStep] = useState<0 | 1 | 2 | 3>(0);
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
   const [stock, setStock] = useState("1");
   const [description, setDescription] = useState("");
   const [kind, setKind] = useState<"Product" | "Service">("Product");
-  const [category, setCategory] = useState("Electronics");
+  const [category, setCategory] = useState("");
   const [location, setLocation] = useState("");
   const [negotiable, setNegotiable] = useState(true);
   const [condition, setCondition] = useState("New");
   const [delivery, setDelivery] = useState("Pickup");
+  const [dropdownOpen, setDropdownOpen] = useState<"category" | "condition" | null>(null);
   const [photos, setPhotos] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [publishing, setPublishing] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<Record<string, "idle" | "uploading" | "done">>({});
+  const [uploadIndex, setUploadIndex] = useState(0);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const progressAnim = useRef(new Animated.Value(0)).current;
 
   const categories = kind === "Product"
     ? ["Electronics", "Fashion", "Home & Living", "Books", "Food", "Other"]
@@ -2978,6 +3022,11 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
 
   const parsedStock = Number(stock.replace(/[^0-9]/g, ""));
   const canPublish = title.trim().length > 2 && price.trim().length > 0 && description.trim().length > 10 && category.length > 0 && Number.isInteger(parsedStock) && parsedStock >= 0;
+
+  const animateProgress = (value: number, duration = 450) => {
+    setUploadProgress(value);
+    Animated.timing(progressAnim, { toValue: value, duration, useNativeDriver: false }).start();
+  };
 
   const openPhotoPicker = async () => {
     const remaining = Math.max(0, 8 - photos.length);
@@ -3020,6 +3069,32 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
     });
   };
 
+  const goNext = () => {
+    if (step === 0) {
+      if (title.trim().length <= 2 || price.trim().length === 0 || (kind === "Product" && (!Number.isInteger(parsedStock) || parsedStock < 0))) {
+        Alert.alert("Finish the product basics", "Add a title, price and valid stock quantity before continuing.");
+        return;
+      }
+      setStep(1);
+      return;
+    }
+    if (step === 1) {
+      if (description.trim().length <= 10 || category.length === 0) {
+        Alert.alert("Finish the listing details", "Add a category and a more detailed description before continuing.");
+        return;
+      }
+      setStep(2);
+      return;
+    }
+    if (step === 2) {
+      if (photos.length === 0) {
+        Alert.alert("Add photos", "Please add at least one photo so buyers can see your listing.");
+        return;
+      }
+      setStep(3);
+    }
+  };
+
   const publishListing = async () => {
     if (publishing) return;
     if (!auth?.access) {
@@ -3027,25 +3102,62 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
       return;
     }
     if (!canPublish) {
-      Alert.alert("Finish your listing", "Add a title, price, description and category before publishing.");
+      setStep(description.trim().length > 10 && category.length > 0 ? 1 : 0);
+      Alert.alert("Finish your listing", "Complete the product details before publishing.");
       return;
     }
     if (photos.length === 0) {
+      setStep(2);
       Alert.alert("Add photos", "Please add at least one photo so buyers can see your listing.");
       return;
     }
 
+    // A phone number is required so buyers have a direct communication method.
+    // Check the seller's store profile immediately before publishing so the
+    // requirement is enforced even if the user changed their profile earlier.
+    try {
+      const store = await apiRequest("/api/stores/mine/", {}, auth) as ProfileStore;
+      const phone = String(store?.phone || "").replace(/\D/g, "");
+      if (phone.length < 7) {
+        Alert.alert(
+          "Phone number required",
+          "Please add your phone number to your seller profile before publishing a listing. Buyers will use it for communication.",
+          [
+            { text: "Not now", style: "cancel" },
+            { text: "Add phone number", onPress: onStore },
+          ]
+        );
+        return;
+      }
+    } catch (error) {
+      Alert.alert(
+        "Couldn't verify phone number",
+        error instanceof Error ? error.message : "We couldn't verify your seller profile. Please try again before publishing.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+
     setPublishing(true);
+    setUploadIndex(0);
+    animateProgress(0, 250);
     try {
       const categoryName = category === "Food" ? "Food & Drinks" : category;
       const categoryEntry = categoryTiles.find(([name]) => name.toLowerCase() === categoryName.toLowerCase());
+      setUploadStatus(Object.fromEntries(photos.map((photo) => [photo.uri, "idle"] as const)));
 
-      setUploadStatus(Object.fromEntries(photos.map((photo) => [photo.uri, "uploading"])));
-      const uploadedImages = await Promise.all(photos.map(async (photo) => {
+      const uploadedImages: CloudinaryUploadResult[] = [];
+      for (let index = 0; index < photos.length; index += 1) {
+        const photo = photos[index];
+        setUploadIndex(index);
+        setUploadStatus((current) => ({ ...current, [photo.uri]: "uploading" }));
         const uploaded = await uploadAssetToCloudinary(photo, auth);
+        uploadedImages.push(uploaded);
         setUploadStatus((current) => ({ ...current, [photo.uri]: "done" }));
-        return uploaded;
-      }));
+        const percent = Math.round(((index + 1) / photos.length) * 90);
+        animateProgress(percent);
+      }
+
       const imageUrls = uploadedImages.map((item) => item.secure_url);
       const imagePublicIds = uploadedImages.map((item) => item.public_id);
       const slugBase = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -3065,155 +3177,246 @@ function CreateScreen({ theme, auth, onDone }: { theme: Theme; auth: AuthPayload
         image_urls: imageUrls,
         image_public_ids: imagePublicIds,
         category_name: categoryName,
-        is_available: true,
         is_draft: false,
       };
 
       if (categoryEntry) body.category = categoryEntry[2];
-      const created = await apiRequest("/api/listings/", { method: "POST", body: JSON.stringify(body) }, auth);
-      const createdListing = mapApiListing(created);
-      listings = [createdListing, ...listings.filter((item) => item.id !== createdListing.id)];
+      await apiRequest("/api/listings/", { method: "POST", body: JSON.stringify(body) }, auth);
+      animateProgress(100, 500);
+      await new Promise((resolve) => setTimeout(resolve, 650));
       await onDone();
     } catch (error) {
       Alert.alert("Couldn't publish listing", error instanceof Error ? error.message : "Something went wrong while publishing your listing.");
     } finally {
       setPublishing(false);
       setUploadStatus({});
+      setUploadProgress(0);
+      progressAnim.setValue(0);
     }
   };
 
-  const jumpToStep = (step: 0 | 1 | 2) => {
-    setActiveStep(step);
-    const y = step === 0 ? sectionY.details : step === 1 ? sectionY.photos : sectionY.publish;
-    scrollRef.current?.scrollTo({ y: Math.max(0, y - 8), animated: true });
-  };
+  const stepLabels = ["Product basics", "Listing details", "Photos", "Publish"];
+  const progressWidth = progressAnim.interpolate({ inputRange: [0, 100], outputRange: ["0%", "100%"] });
+  const currentPhoto = photos[Math.min(uploadIndex, Math.max(photos.length - 1, 0))];
 
   return (
     <View style={{ flex: 1 }}>
-      <View style={[styles.stickyProgressWrap, { backgroundColor: theme.background, borderBottomColor: theme.border }]}> 
+      <View style={[styles.stickyProgressWrap, { backgroundColor: theme.background, borderBottomColor: theme.border }]}>
         <View style={styles.progressRail}>
           <View style={[styles.progressTrack, { backgroundColor: theme.border }]}>
-            <View style={[styles.progressFill, { backgroundColor: theme.accent, width: `${(activeStep + 1) * 33.333}%` }]} />
+            <View style={[styles.progressFill, { backgroundColor: theme.accent, width: `${((step + 1) / 4) * 100}%` }]} />
           </View>
           <View style={styles.progressLabels}>
-            {[
-              { label: "Details", step: 0 as const },
-              { label: "Photos", step: 1 as const },
-              { label: "Publish", step: 2 as const },
-            ].map(({ label, step }) => (
-              <Pressable key={label} onPress={() => jumpToStep(step)} hitSlop={8} style={styles.progressStepButton}>
-                <Text style={[step === activeStep ? styles.progressLabelActive : styles.progressLabel, { color: step === activeStep ? theme.text : theme.muted }]}>{label}</Text>
+            {stepLabels.map((label, index) => (
+              <Pressable key={label} onPress={() => index < step ? setStep(index as 0 | 1 | 2 | 3) : undefined} hitSlop={8} style={styles.progressStepButton}>
+                <Text style={[index === step ? styles.progressLabelActive : styles.progressLabel, { color: index === step ? theme.text : theme.muted }]}>{label}</Text>
               </Pressable>
             ))}
           </View>
         </View>
       </View>
-      <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} onScroll={(e) => { const offsetY = e.nativeEvent.contentOffset.y; const next = offsetY > sectionY.publish - 120 ? 2 : offsetY > sectionY.photos - 120 ? 1 : 0; if (next !== activeStep) setActiveStep(next as 0 | 1 | 2); }} scrollEventThrottle={16} contentContainerStyle={[styles.scrollContent, { paddingTop: 12, paddingBottom: 170 }]}>
+
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scrollContent, { paddingTop: 14, paddingBottom: 120 }]}>
         <View style={styles.createHeader}>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.createTitle, { color: theme.text }]}>Create listing</Text>
-            <Text style={[styles.createSub, { color: theme.muted }]}>Make your item easy to discover and easy to trust.</Text>
+            <Text style={[styles.createTitle, { color: theme.text }]}>{stepLabels[step]}</Text>
+            <Text style={[styles.createSub, { color: theme.muted }]}>{step === 0 ? "Start with the essentials of what you are selling." : step === 1 ? "Add the details buyers need to make a decision." : step === 2 ? "Add clear photos that make your listing stand out." : "Review everything, then publish your listing."}</Text>
           </View>
           <View style={[styles.createStepBadge, { backgroundColor: theme.accent + (theme.isDark ? "22" : "0F") }]}>
-            <Text style={[styles.createStepText, { color: theme.accent }]}>{activeStep + 1} of 3</Text>
+            <Text style={[styles.createStepText, { color: theme.accent }]}>{step + 1} of 4</Text>
           </View>
         </View>
 
-        <View onLayout={(e) => { const y = e.nativeEvent.layout.y; setSectionY(v => ({ ...v, details: y })); }} style={[styles.typeCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <View style={styles.inlineLabel}><Tag size={16} color={theme.accent} /><Text style={[styles.cardTitle, { color: theme.text }]}>Listing type</Text></View>
-          <View style={[styles.segmented, { backgroundColor: theme.background, borderColor: theme.border, marginTop: 10 }]}>
-            {(["Product", "Service"] as const).map((option) => (
-              <Pressable key={option} onPress={() => setKind(option)} style={[styles.segment, kind === option && { backgroundColor: theme.accent }]}>
-                {option === "Product" ? <ShoppingBag size={16} color={kind === option ? "#fff" : theme.muted} /> : <Sparkles size={16} color={kind === option ? "#fff" : theme.muted} />}
-                <Text style={[styles.segmentText, { color: kind === option ? "#fff" : theme.text }]}>{option}</Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-
-        <View onLayout={(e) => { const y = e.nativeEvent.layout.y; setSectionY(v => ({ ...v, photos: y })); }} style={[styles.formCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <Text style={[styles.cardTitle, { color: theme.text }]}>Photos</Text>
-          <Text style={[styles.cardHint, { color: theme.muted }]}>Use clear photos. Your first photo becomes the cover.</Text>
-          {photos.length > 0 ? (
-            <>
-              <Pressable onPress={openPhotoPicker} style={[styles.photoCoverImage, { backgroundColor: theme.background, borderColor: theme.border }]}>
-                <Image source={{ uri: photos[0].uri }} style={styles.photoCoverImageFill} />
-                <View style={styles.coverBadge}><Text style={styles.coverBadgeText}>COVER PHOTO</Text></View>
-                {uploadStatus[photos[0].uri] === "uploading" && (
-                  <View style={styles.uploadOverlay}><ActivityIndicator size="large" color="#fff" /><Text style={styles.uploadOverlayText}>Uploading…</Text></View>
-                )}
-                {uploadStatus[photos[0].uri] === "done" && <View style={styles.uploadDoneBadge}><Check size={14} color="#fff" /></View>}
-                <View style={styles.coverEditHint}><ImageIcon size={14} color="#fff" /><Text style={styles.coverEditText}>Tap to add more</Text></View>
-              </Pressable>
-              <Text style={[styles.coverHelper, { color: theme.muted }]}>The first photo is your cover. Tap another photo below to make it the cover.</Text>
-              <View style={styles.photoThumbRowWide}>
-                {photos.slice(1).map((photo, index) => {
-                  const actualIndex = index + 1;
-                  const status = uploadStatus[photo.uri];
-                  return (
-                    <Pressable key={`${photo.uri}-${actualIndex}`} onPress={() => makeCover(actualIndex)} style={[styles.photoThumbLarge, { backgroundColor: theme.background, borderColor: theme.border }]}>
-                      <Image source={{ uri: photo.uri }} style={styles.photoThumbImage} />
-                      {status === "uploading" && <View style={styles.thumbnailUploadOverlay}><ActivityIndicator size="small" color="#fff" /></View>}
-                      {status === "done" && <View style={styles.thumbnailDoneBadge}><Check size={11} color="#fff" /></View>}
-                      <Pressable onPress={() => removePhoto(actualIndex)} style={styles.photoRemoveButton}><Text style={styles.photoRemoveText}>×</Text></Pressable>
-                    </Pressable>
-                  );
-                })}
-                {photos.length < 8 && (
-                  <Pressable onPress={openPhotoPicker} style={[styles.photoThumbLarge, styles.photoAddThumb, { backgroundColor: theme.background, borderColor: theme.border }]}>
-                    <Plus size={20} color={theme.accent} />
+        {step === 0 && (
+          <>
+            <View style={[styles.typeCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <View style={styles.inlineLabel}><Tag size={16} color={theme.accent} /><Text style={[styles.cardTitle, { color: theme.text }]}>Listing type</Text></View>
+              <View style={[styles.segmented, { backgroundColor: theme.background, borderColor: theme.border, marginTop: 10 }]}>
+                {(["Product", "Service"] as const).map((option) => (
+                  <Pressable key={option} onPress={() => setKind(option)} style={[styles.segment, kind === option && { backgroundColor: theme.accent }]}>
+                    {option === "Product" ? <ShoppingBag size={16} color={kind === option ? "#fff" : theme.muted} /> : <Sparkles size={16} color={kind === option ? "#fff" : theme.muted} />}
+                    <Text style={[styles.segmentText, { color: kind === option ? "#fff" : theme.text }]}>{option}</Text>
                   </Pressable>
-                )}
+                ))}
               </View>
-            </>
-          ) : (
-            <Pressable onPress={openPhotoPicker} style={[styles.photoCover, { backgroundColor: theme.background, borderColor: theme.border }]}>
-              <View style={styles.photoAddedState}>
-                <View style={[styles.photoUploadIcon, { backgroundColor: theme.accent + (theme.isDark ? "22" : "12") }]}><Plus size={24} color={theme.accent} /></View>
-                <Text style={[styles.photoUploadTitle, { color: theme.text }]}>Add listing photos</Text>
-                <Text style={[styles.photoHint, { color: theme.muted }]}>Up to 8 photos • JPG or PNG</Text>
-              </View>
-            </Pressable>
-          )}
-        </View>
+            </View>
 
-        <View style={[styles.formCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <View style={styles.inlineLabel}><Tag size={16} color={theme.accent} /><Text style={[styles.cardTitle, { color: theme.text }]}>Listing details</Text></View>
-          <Field label="Title" value={title} onChangeText={setTitle} placeholder={kind === "Product" ? "e.g. Refurbished HP EliteBook 840" : "e.g. Professional portrait photography"} theme={theme} />
-          <View style={styles.fieldRow}>
-            <View style={{ flex: 1 }}><Field label="Price" value={price} onChangeText={setPrice} keyboardType="numeric" placeholder="KSh 0" theme={theme} /></View>
-            <View style={styles.switchWrapModern}><Text style={[styles.switchLabel, { color: theme.text }]}>Negotiable</Text><Switch value={negotiable} onValueChange={setNegotiable} trackColor={{ false: theme.border, true: theme.accent }} thumbColor="#fff" /></View>
+            <View style={[styles.formCard, { backgroundColor: theme.card, borderColor: theme.border, marginTop: 12 }]}>
+              <View style={styles.inlineLabel}><Tag size={16} color={theme.accent} /><Text style={[styles.cardTitle, { color: theme.text }]}>Product details</Text></View>
+              <Field label="Title" value={title} onChangeText={setTitle} placeholder={kind === "Product" ? "e.g. Refurbished HP EliteBook 840" : "e.g. Professional portrait photography"} theme={theme} />
+              <View style={styles.fieldRow}>
+                <View style={{ flex: 1 }}><Field label="Price" value={price} onChangeText={setPrice} keyboardType="numeric" placeholder="KSh 0" theme={theme} /></View>
+                <View style={styles.switchWrapModern}><Text style={[styles.switchLabel, { color: theme.text }]}>Negotiable</Text><Switch value={negotiable} onValueChange={setNegotiable} trackColor={{ false: theme.border, true: theme.accent }} thumbColor="#fff" /></View>
+              </View>
+              {kind === "Product" && <Field label="Items in stock" value={stock} onChangeText={(value) => setStock(value.replace(/[^0-9]/g, ""))} keyboardType="number-pad" placeholder="0" theme={theme} />}
+            </View>
+          </>
+        )}
+
+        {step === 1 && (
+          <>
+            <View style={[styles.formCard, { backgroundColor: theme.card, borderColor: theme.border, marginTop: 12 }]}>
+              <View style={styles.inlineLabel}><Tag size={16} color={theme.accent} /><Text style={[styles.cardTitle, { color: theme.text }]}>Listing details</Text></View>
+              <Text style={[styles.fieldLabel, { color: theme.text }]}>Category</Text>
+              <Pressable onPress={() => setDropdownOpen("category")} style={[styles.selectField, { borderColor: theme.border, backgroundColor: theme.background }]}>
+                <View style={{ flex: 1 }}><Text style={[styles.selectValue, { color: theme.text }]}>{category || "None"}</Text><Text style={[styles.selectHint, { color: theme.muted }]}>Choose a category</Text></View>
+                <ChevronDown size={18} color={theme.muted} />
+              </Pressable>
+              {kind === "Product" && <>
+                <Text style={[styles.fieldLabel, { color: theme.text }]}>Condition</Text>
+                <Pressable onPress={() => setDropdownOpen("condition")} style={[styles.selectField, { borderColor: theme.border, backgroundColor: theme.background }]}>
+                  <View style={{ flex: 1 }}><Text style={[styles.selectValue, { color: theme.text }]}>{condition}</Text><Text style={[styles.selectHint, { color: theme.muted }]}>Choose the item condition</Text></View>
+                  <ChevronDown size={18} color={theme.muted} />
+                </Pressable>
+              </>}
+              <View style={styles.inlineFieldLabel}><MapPin size={15} color={theme.muted}/><Text style={[styles.fieldLabelNoMargin,{color:theme.text}]}>Location</Text></View>
+              <Field label="" value={location} onChangeText={setLocation} placeholder="Town, area or pickup point" theme={theme}/>
+              <Text style={[styles.fieldLabel,{color:theme.text}]}>Description</Text>
+              <TextInput value={description} onChangeText={setDescription} multiline maxLength={2000} placeholder="Describe the item or service honestly. Mention condition, availability, what is included and anything a buyer should know." placeholderTextColor={theme.muted} style={[styles.descriptionInput,{color:theme.text,borderColor:theme.border,backgroundColor:theme.background}]}/>
+              <Text style={[styles.characterHint,{color:theme.muted}]}>{description.length}/2000</Text>
+            </View>
+
+            <View style={[styles.formCard,{backgroundColor:theme.card,borderColor:theme.border,marginTop:12}]}>
+              <View style={styles.inlineLabel}><Truck size={16} color={theme.accent}/><Text style={[styles.cardTitle,{color:theme.text}]}>Fulfilment</Text></View>
+              <Text style={[styles.cardHint,{color:theme.muted}]}>Tell buyers how they can receive the item.</Text>
+              <View style={styles.optionRow}>{["Pickup","Delivery","Both"].map((item)=><Pressable key={item} onPress={()=>setDelivery(item)} style={[styles.optionPill,{borderColor:theme.border,backgroundColor:theme.background},delivery===item&&{backgroundColor:theme.accent,borderColor:theme.accent}]}><Text style={[styles.optionPillText,{color:delivery===item?"#fff":theme.text}]}>{item}</Text></Pressable>)}</View>
+            </View>
+           </>
+        )}
+
+        {dropdownOpen && (
+          <Modal transparent visible animationType="slide" onRequestClose={() => setDropdownOpen(null)}>
+            <View style={styles.dropdownModalRoot}>
+              <Pressable style={styles.dropdownBackdrop} onPress={() => setDropdownOpen(null)} />
+              <View style={[styles.dropdownSheet, { backgroundColor: theme.card, borderColor: theme.border }]}>
+                <View style={styles.dropdownSheetHandle} />
+                <View style={styles.dropdownHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.dropdownTitle, { color: theme.text }]}>{dropdownOpen === "category" ? "Select category" : "Select condition"}</Text>
+                    <Text style={[styles.dropdownSubtitle, { color: theme.muted }]}>{dropdownOpen === "category" ? "Choose the category that best matches your listing." : "Tell buyers the current condition of this item."}</Text>
+                  </View>
+                  <Pressable onPress={() => setDropdownOpen(null)} style={[styles.dropdownClose, { backgroundColor: theme.background }]}><X size={18} color={theme.text} /></Pressable>
+                </View>
+                <ScrollView contentContainerStyle={{ paddingBottom: 18, gap: 8 }}>
+                  {(dropdownOpen === "category" ? categories : ["New", "Used"]).map((item) => {
+                    const selected = dropdownOpen === "category" ? category === item : condition === item;
+                    return (
+                      <Pressable key={item} onPress={() => { if (dropdownOpen === "category") setCategory(item); else setCondition(item); setDropdownOpen(null); }} style={[styles.dropdownOption, { borderColor: theme.border, backgroundColor: theme.background }, selected && { borderColor: theme.accent, backgroundColor: theme.accent + (theme.isDark ? "22" : "0D") }]}>
+                        <View style={[styles.dropdownOptionIcon, { backgroundColor: selected ? theme.accent : theme.card }]}><Tag size={15} color={selected ? "#fff" : theme.muted} /></View>
+                        <Text style={[styles.dropdownOptionText, { color: theme.text }]}>{item}</Text>
+                        {selected && <Check size={18} color={theme.accent} />}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+        )}
+
+        {step === 2 && (
+          <View style={[styles.formCard, { backgroundColor: theme.card, borderColor: theme.border, marginTop: 12 }]}>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>Listing photos</Text>
+            <Text style={[styles.cardHint, { color: theme.muted }]}>Use clear photos. Your first photo becomes the cover. Up to 8 photos.</Text>
+            {photos.length > 0 ? (
+              <>
+                <Pressable onPress={openPhotoPicker} style={[styles.photoCoverImage, { backgroundColor: theme.background, borderColor: theme.border }]}>
+                  <Image source={{ uri: photos[0].uri }} style={styles.photoCoverImageFill} />
+                  <View style={styles.coverBadge}><Text style={styles.coverBadgeText}>COVER PHOTO</Text></View>
+                  <View style={styles.coverEditHint}><ImageIcon size={14} color="#fff" /><Text style={styles.coverEditText}>Tap to add more</Text></View>
+                </Pressable>
+                <Text style={[styles.coverHelper, { color: theme.muted }]}>Tap another photo below to make it the cover.</Text>
+                <View style={styles.photoThumbRowWide}>
+                  {photos.slice(1).map((photo, index) => {
+                    const actualIndex = index + 1;
+                    const status = uploadStatus[photo.uri];
+                    return (
+                      <Pressable key={`${photo.uri}-${actualIndex}`} onPress={() => makeCover(actualIndex)} style={[styles.photoThumbLarge, { backgroundColor: theme.background, borderColor: theme.border }]}>
+                        <Image source={{ uri: photo.uri }} style={styles.photoThumbImage} />
+                        {status === "done" && <View style={styles.thumbnailDoneBadge}><Check size={11} color="#fff" /></View>}
+                        <Pressable onPress={() => removePhoto(actualIndex)} style={styles.photoRemoveButton}><Text style={styles.photoRemoveText}>×</Text></Pressable>
+                      </Pressable>
+                    );
+                  })}
+                  {photos.length < 8 && (
+                    <Pressable onPress={openPhotoPicker} style={[styles.photoThumbLarge, styles.photoAddThumb, { backgroundColor: theme.background, borderColor: theme.border }]}><Plus size={20} color={theme.accent} /></Pressable>
+                  )}
+                </View>
+              </>
+            ) : (
+              <Pressable onPress={openPhotoPicker} style={[styles.photoCover, { backgroundColor: theme.background, borderColor: theme.border }]}>
+                <View style={styles.photoAddedState}>
+                  <View style={[styles.photoUploadIcon, { backgroundColor: theme.accent + (theme.isDark ? "22" : "12") }]}><Plus size={24} color={theme.accent} /></View>
+                  <Text style={[styles.photoUploadTitle, { color: theme.text }]}>Add listing photos</Text>
+                  <Text style={[styles.photoHint, { color: theme.muted }]}>Up to 8 photos • JPG or PNG</Text>
+                </View>
+              </Pressable>
+            )}
           </View>
-          {kind === "Product" && <Field label="Items in stock" value={stock} onChangeText={(value) => setStock(value.replace(/[^0-9]/g, ""))} keyboardType="number-pad" placeholder="0" theme={theme} />}
+        )}
 
-          <Text style={[styles.fieldLabel, { color: theme.text }]}>Category</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryPicker}>
-            {categories.map((item) => <Pressable key={item} onPress={() => setCategory(item)} style={[styles.categoryChip, { borderColor: theme.border, backgroundColor: theme.background }, category === item && { borderColor: theme.accent, backgroundColor: theme.accent }]}><Text style={[styles.categoryChipText, { color: category === item ? "#fff" : theme.text }]}>{item}</Text></Pressable>)}
-          </ScrollView>
-          {kind === "Product" && <><Text style={[styles.fieldLabel, { color: theme.text }]}>Condition</Text><View style={styles.optionRow}>{["New","Used"].map((item)=><Pressable key={item} onPress={()=>setCondition(item)} style={[styles.optionPill,{borderColor:theme.border,backgroundColor:theme.background},condition===item&&{backgroundColor:theme.accent,borderColor:theme.accent}]}><Text style={[styles.optionPillText,{color:condition===item?"#fff":theme.text}]}>{item}</Text></Pressable>)}</View></>}
-          <View style={styles.inlineFieldLabel}><MapPin size={15} color={theme.muted}/><Text style={[styles.fieldLabelNoMargin,{color:theme.text}]}>Location</Text></View>
-          <Field label="" value={location} onChangeText={setLocation} placeholder="Town, area or pickup point" theme={theme}/>
-          <Text style={[styles.fieldLabel,{color:theme.text}]}>Description</Text>
-          <TextInput value={description} onChangeText={setDescription} multiline maxLength={2000} placeholder="Describe the item or service honestly. Mention condition, availability, what is included and anything a buyer should know." placeholderTextColor={theme.muted} style={[styles.descriptionInput,{color:theme.text,borderColor:theme.border,backgroundColor:theme.background}]}/>
-          <Text style={[styles.characterHint,{color:theme.muted}]}>{description.length}/2000</Text>
-        </View>
-
-        <View style={[styles.formCard,{backgroundColor:theme.card,borderColor:theme.border}]}>
-          <View style={styles.inlineLabel}><Truck size={16} color={theme.accent}/><Text style={[styles.cardTitle,{color:theme.text}]}>Fulfilment</Text></View>
-          <Text style={[styles.cardHint,{color:theme.muted}]}>Tell buyers how they can receive the item.</Text>
-          <View style={styles.optionRow}>{["Pickup","Delivery","Both"].map((item)=><Pressable key={item} onPress={()=>setDelivery(item)} style={[styles.optionPill,{borderColor:theme.border,backgroundColor:theme.background},delivery===item&&{backgroundColor:theme.accent,borderColor:theme.accent}]}><Text style={[styles.optionPillText,{color:delivery===item?"#fff":theme.text}]}>{item}</Text></Pressable>)}</View>
-        </View>
-
-        <View onLayout={(e) => { const y = e.nativeEvent.layout.y; setSectionY(v => ({ ...v, publish: y })); }} style={[styles.tipCard,{backgroundColor:theme.accent+(theme.isDark?"18":"0D"),borderColor:theme.accent+"35"}]}>
-          <Eye size={18} color={theme.accent}/><View style={{flex:1}}><Text style={[styles.tipTitle,{color:theme.text}]}>A strong listing gets noticed</Text><Text style={[styles.tipText,{color:theme.muted}]}>Clear photos, an honest description and a specific title help buyers feel confident.</Text></View>
-        </View>
+        {step === 3 && (
+          <>
+            <View style={[styles.formCard, { backgroundColor: theme.card, borderColor: theme.border, marginTop: 12 }]}>
+              <View style={styles.inlineLabel}><Eye size={16} color={theme.accent}/><Text style={[styles.cardTitle,{color:theme.text}]}>Ready to publish</Text></View>
+              <Text style={[styles.cardHint,{color:theme.muted}]}>Review your listing before it goes live.</Text>
+              <View style={{ flexDirection: "row", gap: 12, alignItems: "center", marginTop: 6 }}>
+                {photos[0] && <Image source={{ uri: photos[0].uri }} style={{ width: 82, height: 82, borderRadius: 16 }} />}
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: theme.text, fontSize: 16, fontWeight: "900" }} numberOfLines={2}>{title || "Untitled listing"}</Text>
+                  <Text style={{ color: theme.accent, fontSize: 14, fontWeight: "900", marginTop: 4 }}>KSh {price || "0"}</Text>
+                  <Text style={{ color: theme.muted, fontSize: 11, marginTop: 4 }}>{photos.length} photo{photos.length === 1 ? "" : "s"} • {category} • {delivery}</Text>
+                </View>
+              </View>
+            </View>
+            <View style={[styles.tipCard,{backgroundColor:theme.accent+(theme.isDark?"18":"0D"),borderColor:theme.accent+"35",marginTop:12}]}>
+              <Sparkles size={18} color={theme.accent}/><View style={{flex:1}}><Text style={[styles.tipTitle,{color:theme.text}]}>A strong listing gets noticed</Text><Text style={[styles.tipText,{color:theme.muted}]}>Clear photos, an honest description and a specific title help buyers feel confident.</Text></View>
+            </View>
+          </>
+        )}
       </ScrollView>
 
       <View style={[styles.publishSheetFixed,{backgroundColor:theme.card,borderColor:theme.border}]}>
-        <View style={{flex:1}}><Text style={[styles.publishSheetTitle,{color:theme.text}]}>{canPublish?"Ready to publish":"Finish the details"}</Text><Text style={[styles.publishSheetSub,{color:theme.muted}]}>You can save a draft and publish later.</Text></View>
-        <Pressable onPress={()=>Alert.alert("Draft saved","Your listing has been saved as a draft.")} style={[styles.secondaryButton,{backgroundColor:theme.background,borderColor:theme.border}]}><Text style={[styles.secondaryButtonText,{color:theme.text}]}>Draft</Text></Pressable>
-        <Pressable disabled={!canPublish || publishing} onPress={() => { void publishListing(); }} style={[styles.primaryButton,{backgroundColor:canPublish && !publishing?BUTTON_BLUE:theme.border,minWidth:108}]}><Text style={styles.primaryButtonText}>{publishing ? "Publishing…" : "Publish"}</Text></Pressable>
+        {step > 0 && <Pressable onPress={() => setStep((step - 1) as 0 | 1 | 2 | 3)} style={[styles.secondaryButton,{backgroundColor:theme.background,borderColor:theme.border}]}><Text style={[styles.secondaryButtonText,{color:theme.text}]}>Back</Text></Pressable>}
+        <View style={{flex:1}}><Text style={[styles.publishSheetTitle,{color:theme.text}]}>{step === 3 ? "Everything looks good" : `Step ${step + 1} of 4`}</Text><Text style={[styles.publishSheetSub,{color:theme.muted}]}>{step === 0 ? "Next: complete the listing details." : step === 1 ? "Next: add your listing photos." : step === 2 ? "Next: review and publish." : "Your photos will upload securely."}</Text></View>
+        {step < 3 ? (
+          <Pressable onPress={goNext} style={[styles.primaryButton,{backgroundColor:BUTTON_BLUE,minWidth:108}]}><Text style={styles.primaryButtonText}>Continue</Text><ChevronRight size={16} color="#fff" /></Pressable>
+        ) : (
+          <>
+            <Pressable onPress={()=>Alert.alert("Draft saved","Your listing has been saved as a draft.")} style={[styles.secondaryButton,{backgroundColor:theme.background,borderColor:theme.border}]}><Text style={[styles.secondaryButtonText,{color:theme.text}]}>Draft</Text></Pressable>
+            <Pressable disabled={publishing} onPress={() => { void publishListing(); }} style={[styles.primaryButton,{backgroundColor:publishing?theme.border:BUTTON_BLUE,minWidth:108}]}>{publishing ? <ActivityIndicator color="#fff" /> : <><Check size={15} color="#fff" /><Text style={styles.primaryButtonText}>Publish</Text></>}</Pressable>
+          </>
+        )}
       </View>
+
+      {publishing && (
+        <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: theme.isDark ? "rgba(5,8,15,.94)" : "rgba(248,250,252,.96)", zIndex: 100, alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <View style={{ width: "100%", maxWidth: 380, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, borderRadius: 28, padding: 22, shadowColor: "#000", shadowOpacity: .16, shadowRadius: 28, shadowOffset: { width: 0, height: 12 }, elevation: 12 }}>
+            <View style={{ alignItems: "center" }}>
+              <View style={{ width: 74, height: 74, borderRadius: 37, backgroundColor: theme.accent + (theme.isDark ? "22" : "10"), alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+                {currentPhoto ? <Image source={{ uri: currentPhoto.uri }} style={{ width: 62, height: 62, borderRadius: 31 }} /> : <ActivityIndicator size="large" color={theme.accent} />}
+              </View>
+              <Text style={{ color: theme.text, fontSize: 21, fontWeight: "900" }}>Publishing your listing</Text>
+              <Text style={{ color: theme.muted, fontSize: 11, marginTop: 5, textAlign: "center" }}>{uploadProgress < 90 ? `Uploading image ${Math.min(uploadIndex + 1, photos.length)} of ${photos.length}` : uploadProgress < 100 ? "Finishing your listing…" : "Published!"}</Text>
+            </View>
+            <View style={{ marginTop: 22 }}>
+              <View style={{ height: 12, borderRadius: 999, backgroundColor: theme.background, overflow: "hidden", borderWidth: 1, borderColor: theme.border }}>
+                <Animated.View style={{ height: "100%", width: progressWidth, backgroundColor: theme.accent, borderRadius: 999 }} />
+              </View>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8 }}>
+                <Text style={{ color: theme.muted, fontSize: 10, fontWeight: "800" }}>Secure upload</Text>
+                <Text style={{ color: theme.accent, fontSize: 13, fontWeight: "900" }}>{uploadProgress}%</Text>
+              </View>
+            </View>
+            <View style={{ flexDirection: "row", gap: 7, marginTop: 18, justifyContent: "center" }}>
+              {photos.map((photo, index) => (
+                <View key={photo.uri} style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: uploadStatus[photo.uri] === "done" ? theme.accent : index === uploadIndex ? theme.accent + "66" : theme.border }} />
+              ))}
+            </View>
+            <Text style={{ color: theme.muted, fontSize: 10, lineHeight: 15, textAlign: "center", marginTop: 15 }}>Please keep this screen open while your photos are being uploaded.</Text>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -3352,7 +3555,7 @@ function StoreNameWithBadge({ name, verified = false, style, numberOfLines = 1 }
   );
 }
 
-function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onSecurity, onNotificationPreferences, onHelp, onSignIn, onSignUp, onGoogle, onStore, onMessages, onCart, cartCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onSecurity: () => void; onNotificationPreferences: () => void; onHelp: () => void; onSignIn: () => void; onSignUp: () => void; onGoogle: () => void; onStore: () => void; onMessages: () => void; onCart: () => void; cartCount?: number }) {
+function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders, onSettings, onSecurity, onNotificationPreferences, onHelp, onSignIn, onSignUp, onGoogle, onAuthenticated, onBack, onStore, onMessages, onCart, cartCount = 0 }: { theme: Theme; currentUser: ApiUser | null; isLoggedIn: boolean; onUserUpdated: (user: ApiUser) => void; onOrders: () => void; onSettings: () => void; onSecurity: () => void; onNotificationPreferences: () => void; onHelp: () => void; onSignIn: () => void; onSignUp: () => void; onGoogle: () => void; onAuthenticated: (payload: AuthPayload) => void | Promise<void>; onBack: () => boolean; onStore: () => void; onMessages: () => void; onCart: () => void; cartCount?: number }) {
   const insets = useSafeAreaInsets();
   const [profileMode, setProfileMode] = useState<"buyer" | "seller">("buyer");
   const [editing, setEditing] = useState(false);
@@ -3408,17 +3611,7 @@ function ProfileScreen({ theme, currentUser, isLoggedIn, onUserUpdated, onOrders
     return () => { active = false; };
   }, [isLoggedIn, currentUser?.id]);
 
-  if (!isLoggedIn) return <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
-    <View style={[styles.profileAuthCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-      <View style={[styles.profileAuthIcon, { backgroundColor: theme.isDark ? "rgba(96,165,250,.12)" : "#EFF6FF" }]}><User size={30} color={theme.accent} /></View>
-      <Text style={[styles.profileAuthTitle, { color: theme.text }]}>Welcome to Marketplace</Text>
-      <Text style={[styles.profileAuthText, { color: theme.muted }]}>Sign in to manage your profile, listings, orders, messages and preferences.</Text>
-      <Pressable onPress={onGoogle} style={[styles.profileAuthButton, { backgroundColor: theme.card, borderColor: theme.border }]}><Text style={[styles.profileAuthButtonText, { color: theme.text }]}>Continue with Google</Text></Pressable>
-      <Pressable onPress={onSignIn} style={[styles.profileAuthButton, { backgroundColor: BUTTON_BLUE, borderColor: BUTTON_BLUE }]}><Text style={[styles.profileAuthButtonText, { color: "#fff" }]}>Sign In</Text></Pressable>
-      <Pressable onPress={onSignUp} style={[styles.profileAuthButton, { backgroundColor: theme.card, borderColor: theme.border }]}><Text style={[styles.profileAuthButtonText, { color: theme.text }]}>Create Account</Text></Pressable>
-      <Pressable onPress={onSignIn} style={{ padding: 10 }}><Text style={{ color: theme.accent, fontSize: 12, fontWeight: "800" }}>Forgot Password?</Text></Pressable>
-    </View>
-  </ScreenScroll>;
+  if (!isLoggedIn) return <LoginScreen theme={theme} onBack={onBack} initialMode="login" onAuthenticated={onAuthenticated} />;
 
   const sellerAttentionCount = profileCounts.sellerOrders + profileCounts.listings;
   const buyerActions = [
@@ -5039,7 +5232,29 @@ function CompactListing({ listing, theme, onPress }: { listing: Listing; theme: 
   );
 }
 function SectionHeader({ title, action, onPress, theme }: { title:string; action:string; onPress:()=>void; theme:Theme }) { return <View style={styles.sectionHeader}><Text style={[styles.sectionTitle,{color:theme.text}]}>{title}</Text><Pressable onPress={onPress}><Text style={[styles.sectionAction,{color:theme.accent}]}>{action}</Text></Pressable></View>; }
-function Field({ label, value, onChangeText, theme, keyboardType, multiline=false, placeholder }: { label:string; value:string; onChangeText:(v:string)=>void; theme:Theme; keyboardType?:any; multiline?:boolean; placeholder?:string }) { return <View style={{marginBottom:14}}><Text style={[styles.fieldLabel,{color:theme.text}]}>{label}</Text><TextInput value={value} onChangeText={onChangeText} placeholder={placeholder || label} placeholderTextColor={theme.muted} keyboardType={keyboardType} multiline={multiline} style={[styles.input,{color:theme.text,borderColor:theme.border,backgroundColor:theme.card},multiline&&{minHeight:110,textAlignVertical:"top"}]}/></View>; }
+function AuthInputField({ label, value, onChangeText, theme, keyboardType, placeholder, secureTextEntry=false, icon, rightElement }: { label:string; value:string; onChangeText:(v:string)=>void; theme:Theme; keyboardType?:any; placeholder?:string; secureTextEntry?:boolean; icon?:React.ReactNode; rightElement?:React.ReactNode }) {
+  return (
+    <View style={styles.authInputGroup}>
+      <Text style={[styles.authInputLabel, { color: theme.text }]}>{label}</Text>
+      <View style={[styles.authInputShell, { backgroundColor: theme.background, borderColor: theme.border }]}>
+        {icon}
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder || label}
+          placeholderTextColor={theme.muted}
+          keyboardType={keyboardType}
+          secureTextEntry={secureTextEntry}
+          autoCapitalize="none"
+          style={[styles.authInputText, { color: theme.text }]}
+        />
+        {rightElement}
+      </View>
+    </View>
+  );
+}
+
+function Field({ label, value, onChangeText, theme, keyboardType, multiline=false, placeholder, secureTextEntry=false }: { label:string; value:string; onChangeText:(v:string)=>void; theme:Theme; keyboardType?:any; multiline?:boolean; placeholder?:string; secureTextEntry?:boolean }) { return <View style={{marginBottom:14}}><Text style={[styles.fieldLabel,{color:theme.text}]}>{label}</Text><TextInput value={value} onChangeText={onChangeText} placeholder={placeholder || label} placeholderTextColor={theme.muted} keyboardType={keyboardType} multiline={multiline} secureTextEntry={secureTextEntry} style={[styles.input,{color:theme.text,borderColor:theme.border,backgroundColor:theme.card},multiline&&{minHeight:110,textAlignVertical:"top"}]}/></View>; }
 function ShieldIcon({ theme }: { theme: Theme }) { return <View style={[styles.profileShieldIcon,{backgroundColor:theme.isDark?"rgba(43,158,99,.14)":"#ECFDF5"}]}><Check size={13} color="#2B9E63" strokeWidth={3}/></View>; }
 function ProfileActionTile({ theme, icon, title, text, onPress }: { theme:Theme; icon:React.ReactNode; title:string; text:string; onPress:()=>void }) { return <Pressable onPress={onPress} style={[styles.profileActionTile,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.profileActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}>{icon}</View><View style={{flex:1,minWidth:0}}><Text style={[styles.profileActionTitle,{color:theme.text}]} numberOfLines={1}>{title}</Text><Text style={[styles.profileActionText,{color:theme.muted}]} numberOfLines={2}>{text}</Text></View><ChevronRight size={16} color={theme.muted}/></Pressable>; }
 function ProfileMiniFeature({ theme, icon, title, text }: { theme:Theme; icon:React.ReactNode; title:string; text:string }) { return <View style={[styles.profileMiniFeature,{backgroundColor:theme.card,borderColor:theme.border}]}><View style={[styles.profileActionIcon,{backgroundColor:theme.isDark?"rgba(96,165,250,.12)":"#EFF6FF"}]}>{icon}</View><Text style={[styles.profileMiniTitle,{color:theme.text}]}>{title}</Text><Text style={[styles.profileMiniText,{color:theme.muted}]}>{text}</Text></View>; }
@@ -5102,7 +5317,7 @@ const styles = StyleSheet.create({
   loginHeaderButton:{minWidth:62,height:34,paddingHorizontal:12,borderWidth:1.2,borderRadius:17,alignItems:"center",justifyContent:"center"},
   loginHeaderButtonText:{fontSize:12,fontWeight:"800"},
   avatarText:{fontSize:10,fontWeight:"800",color:"#fff"}, dot:{position:"absolute",right:1,top:1,width:7,height:7,borderRadius:4,backgroundColor:"#DD3850"},
-  validationRow:{flexDirection:"row",alignItems:"center",gap:7}, validationDot:{width:7,height:7,borderRadius:4}, validationText:{fontSize:11,fontWeight:"700"}, passwordQuality:{borderWidth:1,borderRadius:14,padding:12}, passwordQualityTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:8}, passwordQualityLabel:{fontSize:11,fontWeight:"900"}, passwordMeter:{height:5,borderRadius:3,overflow:"hidden"}, passwordMeterFill:{height:"100%",borderRadius:3}, passwordChecks:{flexDirection:"row",flexWrap:"wrap",columnGap:12,rowGap:6,marginTop:10}, passwordCheckRow:{flexDirection:"row",alignItems:"center",gap:5,minWidth:"46%"}, passwordCheckIcon:{fontSize:12,fontWeight:"900"}, passwordCheckText:{fontSize:10.5,fontWeight:"700"}, authScroll:{paddingHorizontal:20,paddingTop:10,paddingBottom:40}, authTopRow:{height:44,flexDirection:"row",alignItems:"center",justifyContent:"space-between"}, authHeaderLabel:{fontSize:16,fontWeight:"900",letterSpacing:-0.2}, authBack:{width:40,height:40,borderRadius:20,borderWidth:1,alignItems:"center",justifyContent:"center"}, authMark:{width:40,height:40,borderRadius:14,alignItems:"center",justifyContent:"center"}, authHero:{marginTop:32,marginBottom:22,position:"relative",overflow:"hidden"}, authGlow:{position:"absolute",width:160,height:160,borderRadius:80,right:-60,top:-55}, authEyebrow:{fontSize:11,fontWeight:"900",letterSpacing:2.2,marginBottom:8}, authTitle:{fontSize:36,fontWeight:"900",letterSpacing:-1.2,lineHeight:42}, authSubtitle:{fontSize:14,lineHeight:21,marginTop:10,maxWidth:340}, authMode:{height:50,borderWidth:1,borderRadius:15,padding:4,flexDirection:"row",gap:4,marginBottom:14}, authModeItem:{flex:1,borderRadius:11,alignItems:"center",justifyContent:"center"}, authModeText:{fontSize:13,fontWeight:"900"}, googleButton:{height:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:10}, googleIcon:{width:28,height:28,borderRadius:14,backgroundColor:"#fff",alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"#E1E1E1"}, googleButtonText:{fontSize:14,fontWeight:"900"}, authDivider:{flexDirection:"row",alignItems:"center",gap:10,marginVertical:18}, authLine:{height:1,flex:1}, authOr:{fontSize:10,fontWeight:"900",letterSpacing:1}, forgotButton:{alignSelf:"flex-end",marginTop:-5,marginBottom:12}, forgotText:{fontSize:12,fontWeight:"800"}, resetSecondary:{height:50,borderRadius:15,borderWidth:1,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8,marginTop:10}, resetSecondaryText:{fontSize:13,fontWeight:"800"}, resetSuccessCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",marginTop:8}, resetSuccessIcon:{width:64,height:64,borderRadius:32,alignItems:"center",justifyContent:"center",marginBottom:14}, resetSuccessTitle:{fontSize:21,fontWeight:"900",marginBottom:7}, resetSuccessText:{fontSize:13,lineHeight:20,textAlign:"center"}, authPrimary:{height:54,borderRadius:16,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8,marginTop:2}, authPrimaryText:{fontSize:15,fontWeight:"900",color:"#fff"}, authTrust:{flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8,marginTop:18,paddingHorizontal:8}, authTrustText:{fontSize:11,lineHeight:16,textAlign:"center",flex:1}, authFootnote:{fontSize:10,lineHeight:15,textAlign:"center",marginTop:18,paddingHorizontal:8}, authErrorCard:{flexDirection:"row",alignItems:"flex-start",gap:11,borderWidth:1,borderRadius:16,padding:13,marginTop:12}, authErrorIcon:{width:28,height:28,borderRadius:14,alignItems:"center",justifyContent:"center"}, authErrorTitle:{fontSize:13,fontWeight:"900",marginBottom:3}, authErrorMessage:{fontSize:11.5,lineHeight:17}, authToastWrap:{position:"absolute",left:16,right:16,bottom:18,alignItems:"center"}, authToast:{minHeight:46,maxWidth:420,borderRadius:14,paddingHorizontal:14,paddingVertical:11,flexDirection:"row",alignItems:"center",gap:9,shadowColor:"#000",shadowOpacity:0.18,shadowRadius:12,shadowOffset:{width:0,height:6},elevation:8}, authToastDot:{width:7,height:7,borderRadius:4,backgroundColor:"#F2B84B"}, authToastText:{flex:1,color:"#fff",fontSize:12,fontWeight:"700"}, authToastClose:{color:"#C9C9C9",fontSize:18,lineHeight:18},
+  validationRow:{flexDirection:"row",alignItems:"center",gap:7}, validationDot:{width:7,height:7,borderRadius:4}, validationText:{fontSize:11,fontWeight:"700"}, passwordQuality:{borderWidth:1,borderRadius:14,padding:12}, passwordQualityTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:8}, passwordQualityLabel:{fontSize:11,fontWeight:"900"}, passwordMeter:{height:5,borderRadius:3,overflow:"hidden"}, passwordMeterFill:{height:"100%",borderRadius:3}, passwordChecks:{flexDirection:"row",flexWrap:"wrap",columnGap:12,rowGap:6,marginTop:10}, passwordCheckRow:{flexDirection:"row",alignItems:"center",gap:5,minWidth:"46%"}, passwordCheckIcon:{fontSize:12,fontWeight:"900"}, passwordCheckText:{fontSize:10.5,fontWeight:"700"}, authScroll:{paddingHorizontal:16,paddingTop:8,paddingBottom:40}, authTopRow:{height:48,flexDirection:"row",alignItems:"center",justifyContent:"space-between"}, authEnterpriseHero:{flexDirection:"row",alignItems:"center",gap:12,marginTop:10,marginBottom:14,paddingHorizontal:4}, authEnterpriseBadge:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"}, authEnterpriseEyebrow:{fontSize:9,fontWeight:"900",letterSpacing:1.5,marginBottom:3}, authEnterpriseTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.7}, authEnterpriseSubtitle:{fontSize:11.5,lineHeight:17,marginTop:2}, authLoginForm:{paddingHorizontal:0}, authInputGroup:{marginBottom:14}, authInputLabel:{fontSize:11.5,fontWeight:"900",marginBottom:7}, authInputShell:{minHeight:52,borderWidth:1,borderRadius:14,paddingHorizontal:13,flexDirection:"row",alignItems:"center",gap:10}, authInputText:{flex:1,fontSize:14,fontWeight:"600",paddingVertical:0}, authHeaderLabel:{fontSize:16,fontWeight:"900",letterSpacing:-0.2}, authBack:{width:40,height:40,borderRadius:20,borderWidth:1,alignItems:"center",justifyContent:"center"}, authMark:{width:40,height:40,borderRadius:14,alignItems:"center",justifyContent:"center"}, authHero:{marginTop:32,marginBottom:22,position:"relative",overflow:"hidden"}, authGlow:{position:"absolute",width:160,height:160,borderRadius:80,right:-60,top:-55}, authEyebrow:{fontSize:11,fontWeight:"900",letterSpacing:2.2,marginBottom:8}, authTitle:{fontSize:36,fontWeight:"900",letterSpacing:-1.2,lineHeight:42}, authSubtitle:{fontSize:14,lineHeight:21,marginTop:10,maxWidth:340}, authMode:{height:50,borderWidth:1,borderRadius:15,padding:4,flexDirection:"row",gap:4,marginBottom:14}, authModeItem:{flex:1,borderRadius:11,alignItems:"center",justifyContent:"center"}, authModeText:{fontSize:13,fontWeight:"900"}, googleButton:{height:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:10}, googleIcon:{width:28,height:28,borderRadius:14,backgroundColor:"#fff",alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"#E1E1E1"}, googleButtonText:{fontSize:14,fontWeight:"900"}, authDivider:{flexDirection:"row",alignItems:"center",gap:10,marginVertical:18}, authLine:{height:1,flex:1}, authOr:{fontSize:10,fontWeight:"900",letterSpacing:1}, forgotButton:{alignSelf:"flex-end",marginTop:-5,marginBottom:12}, forgotText:{fontSize:12,fontWeight:"800"}, resetSecondary:{height:50,borderRadius:15,borderWidth:1,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8,marginTop:10}, resetSecondaryText:{fontSize:13,fontWeight:"800"}, resetSuccessCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",marginTop:8}, resetSuccessIcon:{width:64,height:64,borderRadius:32,alignItems:"center",justifyContent:"center",marginBottom:14}, resetSuccessTitle:{fontSize:21,fontWeight:"900",marginBottom:7}, resetSuccessText:{fontSize:13,lineHeight:20,textAlign:"center"}, authPrimary:{height:54,borderRadius:16,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8,marginTop:2}, authPrimaryText:{fontSize:15,fontWeight:"900",color:"#fff"}, authTrust:{flexDirection:"row",alignItems:"center",justifyContent:"center",gap:8,marginTop:18,paddingHorizontal:8}, authTrustText:{fontSize:11,lineHeight:16,textAlign:"center",flex:1}, authFootnote:{fontSize:10,lineHeight:15,textAlign:"center",marginTop:18,paddingHorizontal:8}, authErrorCard:{flexDirection:"row",alignItems:"flex-start",gap:11,borderWidth:1,borderRadius:16,padding:13,marginTop:12}, authErrorIcon:{width:28,height:28,borderRadius:14,alignItems:"center",justifyContent:"center"}, authErrorTitle:{fontSize:13,fontWeight:"900",marginBottom:3}, authErrorMessage:{fontSize:11.5,lineHeight:17}, authToastWrap:{position:"absolute",left:16,right:16,bottom:18,alignItems:"center"}, authToast:{minHeight:46,maxWidth:420,borderRadius:14,paddingHorizontal:14,paddingVertical:11,flexDirection:"row",alignItems:"center",gap:9,shadowColor:"#000",shadowOpacity:0.18,shadowRadius:12,shadowOffset:{width:0,height:6},elevation:8}, authToastDot:{width:7,height:7,borderRadius:4,backgroundColor:"#F2B84B"}, authToastText:{flex:1,color:"#fff",fontSize:12,fontWeight:"700"}, authToastClose:{color:"#C9C9C9",fontSize:18,lineHeight:18},
   menu:{position:"absolute",top:50,left:8,right:8,zIndex:50,borderWidth:1,borderRadius:18,padding:8,shadowColor:"#000",shadowOpacity:.12,shadowRadius:16,elevation:8},
   menuItem:{height:46,flexDirection:"row",alignItems:"center",gap:12,paddingHorizontal:10}, menuItemText:{flex:1,fontSize:14,fontWeight:"700"},
   scrollContent:{paddingTop:10,paddingBottom:100,gap:10},
@@ -5117,6 +5332,7 @@ homeShopTitle:{fontSize:26,fontWeight:"900",letterSpacing:-0.5},
 homeShopSub:{fontSize:13,fontWeight:"600",marginTop:1},
 homeShopIcon:{width:42,height:42,borderWidth:1,borderRadius:21,alignItems:"center",justifyContent:"center"},
 homeProductGrid:{flexDirection:"row",flexWrap:"wrap",justifyContent:"space-between",rowGap:14},
+homeFlatListContent:{paddingBottom:112},
 homeProductTile:{width:"48.2%",borderWidth:1,borderRadius:14,overflow:"hidden"},
 homeProductImageWrap:{width:"100%",aspectRatio:0.9,position:"relative",backgroundColor:"#F3F4F6"},
 homeProductImage:{width:"100%",height:"100%"},
@@ -5149,7 +5365,7 @@ compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"cente
   bottomNav:{flexDirection:"row",justifyContent:"space-around",alignItems:"center",borderTopWidth:1,paddingHorizontal:8,position:"absolute",bottom:0,left:0,right:0},navItem:{alignItems:"center",justifyContent:"center",flex:1,minHeight:46},navIconCreate:{width:44,height:44,borderRadius:15,alignItems:"center",justifyContent:"center"},navLabel:{fontSize:9,marginTop:3},navLabelActive:{fontWeight:"800"},
   detailImage:{width:"100%",height:330,borderRadius:20,backgroundColor:"#EEE"},detailGallery:{height:330,borderRadius:24,overflow:"hidden",position:"relative",alignSelf:"center",marginBottom:2},detailGalleryImage:{height:330,backgroundColor:"#EEE"},detailGalleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},productTitle:{fontSize:20,fontWeight:"800",lineHeight:26},bigPrice:{fontSize:28,fontWeight:"900",marginTop:8},storePill:{borderWidth:1,borderRadius:999,paddingHorizontal:9,paddingVertical:6,alignSelf:"flex-start",marginTop:12,flexDirection:"row",alignItems:"center",gap:7,maxWidth:"90%"},detailStoreAvatar:{width:24,height:24,borderRadius:12,alignItems:"center",justifyContent:"center",overflow:"hidden"},detailStoreAvatarImage:{width:"100%",height:"100%"},detailStoreAvatarText:{fontSize:9,fontWeight:"900"},storePillText:{fontSize:12,fontWeight:"800",flexShrink:1},detailText:{fontSize:14,lineHeight:22,marginTop:14},detailButtons:{flexDirection:"row",gap:8,marginTop:18},rowBetween:{flexDirection:"row",alignItems:"flex-start",justifyContent:"space-between",gap:12},
   formHint:{fontSize:13,lineHeight:19,marginBottom:8},fieldLabel:{fontSize:12,fontWeight:"800",marginBottom:7},input:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,fontSize:14},uploadBox:{height:120,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",gap:8,marginBottom:14},
-  createHeader:{flexDirection:"row",alignItems:"flex-start",gap:12,marginTop:4},createTitle:{fontSize:28,fontWeight:"900",letterSpacing:-0.5},createSub:{fontSize:12,lineHeight:18,marginTop:4,maxWidth:280},createStepBadge:{paddingHorizontal:10,paddingVertical:7,borderRadius:999},createStepText:{fontSize:11,fontWeight:"900"},progressRail:{marginTop:14,marginBottom:2},progressTrack:{height:5,borderRadius:999,overflow:"hidden"},progressFill:{height:5,borderRadius:999},progressLabels:{flexDirection:"row",justifyContent:"space-between",marginTop:7},progressLabel:{fontSize:10,fontWeight:"700"},progressLabelActive:{fontSize:10,fontWeight:"900"},progressStepButton:{paddingHorizontal:6,paddingVertical:4},typeCard:{borderWidth:1,borderRadius:20,padding:14},inlineLabel:{flexDirection:"row",alignItems:"center",gap:8},cardTitle:{fontSize:15,fontWeight:"900"},cardHint:{fontSize:11,lineHeight:17,marginTop:4,marginBottom:12},segmented:{borderWidth:1,borderRadius:16,padding:4,flexDirection:"row",gap:4},segment:{flex:1,height:42,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},segmentText:{fontSize:13,fontWeight:"800"},formCard:{borderWidth:1,borderRadius:20,padding:14},photoCover:{height:174,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",padding:14},photoCoverImage:{height:210,borderWidth:1,borderRadius:18,overflow:"hidden",position:"relative"},photoCoverImageFill:{width:"100%",height:"100%"},coverBadge:{position:"absolute",top:10,left:10,backgroundColor:"rgba(37,99,235,.95)",paddingHorizontal:9,paddingVertical:5,borderRadius:999},coverBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",letterSpacing:.7},coverEditHint:{position:"absolute",bottom:10,left:10,right:10,flexDirection:"row",alignItems:"center",gap:5},coverEditText:{color:"#fff",fontSize:10,fontWeight:"800",textShadowColor:"rgba(0,0,0,.7)",textShadowOffset:{width:0,height:1},textShadowRadius:3},coverHelper:{fontSize:10,lineHeight:15,marginTop:6},uploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.52)",alignItems:"center",justifyContent:"center",gap:7},uploadOverlayText:{color:"#fff",fontSize:11,fontWeight:"800"},uploadDoneBadge:{position:"absolute",right:10,bottom:10,width:27,height:27,borderRadius:14,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoThumbRowWide:{flexDirection:"row",gap:8,marginTop:10,flexWrap:"wrap"},photoThumbLarge:{width:62,height:62,borderWidth:1,borderRadius:13,overflow:"hidden",position:"relative"},photoThumbImage:{width:"100%",height:"100%"},photoAddThumb:{alignItems:"center",justifyContent:"center",borderStyle:"dashed"},thumbnailUploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.5)",alignItems:"center",justifyContent:"center"},thumbnailDoneBadge:{position:"absolute",right:4,bottom:4,width:19,height:19,borderRadius:10,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoAddedState:{alignItems:"center",justifyContent:"center"},photoUploadIcon:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center"},photoUploadTitle:{fontSize:14,fontWeight:"900",marginTop:10},photoAddedText:{fontSize:14,fontWeight:"900",marginTop:9},photoHint:{fontSize:11,marginTop:4,textAlign:"center"},photoThumbRow:{flexDirection:"row",gap:8,marginTop:9},photoThumb:{height:50,flex:1,borderWidth:1,borderRadius:13,alignItems:"center",justifyContent:"center"},fieldRow:{flexDirection:"row",gap:12,alignItems:"center"},switchWrapModern:{width:96,alignItems:"center",justifyContent:"center",marginBottom:10},switchLabel:{fontSize:10,fontWeight:"800",marginBottom:2},categoryPicker:{gap:8,paddingBottom:10},categoryChip:{borderWidth:1,borderRadius:999,paddingHorizontal:11,paddingVertical:8},categoryChipText:{fontSize:11,fontWeight:"800"},optionRow:{flexDirection:"row",gap:8,marginBottom:12},optionPill:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:14,alignItems:"center",justifyContent:"center"},optionPillText:{fontSize:12,fontWeight:"800"},inlineFieldLabel:{flexDirection:"row",alignItems:"center",gap:6,marginBottom:7},fieldLabelNoMargin:{fontSize:12,fontWeight:"800"},descriptionInput:{minHeight:190,borderWidth:1,borderRadius:14,padding:12,fontSize:14,lineHeight:20,textAlignVertical:"top"},characterHint:{fontSize:10,textAlign:"right",marginTop:5},tipCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"flex-start",gap:10},tipTitle:{fontSize:13,fontWeight:"800"},tipText:{fontSize:11,lineHeight:17,marginTop:3},publishSheet:{borderWidth:1,borderRadius:18,padding:10,flexDirection:"row",alignItems:"center",gap:8,marginTop:2}, publishSheetFixed:{position:"absolute",left:0,right:0,bottom:0,borderTopWidth:1,paddingHorizontal:12,paddingTop:10,paddingBottom:14,flexDirection:"row",alignItems:"center",gap:8,zIndex:50,elevation:12},publishSheetTitle:{fontSize:12,fontWeight:"900"},publishSheetSub:{fontSize:10,lineHeight:15,marginTop:2},  photoRemoveButton:{position:"absolute",top:2,right:2,width:22,height:22,borderRadius:11,backgroundColor:"rgba(0,0,0,.65)",alignItems:"center",justifyContent:"center"}, photoRemoveText:{color:"#fff",fontSize:14,fontWeight:"800"}, successScreen:{flex:1,alignItems:"center",justifyContent:"center",paddingHorizontal:20,gap:26}, verifiedAnimationWrap:{width:190,height:190,alignItems:"center",justifyContent:"center",position:"relative"}, successHalo:{position:"absolute",width:178,height:178,borderRadius:89,borderWidth:8}, verifiedBadge:{width:126,height:126,borderRadius:63,alignItems:"center",justifyContent:"center",elevation:10,shadowOpacity:0.2,shadowRadius:18,shadowOffset:{width:0,height:8}}, successSparkle:{position:"absolute",width:10,height:10,borderRadius:5}, sparkleTop:{top:12},sparkleRight:{right:14},sparkleBottom:{bottom:18},sparkleLeft:{left:14}, successCheckOuter:{width:170,height:170,borderRadius:85,alignItems:"center",justifyContent:"center",borderWidth:1}, successCheckCircle:{width:118,height:118,borderRadius:59,alignItems:"center",justifyContent:"center"}, successTitle:{fontSize:30,fontWeight:"900",textAlign:"center",letterSpacing:-0.5}, successSub:{fontSize:14,lineHeight:21,textAlign:"center",marginTop:8,paddingHorizontal:10}, successActions:{flexDirection:"row",gap:10,marginTop:24}, profileAuthCard:{borderWidth:1,borderRadius:28,padding:24,marginTop:12,marginHorizontal:2,alignItems:"center",shadowColor:"#000",shadowOpacity:.08,shadowRadius:18,shadowOffset:{width:0,height:8},elevation:5},profileAuthIcon:{width:72,height:72,borderRadius:24,alignItems:"center",justifyContent:"center",marginBottom:16},profileAuthTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.6,textAlign:"center"},profileAuthText:{fontSize:13,lineHeight:20,textAlign:"center",marginTop:8,maxWidth:340},profileAuthButton:{width:"100%",minHeight:52,borderWidth:1,borderRadius:16,alignItems:"center",justifyContent:"center",marginTop:10,paddingHorizontal:16},profileAuthButtonText:{fontSize:14,fontWeight:"900"},
+  createHeader:{flexDirection:"row",alignItems:"flex-start",gap:12,marginTop:4},createTitle:{fontSize:28,fontWeight:"900",letterSpacing:-0.5},createSub:{fontSize:12,lineHeight:18,marginTop:4,maxWidth:280},createStepBadge:{paddingHorizontal:10,paddingVertical:7,borderRadius:999},createStepText:{fontSize:11,fontWeight:"900"},progressRail:{marginTop:14,marginBottom:2},progressTrack:{height:5,borderRadius:999,overflow:"hidden"},progressFill:{height:5,borderRadius:999},progressLabels:{flexDirection:"row",justifyContent:"space-between",marginTop:7},progressLabel:{fontSize:10,fontWeight:"700"},progressLabelActive:{fontSize:10,fontWeight:"900"},progressStepButton:{paddingHorizontal:6,paddingVertical:4},typeCard:{borderWidth:1,borderRadius:20,padding:14},inlineLabel:{flexDirection:"row",alignItems:"center",gap:8},cardTitle:{fontSize:15,fontWeight:"900"},cardHint:{fontSize:11,lineHeight:17,marginTop:4,marginBottom:12},segmented:{borderWidth:1,borderRadius:16,padding:4,flexDirection:"row",gap:4},segment:{flex:1,height:42,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},segmentText:{fontSize:13,fontWeight:"800"},formCard:{borderWidth:1,borderRadius:20,padding:14},photoCover:{height:174,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",padding:14},photoCoverImage:{height:210,borderWidth:1,borderRadius:18,overflow:"hidden",position:"relative"},photoCoverImageFill:{width:"100%",height:"100%"},coverBadge:{position:"absolute",top:10,left:10,backgroundColor:"rgba(37,99,235,.95)",paddingHorizontal:9,paddingVertical:5,borderRadius:999},coverBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",letterSpacing:.7},coverEditHint:{position:"absolute",bottom:10,left:10,right:10,flexDirection:"row",alignItems:"center",gap:5},coverEditText:{color:"#fff",fontSize:10,fontWeight:"800",textShadowColor:"rgba(0,0,0,.7)",textShadowOffset:{width:0,height:1},textShadowRadius:3},coverHelper:{fontSize:10,lineHeight:15,marginTop:6},uploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.52)",alignItems:"center",justifyContent:"center",gap:7},uploadOverlayText:{color:"#fff",fontSize:11,fontWeight:"800"},uploadDoneBadge:{position:"absolute",right:10,bottom:10,width:27,height:27,borderRadius:14,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoThumbRowWide:{flexDirection:"row",gap:8,marginTop:10,flexWrap:"wrap"},photoThumbLarge:{width:62,height:62,borderWidth:1,borderRadius:13,overflow:"hidden",position:"relative"},photoThumbImage:{width:"100%",height:"100%"},photoAddThumb:{alignItems:"center",justifyContent:"center",borderStyle:"dashed"},thumbnailUploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.5)",alignItems:"center",justifyContent:"center"},thumbnailDoneBadge:{position:"absolute",right:4,bottom:4,width:19,height:19,borderRadius:10,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoAddedState:{alignItems:"center",justifyContent:"center"},photoUploadIcon:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center"},photoUploadTitle:{fontSize:14,fontWeight:"900",marginTop:10},photoAddedText:{fontSize:14,fontWeight:"900",marginTop:9},photoHint:{fontSize:11,marginTop:4,textAlign:"center"},photoThumbRow:{flexDirection:"row",gap:8,marginTop:9},photoThumb:{height:50,flex:1,borderWidth:1,borderRadius:13,alignItems:"center",justifyContent:"center"},fieldRow:{flexDirection:"row",gap:12,alignItems:"center"},selectField:{minHeight:56,borderWidth:1,borderRadius:14,paddingHorizontal:13,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10,marginBottom:12},selectValue:{fontSize:13,fontWeight:"800"},selectHint:{fontSize:10,marginTop:2},dropdownModalRoot:{flex:1,justifyContent:"flex-end"},dropdownBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(0,0,0,.45)"},dropdownSheet:{borderTopLeftRadius:26,borderTopRightRadius:26,borderWidth:1,paddingHorizontal:16,paddingTop:9,paddingBottom:12,maxHeight:"72%"},dropdownSheetHandle:{width:42,height:4,borderRadius:999,backgroundColor:"#CBD5E1",alignSelf:"center",marginBottom:14},dropdownHeader:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},dropdownTitle:{fontSize:19,fontWeight:"900"},dropdownSubtitle:{fontSize:11,lineHeight:16,marginTop:3},dropdownClose:{width:36,height:36,borderRadius:18,alignItems:"center",justifyContent:"center"},dropdownOption:{minHeight:54,borderWidth:1,borderRadius:15,paddingHorizontal:11,flexDirection:"row",alignItems:"center",gap:10},dropdownOptionIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},dropdownOptionText:{flex:1,fontSize:13,fontWeight:"800"},switchWrapModern:{width:96,alignItems:"center",justifyContent:"center",marginBottom:10},switchLabel:{fontSize:10,fontWeight:"800",marginBottom:2},categoryPicker:{gap:8,paddingBottom:10},categoryChip:{borderWidth:1,borderRadius:999,paddingHorizontal:11,paddingVertical:8},categoryChipText:{fontSize:11,fontWeight:"800"},optionRow:{flexDirection:"row",gap:8,marginBottom:12},optionPill:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:14,alignItems:"center",justifyContent:"center"},optionPillText:{fontSize:12,fontWeight:"800"},inlineFieldLabel:{flexDirection:"row",alignItems:"center",gap:6,marginBottom:7},fieldLabelNoMargin:{fontSize:12,fontWeight:"800"},descriptionInput:{minHeight:190,borderWidth:1,borderRadius:14,padding:12,fontSize:14,lineHeight:20,textAlignVertical:"top"},characterHint:{fontSize:10,textAlign:"right",marginTop:5},tipCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"flex-start",gap:10},tipTitle:{fontSize:13,fontWeight:"800"},tipText:{fontSize:11,lineHeight:17,marginTop:3},publishSheet:{borderWidth:1,borderRadius:18,padding:10,flexDirection:"row",alignItems:"center",gap:8,marginTop:2}, publishSheetFixed:{position:"absolute",left:0,right:0,bottom:0,borderTopWidth:1,paddingHorizontal:12,paddingTop:10,paddingBottom:14,flexDirection:"row",alignItems:"center",gap:8,zIndex:50,elevation:12},publishSheetTitle:{fontSize:12,fontWeight:"900"},publishSheetSub:{fontSize:10,lineHeight:15,marginTop:2},  photoRemoveButton:{position:"absolute",top:2,right:2,width:22,height:22,borderRadius:11,backgroundColor:"rgba(0,0,0,.65)",alignItems:"center",justifyContent:"center"}, photoRemoveText:{color:"#fff",fontSize:14,fontWeight:"800"}, successScreen:{flex:1,alignItems:"center",justifyContent:"center",paddingHorizontal:20,gap:26}, verifiedAnimationWrap:{width:190,height:190,alignItems:"center",justifyContent:"center",position:"relative"}, successHalo:{position:"absolute",width:178,height:178,borderRadius:89,borderWidth:8}, verifiedBadge:{width:126,height:126,borderRadius:63,alignItems:"center",justifyContent:"center",elevation:10,shadowOpacity:0.2,shadowRadius:18,shadowOffset:{width:0,height:8}}, successSparkle:{position:"absolute",width:10,height:10,borderRadius:5}, sparkleTop:{top:12},sparkleRight:{right:14},sparkleBottom:{bottom:18},sparkleLeft:{left:14}, successCheckOuter:{width:170,height:170,borderRadius:85,alignItems:"center",justifyContent:"center",borderWidth:1}, successCheckCircle:{width:118,height:118,borderRadius:59,alignItems:"center",justifyContent:"center"}, successTitle:{fontSize:30,fontWeight:"900",textAlign:"center",letterSpacing:-0.5}, successSub:{fontSize:14,lineHeight:21,textAlign:"center",marginTop:8,paddingHorizontal:10}, successActions:{flexDirection:"row",gap:10,marginTop:24}, profileAuthCard:{borderWidth:1,borderRadius:28,padding:24,marginTop:12,marginHorizontal:2,alignItems:"center",shadowColor:"#000",shadowOpacity:.08,shadowRadius:18,shadowOffset:{width:0,height:8},elevation:5},profileAuthIcon:{width:72,height:72,borderRadius:24,alignItems:"center",justifyContent:"center",marginBottom:16},profileAuthTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.6,textAlign:"center"},profileAuthText:{fontSize:13,lineHeight:20,textAlign:"center",marginTop:8,maxWidth:340},profileAuthButton:{width:"100%",minHeight:52,borderWidth:1,borderRadius:16,alignItems:"center",justifyContent:"center",marginTop:10,paddingHorizontal:16},profileAuthButtonText:{fontSize:14,fontWeight:"900"},
  settingsSectionTitle:{fontSize:13,fontWeight:"900",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:6},preferenceBlock:{borderWidth:1,borderRadius:18,padding:14,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionRow:{minHeight:68,borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionIcon:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},preferenceTitle:{fontSize:13,fontWeight:"900"},preferenceDescription:{fontSize:10.5,lineHeight:16,marginTop:3},choiceChip:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:13,alignItems:"center",justifyContent:"center"},faqRow:{minHeight:58,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12,paddingVertical:11,paddingHorizontal:4},faqQuestion:{fontSize:13,fontWeight:"800",lineHeight:19},faqAnswer:{fontSize:11.5,lineHeight:18,marginTop:7},reportInput:{minHeight:120,borderWidth:1,borderRadius:16,padding:13,fontSize:13,textAlignVertical:"top",marginBottom:9},reportInputSingle:{height:48,borderWidth:1,borderRadius:14,paddingHorizontal:13,fontSize:13,marginBottom:9},safetyHero:{borderWidth:1,borderRadius:24,padding:20,alignItems:"flex-start",marginBottom:10},safetyTip:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"flex-start",gap:11,marginBottom:9},safetyNumber:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},legalCard:{borderWidth:1,borderRadius:24,padding:20,marginTop:8},legalTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.5},legalHeading:{fontSize:14,fontWeight:"900",marginTop:20,marginBottom:6},legalText:{fontSize:12.5,lineHeight:20}, profileHeader:{flexDirection:"row",alignItems:"center",gap:14,paddingVertical:8},profileAvatar:{width:76,height:76,borderRadius:38,alignItems:"center",justifyContent:"center"},profileAvatarText:{fontSize:18,fontWeight:"900",color:"#fff"},profileHeroCard:{borderWidth:1,borderRadius:26,padding:18,marginBottom:13,shadowColor:"#000",shadowOpacity:.07,shadowRadius:16,shadowOffset:{width:0,height:7},elevation:4},profileHeroTop:{flexDirection:"row",alignItems:"center",gap:12},profileAvatarEditWrap:{width:78,height:78,position:"relative"},profileEditIconButton:{position:"absolute",right:-5,bottom:-5,width:32,height:32,borderRadius:16,borderWidth:2,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:5},profileAvatarLarge:{width:64,height:64,borderRadius:22,alignItems:"center",justifyContent:"center"},profileAvatarTextLarge:{fontSize:20,fontWeight:"900",color:"#fff"},profileNameLine:{flexDirection:"row",alignItems:"center",gap:7},profileName:{fontSize:18,fontWeight:"900",letterSpacing:-0.3,flexShrink:1},profileEmail:{fontSize:11,marginTop:3},profileMember:{fontSize:10,marginTop:3},profileVerified:{flexDirection:"row",alignItems:"center",gap:3,paddingHorizontal:7,paddingVertical:4,borderRadius:999},profileVerifiedText:{fontSize:9,fontWeight:"900"},metaVerifiedBadge:{backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,.55)"},profileIdentityHint:{fontSize:9.5,lineHeight:14,marginTop:-4,marginBottom:10},profileEditButton:{width:34,height:34,borderWidth:1,borderRadius:12,alignItems:"center",justifyContent:"center"},profileTrustRow:{borderTopWidth:1,marginTop:14,paddingTop:12,flexDirection:"row",alignItems:"center",gap:10},profileTrustItem:{flex:1,flexDirection:"row",alignItems:"center",gap:8},profileShieldIcon:{width:26,height:26,borderRadius:9,alignItems:"center",justifyContent:"center"},profileTrustDivider:{width:1,height:28},profileTrustTitle:{fontSize:10,fontWeight:"900"},profileTrustText:{fontSize:8.5,marginTop:2},profileModeSwitch:{height:52,borderWidth:1,borderRadius:17,padding:4,flexDirection:"row",gap:4,marginBottom:16},profileModeButton:{flex:1,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:6},profileModeText:{fontSize:12,fontWeight:"900"},countBadge:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:999,alignItems:"center",justifyContent:"center",marginLeft:4},countBadgeText:{fontSize:10,fontWeight:"900"},profileSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:5,marginBottom:10},profileSectionTitle:{fontSize:18,fontWeight:"900",letterSpacing:-0.2},profileSectionSub:{fontSize:10,lineHeight:15,marginTop:3,maxWidth:290},profileRoleBadge:{paddingHorizontal:8,paddingVertical:5,borderRadius:999},profileRoleBadgeText:{fontSize:8,fontWeight:"900",letterSpacing:1},profileActionGrid:{flexDirection:"row",flexWrap:"wrap",gap:9},profileActionTile:{flexBasis:"48%",flexGrow:1,minWidth:145,minHeight:100,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:9},profileActionIcon:{width:40,height:40,borderRadius:11,alignItems:"center",justifyContent:"center"},profileActionTitle:{fontSize:13,fontWeight:"900",letterSpacing:-.1},profileActionText:{fontSize:10.5,lineHeight:15,marginTop:4},profileFeatureCard:{borderWidth:1,borderRadius:18,padding:13,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:10},profileFeatureIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},profileFeatureTitle:{fontSize:12,fontWeight:"900"},profileFeatureText:{fontSize:9.5,lineHeight:15,marginTop:4},sellerSetupCard:{borderRadius:20,padding:15,marginTop:12,flexDirection:"row",alignItems:"center",gap:12},sellerSetupEyebrow:{fontSize:8,fontWeight:"900",letterSpacing:1.4,color:"#93C5FD"},sellerSetupTitle:{fontSize:17,fontWeight:"900",color:"#FFFFFF",marginTop:5,letterSpacing:-0.3},sellerSetupText:{fontSize:9.5,lineHeight:15,color:"#CBD5E1",marginTop:4},sellerSetupButton:{height:38,paddingHorizontal:12,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:3},sellerSetupButtonText:{fontSize:11,fontWeight:"900"},profileEssentialsRow:{flexDirection:"row",gap:9,alignItems:"stretch"},profileMiniFeature:{flex:1,minWidth:0,borderWidth:1,borderRadius:18,padding:13,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},profileMiniTitle:{fontSize:11,fontWeight:"900",marginTop:8},profileMiniText:{fontSize:9,lineHeight:14,marginTop:3},profileRow:{minHeight:62,borderWidth:1,borderRadius:18,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12,marginBottom:8},profileRowText:{fontSize:14,fontWeight:"700"},logoutRow:{minHeight:54,borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"center",paddingHorizontal:14,gap:12},logoutText:{color:"#D33D3D",fontSize:14,fontWeight:"800"},
   profileLoading:{fontSize:10,textAlign:"center",marginTop:2,marginBottom:4},storeVerificationOverlay:{flex:1,alignItems:"center",justifyContent:"center",padding:20},storeVerificationBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(15,23,42,.58)"},storeVerificationCard:{width:"100%",maxWidth:420,borderWidth:1,borderRadius:24,padding:20,shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:8},elevation:24},storeVerificationIconWrap:{width:50,height:50,borderRadius:25,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center",marginBottom:12},storeVerificationTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},storeVerificationText:{fontSize:11,lineHeight:17,marginTop:6},storeVerificationEmail:{marginTop:15,borderWidth:1,borderRadius:14,padding:12,flexDirection:"row",alignItems:"center",gap:10},storeVerificationEmailLabel:{fontSize:9,fontWeight:"800",textTransform:"uppercase",letterSpacing:.4},storeVerificationEmailValue:{fontSize:12,fontWeight:"800",marginTop:2},storeVerificationSuccess:{marginTop:15,borderWidth:1,borderRadius:14,padding:12,flexDirection:"row",alignItems:"center",gap:10},storeVerificationSuccessTitle:{fontSize:12,fontWeight:"900"},storeVerificationSuccessText:{fontSize:10,lineHeight:15,marginTop:2},storeVerificationPrimary:{height:46,borderRadius:13,marginTop:15,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeVerificationPrimaryText:{fontSize:12.5,fontWeight:"900",color:"#fff"},storeVerificationFieldLabel:{fontSize:11,fontWeight:"900",marginTop:15,marginBottom:6},storeVerificationInput:{height:48,borderWidth:1,borderRadius:13,paddingHorizontal:14,fontSize:18,fontWeight:"900",letterSpacing:4,textAlign:"center"},storeVerificationActions:{flexDirection:"row",gap:9,marginTop:14},profileSheetOverlay:{position:"absolute",left:0,right:0,top:0,bottom:0,zIndex:100,elevation:100,justifyContent:"flex-end"},profileSheetKeyboard:{width:"100%",flex:1,justifyContent:"flex-end"},profileSheetBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(0,0,0,.58)"},profileSheet:{height:"92%",maxHeight:"92%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.25,shadowRadius:22,shadowOffset:{width:0,height:-8},elevation:24},profileSheetHeader:{minHeight:68,borderBottomWidth:1,paddingHorizontal:16,paddingVertical:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},profileEditTabs:{height:50,borderBottomWidth:1,flexDirection:"row",paddingHorizontal:10},profileEditTab:{flex:1,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,borderBottomWidth:2,borderBottomColor:"transparent"},profileEditTabText:{fontSize:11,fontWeight:"900"},profileSheetTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4},profileSheetSub:{fontSize:10,marginTop:3},profileSheetClose:{width:34,height:34,borderRadius:17,alignItems:"center",justifyContent:"center"},profileEditSectionTitle:{fontSize:13,fontWeight:"900",marginBottom:8},profileEditCard:{borderWidth:1,borderRadius:18,padding:13},profileEditAvatarRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileEditAvatar:{width:74,height:74,borderRadius:37,alignItems:"center",justifyContent:"center"},profileEditAvatarWrap:{width:74,height:74,borderRadius:37,position:"relative"},profilePhotoAction:{position:"absolute",right:-3,bottom:-3,width:29,height:29,borderRadius:15,borderWidth:3,alignItems:"center",justifyContent:"center",shadowColor:"#000",shadowOpacity:.2,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:4},profileEditLabel:{fontSize:12,fontWeight:"900"},profileEditHint:{fontSize:9.5,lineHeight:14,marginTop:3},profileBlueButton:{height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,alignSelf:"flex-start",marginTop:7},profileBlueButtonText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileLockedField:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:7},profileLockedText:{fontSize:13,flex:1,marginRight:8},profileCoverPreview:{height:138,borderWidth:1,borderRadius:16,overflow:"hidden",alignItems:"center",justifyContent:"center",marginBottom:13},profileEditCoverLogoHolder:{position:"absolute",left:12,bottom:10,width:72,height:72,borderRadius:36,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},profileEditCoverLogo:{width:"100%",height:"100%",borderRadius:36},profileCoverButton:{position:"absolute",right:10,bottom:10,height:34,borderRadius:10,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5},profileMediaAction:{position:"absolute",right:10,bottom:10,minHeight:34,borderRadius:12,paddingHorizontal:11,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:5,borderWidth:2,shadowColor:"#000",shadowOpacity:.18,shadowRadius:6,shadowOffset:{width:0,height:2},elevation:4},profileMediaActionText:{fontSize:10.5,fontWeight:"900",color:"#fff"},profileStoreLogoWrap:{width:64,height:64,borderRadius:32,position:"relative"},profileStoreLogoRow:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},profileStoreLogo:{width:64,height:64,borderRadius:32,alignItems:"center",justifyContent:"center",overflow:"hidden"},countryPickerOverlay:{flex:1,justifyContent:"flex-end",backgroundColor:"rgba(15,23,42,.45)"},countryPickerBackdrop:{...StyleSheet.absoluteFillObject},countryPickerSheet:{height:"78%",borderTopLeftRadius:24,borderTopRightRadius:24,overflow:"hidden",shadowColor:"#000",shadowOpacity:.22,shadowRadius:16,shadowOffset:{width:0,height:-4},elevation:12},countryPickerHeader:{paddingHorizontal:18,paddingVertical:14,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12},countrySearchBox:{margin:12,borderWidth:1,borderRadius:13,minHeight:46,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:9},countryPickerRow:{minHeight:62,paddingHorizontal:18,flexDirection:"row",alignItems:"center",gap:12,borderBottomWidth:StyleSheet.hairlineWidth},countryFlag:{fontSize:25,width:36,textAlign:"center"},countryName:{fontSize:14,fontWeight:"700"},countryCode:{fontSize:12,marginTop:2},profileEditError:{borderWidth:1,borderRadius:14,padding:11,marginTop:12,flexDirection:"row",alignItems:"flex-start",gap:8},profileEditErrorText:{flex:1,fontSize:10.5,lineHeight:16,fontWeight:"700"},profileSheetActions:{borderTopWidth:1,paddingHorizontal:16,paddingTop:10,flexDirection:"row",gap:9},profileCancelButton:{height:46,borderWidth:1,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center"},profileCancelText:{fontSize:13,fontWeight:"900"},profileSaveButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},profileSaveText:{fontSize:13,fontWeight:"900",color:"#fff"},
   storeTabBar: { flexDirection: "row", padding: 4, borderWidth: 1, borderRadius: 14, marginTop: 14, gap: 4 },
