@@ -92,7 +92,7 @@ class CallViewSet(viewsets.GenericViewSet):
         """Return ICE servers for authenticated WebRTC clients."""
         servers = [{"urls": "stun:stun.l.google.com:19302"}]
         servers.extend(getattr(settings, "WEBRTC_TURN_SERVERS", []) or [])
-        return Response({"ice_servers": servers})
+        return Response({"ice_servers": servers, "turn_enabled": bool(getattr(settings, "WEBRTC_TURN_SERVERS", []))})
 
     @action(detail=False, methods=["get"])
     def incoming(self, request):

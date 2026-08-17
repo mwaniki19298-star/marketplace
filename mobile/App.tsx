@@ -5014,7 +5014,22 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
     // Use STUN for direct paths and TURN as a relay fallback. TURN servers are
     // fetched from the authenticated Django API so credentials are not baked
     // into the web/mobile JavaScript bundle.
-    let iceServers: Array<Record<string, any>> = [{ urls: "stun:stun.l.google.com:19302" }];
+    // Global calling requires TURN, not only STUN. The backend returns the
+    // production ICE list (including TURN) and also has a public fallback for
+    // deployments where TURN credentials have not yet been configured.
+    let iceServers: Array<Record<string, any>> = [
+      { urls: "stun:stun.l.google.com:19302" },
+      {
+        urls: [
+          "turn:openrelay.metered.ca:80?transport=udp",
+          "turn:openrelay.metered.ca:80?transport=tcp",
+          "turn:openrelay.metered.ca:443?transport=tcp",
+          "turns:openrelay.metered.ca:443?transport=tcp",
+        ],
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+    ];
     try {
       const iceConfig = await apiRequest("/api/calls/ice-servers/", {}, auth) as {
         ice_servers?: Array<Record<string, any>>;
@@ -5023,10 +5038,13 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
         iceServers = iceConfig.ice_servers;
       }
     } catch {
-      // Keep Google STUN as a direct-connect fallback. Calls still work when
-      // peers can establish a host/server-reflexive ICE path.
+      // Keep the global TURN fallback above if the ICE configuration endpoint
+      // is temporarily unavailable.
     }
-    const pc = new RTCPeerConnection({ iceServers });
+    const pc = new RTCPeerConnection({
+      iceServers,
+      iceTransportPolicy: "all",
+    });
     peerRef.current = pc;
     stream.getTracks().forEach((track: any) => pc.addTrack(track, stream));
     pc.onicecandidate = async (event: any) => {
@@ -5056,11 +5074,33 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
         } catch {}
       }
     };
+    let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
     pc.onconnectionstatechange = () => {
       const connectionState = pc.connectionState;
       if (!mountedRef.current) return;
-      if (connectionState === "connected") setState("connected");
-      if (["failed", "disconnected", "closed"].includes(connectionState)) {
+      if (connectionState === "connected") {
+        if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
+        setState("connected");
+        return;
+      }
+      // ICE can briefly report disconnected while it switches from a direct
+      // path to TURN. Do not terminate the call immediately. Give ICE 12s to
+      // recover before ending the call.
+      if (connectionState === "disconnected") {
+        if (!disconnectTimer) {
+          disconnectTimer = setTimeout(() => {
+            const activeCall = callRef.current;
+            if (peerRef.current !== pc || pc.connectionState === "connected") return;
+            if (activeCall?.id && auth?.access) {
+              apiRequest(`/api/calls/${activeCall.id}/end/`, { method: "POST" }, auth).catch(() => {});
+            }
+            finishLocal();
+          }, 12000);
+        }
+        return;
+      }
+      if (["failed", "closed"].includes(connectionState)) {
+        if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
         const activeCall = callRef.current;
         if (activeCall?.id && auth?.access) {
           apiRequest(`/api/calls/${activeCall.id}/end/`, { method: "POST" }, auth).catch(() => {});
