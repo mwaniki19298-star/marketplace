@@ -4620,10 +4620,18 @@ type CallRecord = {
   conversation: number;
   caller: number;
   receiver: number;
-  status: "ringing" | "accepted" | "declined" | "ended";
+  caller_name?: string;
+  receiver_name?: string;
+  caller_avatar?: string | null;
+  receiver_avatar?: string | null;
+  status: "ringing" | "accepted" | "cancelled" | "missed" | "declined" | "ended";
   offer: any;
   answer: any;
   ice_candidates: Array<{ id: number | string; sender: number; candidate: any }>;
+  created_at?: string;
+  accepted_at?: string | null;
+  ended_at?: string | null;
+  duration_seconds?: number;
 };
 
 function getCallWebRTC() {
@@ -4647,9 +4655,10 @@ function getCallWebRTC() {
 
 const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null }>(function InAppCallManager({ theme, auth, currentUser }, ref) {
   const [call, setCall] = useState<CallRecord | null>(null);
-  const [state, setState] = useState<"idle" | "calling" | "ringing" | "connected" | "ended">("idle");
+  const [state, setState] = useState<"idle" | "calling" | "ringing" | "connected">("idle");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const peerRef = useRef<any>(null);
   const localStreamRef = useRef<any>(null);
   const callRef = useRef<CallRecord | null>(null);
@@ -4658,6 +4667,8 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const remoteAudioRef = useRef<any>(null);
   const mountedRef = useRef(true);
+  const incomingY = useRef(new Animated.Value(-360)).current;
+  const insets = useSafeAreaInsets();
 
   useEffect(() => () => {
     mountedRef.current = false;
@@ -4667,6 +4678,31 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
   }, []);
 
   useEffect(() => { callRef.current = call; }, [call]);
+
+  useEffect(() => {
+    if (state !== "ringing" && state !== "calling") return;
+    incomingY.setValue(-360);
+    Animated.spring(incomingY, {
+      toValue: 0,
+      useNativeDriver: true,
+      tension: 72,
+      friction: 10,
+    }).start();
+  }, [state, incomingY]);
+
+  useEffect(() => {
+    if (state !== "connected" || !call?.accepted_at) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const update = () => {
+      const acceptedAt = new Date(call.accepted_at as string).getTime();
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - acceptedAt) / 1000)));
+    };
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [state, call?.accepted_at]);
 
   const clearCallUi = useCallback(() => {
     if (Platform.OS !== "web") Vibration.cancel();
@@ -4682,10 +4718,11 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
     seenCandidateIdsRef.current.clear();
   }, []);
 
-  const finishLocal = useCallback((nextState: "ended" = "ended") => {
+  const finishLocal = useCallback(() => {
     clearCallUi();
-    setState(nextState);
-    setTimeout(() => { if (mountedRef.current) { setState("idle"); setCall(null); } }, 900);
+    setState("idle");
+    setCall(null);
+    setElapsedSeconds(0);
   }, [clearCallUi]);
 
   const addRemoteCandidate = useCallback(async (candidate: any) => {
@@ -4694,8 +4731,7 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
     try {
       const { RTCIceCandidate } = getCallWebRTC();
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    } catch (e) {
-      // A candidate can arrive before the remote SDP. Queue it and retry after setRemoteDescription.
+    } catch {
       queuedCandidatesRef.current.push(candidate);
     }
   }, []);
@@ -4709,9 +4745,6 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
     const { RTCPeerConnection, mediaDevices } = getCallWebRTC();
     const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
     localStreamRef.current = stream;
-    // STUN is enough for many direct peer-to-peer networks. For reliable calls across
-    // restrictive NATs/mobile carriers, add a TURN service later and expose short-lived
-    // TURN credentials from the backend rather than embedding a permanent secret in the app.
     const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
     const pc = new RTCPeerConnection({ iceServers });
     peerRef.current = pc;
@@ -4748,8 +4781,9 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
       if (!mountedRef.current) return;
       if (connectionState === "connected") setState("connected");
       if (["failed", "disconnected", "closed"].includes(connectionState)) {
-        if (callRef.current?.id && auth?.access) {
-          apiRequest(`/api/calls/${callRef.current.id}/end/`, { method: "POST" }, auth).catch(() => {});
+        const activeCall = callRef.current;
+        if (activeCall?.id && auth?.access) {
+          apiRequest(`/api/calls/${activeCall.id}/end/`, { method: "POST" }, auth).catch(() => {});
         }
         finishLocal();
       }
@@ -4794,9 +4828,12 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       const updated = await apiRequest(`/api/calls/${incoming.id}/accept/`, {
-        method: "POST", body: JSON.stringify({ answer: pc.localDescription?.toJSON ? pc.localDescription.toJSON() : pc.localDescription }),
+        method: "POST",
+        body: JSON.stringify({ answer: pc.localDescription?.toJSON ? pc.localDescription.toJSON() : pc.localDescription }),
       }, auth) as CallRecord;
-      callRef.current = updated; setCall(updated); setState("calling");
+      callRef.current = updated;
+      setCall(updated);
+      setState("connected");
       await flushPendingIce();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not accept the call.");
@@ -4815,7 +4852,9 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
 
   const endCall = useCallback(async () => {
     const activeCall = callRef.current;
-    if (activeCall?.id && auth?.access) await apiRequest(`/api/calls/${activeCall.id}/end/`, { method: "POST" }, auth).catch(() => {});
+    if (activeCall?.id && auth?.access) {
+      await apiRequest(`/api/calls/${activeCall.id}/end/`, { method: "POST" }, auth).catch(() => {});
+    }
     finishLocal();
   }, [auth, finishLocal]);
 
@@ -4834,7 +4873,9 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
           offer: pc.localDescription?.toJSON ? pc.localDescription.toJSON() : pc.localDescription,
         }),
       }, auth) as CallRecord;
-      callRef.current = created; setCall(created); setState("calling");
+      callRef.current = created;
+      setCall(created);
+      setState("calling");
       await flushPendingIce();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start the in-app call.");
@@ -4844,7 +4885,6 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
 
   useImperativeHandle(ref, () => ({ startCall: (conversation) => { void startCall(conversation); } }), [startCall]);
 
-  // Receiver polling is intentionally separate from the chat polling. Existing chat behavior is untouched.
   useEffect(() => {
     if (!auth?.access || !currentUser) return;
     let active = true;
@@ -4854,7 +4894,9 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
         const data = await apiRequest("/api/calls/incoming/", {}, auth);
         const incoming = apiResults<CallRecord>(data);
         if (incoming[0] && active) {
-          callRef.current = incoming[0]; setCall(incoming[0]); setState("ringing");
+          callRef.current = incoming[0];
+          setCall(incoming[0]);
+          setState("ringing");
           if (Platform.OS !== "web") Vibration.vibrate([0, 400, 200, 400, 200, 400], true);
         }
       } catch {}
@@ -4864,7 +4906,6 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
     return () => { active = false; clearInterval(timer); };
   }, [auth?.access, currentUser?.id]);
 
-  // Signaling polling: relay answer and ICE candidates through the existing authenticated Django API.
   useEffect(() => {
     const activeCallId = call?.id;
     if (!activeCallId || !auth?.access) return;
@@ -4872,17 +4913,19 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
       try {
         const updated = await apiRequest(`/api/calls/${activeCallId}/`, {}, auth) as CallRecord;
         if (!mountedRef.current) return;
-        callRef.current = updated; setCall(updated);
+        callRef.current = updated;
+        setCall(updated);
         await applyRemoteIce(updated);
-        if (updated.status === "declined" || updated.status === "ended") {
-          finishLocal(); return;
+        if (["cancelled", "missed", "declined", "ended"].includes(updated.status)) {
+          finishLocal();
+          return;
         }
-        // Caller applies the receiver's SDP answer exactly once.
+        if (updated.status === "accepted") setState("connected");
         if (updated.answer && peerRef.current && !peerRef.current.currentRemoteDescription) {
           const { RTCSessionDescription } = getCallWebRTC();
           await peerRef.current.setRemoteDescription(new RTCSessionDescription(updated.answer));
           await flushQueuedCandidates();
-          setState("calling");
+          setState("connected");
         }
       } catch {}
     };
@@ -4891,30 +4934,75 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
     return () => clearInterval(timer);
   }, [applyRemoteIce, auth, call?.id, finishLocal, flushQueuedCandidates]);
 
-  const otherName = call ? (call.caller === currentUser?.id ? "Marketplace contact" : "Incoming caller") : "";
-  const label = state === "calling" ? "Calling…" : state === "ringing" ? "Incoming call" : state === "connected" ? "Connected" : state === "ended" ? "Call ended" : "";
   if (!call || state === "idle") return null;
-  const isIncoming = call.receiver === currentUser?.id && state === "ringing";
-  return (
-    <Modal visible transparent animationType="fade" onRequestClose={() => { if (isIncoming) void declineCall(); else void endCall(); }}>
-      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,.62)", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <View style={{ width: "100%", maxWidth: 390, borderRadius: 24, padding: 24, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, alignItems: "center" }}>
-          <View style={{ width: 74, height: 74, borderRadius: 37, backgroundColor: theme.isDark ? "#24212B" : "#EFF6FF", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
-            <Phone size={30} color={theme.accent} />
+
+  const isIncoming = call.receiver === currentUser?.id;
+  const otherName = isIncoming
+    ? (call.caller_name || "Incoming caller")
+    : (call.receiver_name || "Marketplace contact");
+  const otherAvatar = isIncoming ? call.caller_avatar : call.receiver_avatar;
+  const initials = otherName.split(/\s+/).map((x) => x[0]).join("").slice(0, 2).toUpperCase();
+  const formatDuration = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const sec = seconds % 60;
+    return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  };
+
+  if (state === "connected") {
+    return (
+      <Modal visible animationType="fade" presentationStyle="fullScreen" onRequestClose={() => void endCall()}>
+        <View style={{ flex: 1, backgroundColor: theme.isDark ? "#090B10" : "#F7F9FC", alignItems: "center", justifyContent: "center", paddingTop: insets.top, paddingBottom: insets.bottom + 24, paddingHorizontal: 24 }}>
+          <View style={{ position: "absolute", top: insets.top + 18, left: 20, right: 20, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={{ color: theme.isDark ? "#fff" : theme.text, fontSize: 16, fontWeight: "900" }}>In-app call</Text>
+            <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: "#22C55E" }} />
           </View>
-          <Text style={{ color: theme.text, fontSize: 21, fontWeight: "900", textAlign: "center" }}>{isIncoming ? "Incoming call" : "In-app call"}</Text>
-          <Text style={{ color: theme.muted, fontSize: 14, marginTop: 6, textAlign: "center" }}>{otherName}</Text>
-          <Text style={{ color: theme.accent, fontSize: 13, fontWeight: "800", marginTop: 12 }}>{label}</Text>
-          {!!error && <Text style={{ color: "#DC2626", fontSize: 12, textAlign: "center", marginTop: 12 }}>{error}</Text>}
+          <View style={{ width: 128, height: 128, borderRadius: 64, backgroundColor: theme.isDark ? "#202532" : "#EAF2FF", alignItems: "center", justifyContent: "center", overflow: "hidden", marginBottom: 22 }}>
+            {otherAvatar ? <Image source={{ uri: otherAvatar }} style={{ width: 128, height: 128 }} /> : <Text style={{ color: BUTTON_BLUE, fontSize: 40, fontWeight: "900" }}>{initials}</Text>}
+          </View>
+          <Text style={{ color: theme.isDark ? "#fff" : theme.text, fontSize: 30, fontWeight: "900", textAlign: "center" }}>{otherName}</Text>
+          <Text style={{ color: "#22C55E", fontSize: 15, fontWeight: "800", marginTop: 9 }}>Connected</Text>
+          <Text style={{ color: theme.isDark ? "#CBD5E1" : theme.muted, fontSize: 18, fontWeight: "700", marginTop: 8 }}>{formatDuration(elapsedSeconds)}</Text>
+          <View style={{ position: "absolute", bottom: insets.bottom + 34, alignItems: "center" }}>
+            <Pressable onPress={() => void endCall()} disabled={busy} style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: "#DC2626", alignItems: "center", justifyContent: "center" }}>
+              <Phone size={29} color="#fff" />
+            </Pressable>
+            <Text style={{ color: theme.muted, fontSize: 12, fontWeight: "700", marginTop: 9 }}>End call</Text>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal visible transparent animationType="none" onRequestClose={() => { if (isIncoming) void declineCall(); else void endCall(); }}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,.58)" }}>
+        <Animated.View style={{ transform: [{ translateY: incomingY }], marginTop: insets.top + 10, marginHorizontal: 12, borderRadius: 26, padding: 18, backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border, shadowColor: "#000", shadowOpacity: 0.22, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 12 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 13 }}>
+            <View style={{ width: 58, height: 58, borderRadius: 29, backgroundColor: theme.isDark ? "#242B3A" : "#EFF6FF", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+              {otherAvatar ? <Image source={{ uri: otherAvatar }} style={{ width: 58, height: 58 }} /> : <Text style={{ color: BUTTON_BLUE, fontSize: 18, fontWeight: "900" }}>{initials}</Text>}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: theme.text, fontSize: 17, fontWeight: "900" }} numberOfLines={1}>{otherName}</Text>
+              <Text style={{ color: theme.muted, fontSize: 13, marginTop: 3 }}>{isIncoming ? "Incoming voice call" : state === "calling" ? "Calling…" : "Connecting…"}</Text>
+            </View>
+            <Phone size={21} color={BUTTON_BLUE} />
+          </View>
+          {!!error && <Text style={{ color: "#DC2626", fontSize: 12, marginTop: 12 }}>{error}</Text>}
           {isIncoming ? (
-            <View style={{ flexDirection: "row", gap: 12, marginTop: 22, width: "100%" }}>
-              <Pressable disabled={busy} onPress={() => void declineCall()} style={{ flex: 1, paddingVertical: 13, borderRadius: 14, backgroundColor: theme.isDark ? "#3B1F24" : "#FEE2E2", alignItems: "center" }}><Text style={{ color: "#DC2626", fontWeight: "900" }}>Decline</Text></Pressable>
-              <Pressable disabled={busy} onPress={() => void acceptCall()} style={{ flex: 1, paddingVertical: 13, borderRadius: 14, backgroundColor: "#16A34A", alignItems: "center" }}><Text style={{ color: "#fff", fontWeight: "900" }}>Accept</Text></Pressable>
+            <View style={{ flexDirection: "row", gap: 12, marginTop: 18 }}>
+              <Pressable disabled={busy} onPress={() => void declineCall()} style={{ flex: 1, paddingVertical: 14, borderRadius: 15, backgroundColor: theme.isDark ? "#3B1F24" : "#FEE2E2", alignItems: "center" }}>
+                <Text style={{ color: "#DC2626", fontWeight: "900" }}>Decline</Text>
+              </Pressable>
+              <Pressable disabled={busy} onPress={() => void acceptCall()} style={{ flex: 1, paddingVertical: 14, borderRadius: 15, backgroundColor: "#16A34A", alignItems: "center" }}>
+                <Text style={{ color: "#fff", fontWeight: "900" }}>Accept</Text>
+              </Pressable>
             </View>
           ) : (
-            <Pressable disabled={busy} onPress={() => void endCall()} style={{ marginTop: 22, width: "100%", paddingVertical: 13, borderRadius: 14, backgroundColor: theme.isDark ? "#3B1F24" : "#FEE2E2", alignItems: "center" }}><Text style={{ color: "#DC2626", fontWeight: "900" }}>End call</Text></Pressable>
+            <Pressable disabled={busy} onPress={() => void endCall()} style={{ marginTop: 18, paddingVertical: 14, borderRadius: 15, backgroundColor: theme.isDark ? "#3B1F24" : "#FEE2E2", alignItems: "center" }}>
+              <Text style={{ color: "#DC2626", fontWeight: "900" }}>Cancel call</Text>
+            </Pressable>
           )}
-        </View>
+        </Animated.View>
       </View>
     </Modal>
   );
@@ -5012,12 +5100,48 @@ function ActivityToastManager({ theme, auth, currentUser, onOpenConversation, on
   );
 }
 
+
+function formatCallDuration(seconds?: number) {
+  const total = Math.max(0, Number(seconds || 0));
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function CallHistoryCard({ call, theme, currentUser }: { call: CallRecord; theme: Theme; currentUser: ApiUser | null }) {
+  const mine = call.caller === currentUser?.id;
+  const status = call.status === "accepted" || call.status === "ended"
+    ? "Accepted"
+    : call.status === "missed"
+      ? "Missed call"
+      : "Cancelled";
+  const isAccepted = call.status === "accepted" || call.status === "ended";
+  const statusColor = call.status === "missed" ? "#DC2626" : call.status === "cancelled" || call.status === "declined" ? theme.muted : "#16A34A";
+  const label = isAccepted ? (mine ? "Outgoing call" : "Incoming call") : status;
+  return (
+    <View style={{ alignSelf: "center", width: "92%", marginVertical: 7, borderRadius: 17, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.card, paddingHorizontal: 14, paddingVertical: 11 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <View style={{ width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: call.status === "missed" ? (theme.isDark ? "#3A2024" : "#FEE2E2") : (theme.isDark ? "#1E293B" : "#EFF6FF") }}>
+          <Phone size={17} color={call.status === "missed" ? "#DC2626" : BUTTON_BLUE} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: theme.text, fontSize: 13, fontWeight: "900" }}>{label}</Text>
+          <Text style={{ color: statusColor, fontSize: 11, fontWeight: "800", marginTop: 2 }}>{status}</Text>
+          {isAccepted && <Text style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}>Duration · {formatCallDuration(call.duration_seconds)}</Text>}
+        </View>
+        <Text style={{ color: theme.muted, fontSize: 10, fontWeight: "700" }}>{formatMessageTime(call.created_at)}</Text>
+      </View>
+    </View>
+  );
+}
+
 function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatConsumed, onStartCall, onBack }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null; initialChat?: PendingChat | null; onInitialChatConsumed?: () => void; onStartCall?: (conversation: ConversationItem) => void; onBack?: () => void }) {
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedConversation, setSelectedConversation] = useState<ConversationItem | null>(null);
   const [messages, setMessages] = useState<MessageItem[]>([]);
+  const [calls, setCalls] = useState<CallRecord[]>([]);
   const [messageText, setMessageText] = useState("");
   const [composeListing, setComposeListing] = useState<Listing | null>(null);
   const [sending, setSending] = useState(false);
@@ -5053,11 +5177,16 @@ function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatCo
     if (!auth?.access) return;
     setSelectedConversation(conversation);
     lastMessageIdRef.current = 0;
+    setCalls([]);
     setOtherTyping(false);
     try {
-      const data = await apiRequest(`/api/messages/?conversation=${conversation.id}`, {}, auth);
+      const [data, callsData] = await Promise.all([
+        apiRequest(`/api/messages/?conversation=${conversation.id}`, {}, auth),
+        apiRequest(`/api/calls/?conversation=${conversation.id}`, {}, auth).catch(() => []),
+      ]);
       const next = apiResults<MessageItem>(data);
       setMessages(next);
+      setCalls(apiResults<CallRecord>(callsData));
       if (next.length) lastMessageIdRef.current = Math.max(...next.map((m) => m.id));
       const unread = next.filter((m) => !m.is_read && m.sender !== currentUser?.id);
       await Promise.all(unread.map((m) => apiRequest(`/api/messages/${m.id}/`, { method: "PATCH", body: JSON.stringify({ is_read: true }) }, auth).catch(() => null)));
@@ -5075,9 +5204,10 @@ function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatCo
     if (!auth?.access || pollBusyRef.current) return;
     pollBusyRef.current = true;
     try {
-      const [messagesData, statusData] = await Promise.all([
+      const [messagesData, statusData, callsData] = await Promise.all([
         apiRequest(`/api/messages/?conversation=${conversationId}&after=${lastMessageIdRef.current}`, {}, auth).catch(() => null),
         apiRequest(`/api/conversations/${conversationId}/status/`, {}, auth).catch(() => null),
+        apiRequest(`/api/calls/?conversation=${conversationId}`, {}, auth).catch(() => null),
       ]);
       if (messagesData) {
         const incoming = apiResults<MessageItem>(messagesData);
@@ -5097,6 +5227,7 @@ function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatCo
           }
         }
       }
+      if (callsData) setCalls(apiResults<CallRecord>(callsData));
       if (statusData) setOtherTyping(!!statusData.other_typing);
     } finally {
       pollBusyRef.current = false;
@@ -5244,15 +5375,17 @@ function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatCo
           </View>
         </View>
         <ScrollView ref={messagesScrollRef} style={{ flex: 1 }} contentContainerStyle={{ padding: 14, paddingBottom: 18 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
-          {messages.length === 0 ? (
+          {messages.length === 0 && calls.length === 0 ? (
             <View style={styles.chatEmpty}>
               <View style={[styles.chatEmptyIcon, { backgroundColor: theme.isDark ? "rgba(37,99,235,.14)" : "#EFF6FF" }]}><MessageCircle size={25} color={theme.accent} /></View>
               <Text style={[styles.chatEmptyTitle, { color: theme.text }]}>Start the conversation</Text>
               <Text style={[styles.chatEmptyText, { color: theme.muted }]}>Ask about availability, condition, delivery or anything else about this listing.</Text>
             </View>
-          ) : messages.map((message) => {
+          ) : [...messages.map((message) => ({ kind: "message" as const, at: message.created_at, message })), ...calls.map((call) => ({ kind: "call" as const, at: call.created_at || "", call }))].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime()).map((item) => {
+            if (item.kind === "call") return <CallHistoryCard key={`call-${item.call.id}`} call={item.call} theme={theme} currentUser={currentUser} />;
+            const message = item.message;
             const mine = message.sender === currentUser?.id;
-            return <View key={message.id} style={[styles.chatBubbleRow, { justifyContent: mine ? "flex-end" : "flex-start" }]}>
+            return <View key={`message-${message.id}`} style={[styles.chatBubbleRow, { justifyContent: mine ? "flex-end" : "flex-start" }]}>
               <View style={[styles.chatBubble, { backgroundColor: mine ? BUTTON_BLUE : theme.card, borderColor: mine ? BUTTON_BLUE : theme.border, borderBottomRightRadius: mine ? 5 : 18, borderBottomLeftRadius: mine ? 18 : 5, maxWidth: "88%" }]}>
                 {!!message.product_snapshot?.id && <MessageProductCard snapshot={message.product_snapshot} theme={theme} compact />}
                 <Text style={[styles.chatBubbleText, { color: mine ? "#fff" : theme.text }]}>{message.body}</Text>

@@ -25,10 +25,23 @@ class CallViewSet(viewsets.GenericViewSet):
             pk=pk,
         )
 
+    def _expire_missed(self):
+        """A ringing call that has not been answered for 60 seconds becomes missed."""
+        now = timezone.now()
+        cutoff = now - timedelta(seconds=60)
+        Call.objects.filter(status=Call.Status.RINGING, created_at__lt=cutoff).update(
+            status=Call.Status.MISSED, ended_at=now
+        )
+
+    def _serialize(self, call, request):
+        return CallSerializer(call, context={"request": request}).data
+
     def retrieve(self, request, pk=None):
-        return Response(CallSerializer(self._member_call(request, pk)).data)
+        self._expire_missed()
+        return Response(self._serialize(self._member_call(request, pk), request))
 
     def list(self, request):
+        self._expire_missed()
         qs = Call.objects.select_related("conversation", "caller", "receiver").filter(
             Q(caller=request.user) | Q(receiver=request.user)
         )
@@ -38,7 +51,7 @@ class CallViewSet(viewsets.GenericViewSet):
         conversation_id = request.query_params.get("conversation")
         if conversation_id:
             qs = qs.filter(conversation_id=conversation_id)
-        return Response(CallSerializer(qs[:25], many=True).data)
+        return Response(CallSerializer(qs[:50], many=True, context={"request": request}).data)
 
     def create(self, request):
         conversation_id = request.data.get("conversation")
@@ -52,12 +65,18 @@ class CallViewSet(viewsets.GenericViewSet):
         if request.user.id not in (conversation.buyer_id, conversation.seller_id):
             return Response({"detail": "You are not a member of this conversation."}, status=status.HTTP_403_FORBIDDEN)
         receiver = conversation.seller if conversation.buyer_id == request.user.id else conversation.buyer
-        # Only one active call per conversation. End stale active calls before ringing the other user.
+        now = timezone.now()
         with transaction.atomic():
-            Call.objects.filter(
+            active_calls = Call.objects.select_for_update().filter(
                 conversation=conversation,
                 status__in=[Call.Status.RINGING, Call.Status.ACCEPTED],
-            ).update(status=Call.Status.ENDED)
+            )
+            for active in active_calls:
+                if active.status == Call.Status.RINGING:
+                    active.status = Call.Status.MISSED
+                else:
+                    active.ended_at = active.ended_at or now
+                active.save(update_fields=["status", "ended_at", "updated_at"])
             call = Call.objects.create(
                 conversation=conversation,
                 caller=request.user,
@@ -65,17 +84,17 @@ class CallViewSet(viewsets.GenericViewSet):
                 offer=offer,
                 status=Call.Status.RINGING,
             )
-        return Response(CallSerializer(call).data, status=status.HTTP_201_CREATED)
+        return Response(self._serialize(call, request), status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["get"])
     def incoming(self, request):
-        cutoff = timezone.now() - timedelta(seconds=60)
+        self._expire_missed()
         qs = Call.objects.select_related("conversation", "caller", "receiver").filter(
             receiver=request.user,
             status=Call.Status.RINGING,
-            created_at__gte=cutoff,
+            created_at__gte=timezone.now() - timedelta(seconds=60),
         ).order_by("created_at")[:10]
-        return Response(CallSerializer(qs, many=True).data)
+        return Response(CallSerializer(qs, many=True, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
@@ -83,19 +102,21 @@ class CallViewSet(viewsets.GenericViewSet):
         if call.receiver_id != request.user.id:
             return Response({"detail": "Only the receiver can accept this call."}, status=status.HTTP_403_FORBIDDEN)
         if call.status != Call.Status.RINGING:
-            return Response(CallSerializer(call).data)
+            return Response(self._serialize(call, request))
         answer = request.data.get("answer")
         if not isinstance(answer, dict):
             return Response({"detail": "A WebRTC answer is required."}, status=status.HTTP_400_BAD_REQUEST)
         call.answer = answer
         call.status = Call.Status.ACCEPTED
-        call.save(update_fields=["answer", "status", "updated_at"])
-        return Response(CallSerializer(call).data)
+        call.accepted_at = timezone.now()
+        call.ended_at = None
+        call.save(update_fields=["answer", "status", "accepted_at", "ended_at", "updated_at"])
+        return Response(self._serialize(call, request))
 
     @action(detail=True, methods=["post"])
     def signal(self, request, pk=None):
         call = self._member_call(request, pk)
-        if call.status in [Call.Status.DECLINED, Call.Status.ENDED]:
+        if call.status not in [Call.Status.RINGING, Call.Status.ACCEPTED]:
             return Response({"detail": "Call has ended."}, status=status.HTTP_409_CONFLICT)
         candidate = request.data.get("candidate")
         if not isinstance(candidate, dict):
@@ -112,16 +133,19 @@ class CallViewSet(viewsets.GenericViewSet):
         call = self._member_call(request, pk)
         if call.receiver_id != request.user.id:
             return Response({"detail": "Only the receiver can decline this call."}, status=status.HTTP_403_FORBIDDEN)
-        if call.status not in [Call.Status.RINGING]:
-            return Response(CallSerializer(call).data)
-        call.status = Call.Status.DECLINED
-        call.save(update_fields=["status", "updated_at"])
-        return Response(CallSerializer(call).data)
+        if call.status != Call.Status.RINGING:
+            return Response(self._serialize(call, request))
+        call.status = Call.Status.CANCELLED
+        call.ended_at = timezone.now()
+        call.save(update_fields=["status", "ended_at", "updated_at"])
+        return Response(self._serialize(call, request))
 
     @action(detail=True, methods=["post"])
     def end(self, request, pk=None):
         call = self._member_call(request, pk)
-        if call.status not in [Call.Status.DECLINED, Call.Status.ENDED]:
-            call.status = Call.Status.ENDED
-            call.save(update_fields=["status", "updated_at"])
-        return Response(CallSerializer(call).data)
+        if call.status in [Call.Status.RINGING, Call.Status.ACCEPTED]:
+            call.ended_at = timezone.now()
+            if call.status == Call.Status.RINGING:
+                call.status = Call.Status.CANCELLED
+            call.save(update_fields=["status", "ended_at", "updated_at"])
+        return Response(self._serialize(call, request))

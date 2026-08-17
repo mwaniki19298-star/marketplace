@@ -8,8 +8,8 @@ class Call(models.Model):
     class Status(models.TextChoices):
         RINGING = "ringing", "Ringing"
         ACCEPTED = "accepted", "Accepted"
-        DECLINED = "declined", "Declined"
-        ENDED = "ended", "Ended"
+        CANCELLED = "cancelled", "Cancelled"
+        MISSED = "missed", "Missed"
 
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="calls")
     caller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="calls_made")
@@ -17,6 +17,8 @@ class Call(models.Model):
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.RINGING)
     offer = models.JSONField(default=dict, blank=True)
     answer = models.JSONField(default=dict, blank=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
     ice_candidates = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
