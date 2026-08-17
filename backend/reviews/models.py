@@ -9,6 +9,7 @@ class Review(models.Model):
     listing = models.ForeignKey(Listing, on_delete=models.PROTECT, related_name="reviews")
     rating = models.PositiveSmallIntegerField()
     text = models.TextField(blank=True)
+    photo_url = models.URLField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         ordering = ["-created_at"]

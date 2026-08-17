@@ -3,8 +3,6 @@ module.exports = ({ config }) => {
   const apiBaseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL || '').trim().replace(/\/$/, '');
   const packageName = process.env.EXPO_PUBLIC_ANDROID_PACKAGE || 'com.marketplace.mobile';
   const bundleIdentifier = process.env.EXPO_PUBLIC_IOS_BUNDLE_ID || 'com.marketplace.mobile';
-  const googleIosClientId = (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || '').trim();
-  const googleAndroidClientId = (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || '').trim();
 
   return {
     ...config,
@@ -63,7 +61,7 @@ module.exports = ({ config }) => {
         }] : []),
         {
           action: 'VIEW',
-          data: [{ scheme: packageName, pathPrefix: '/oauthredirect' }],
+          data: [{ scheme: 'marketplace', pathPrefix: '/oauthredirect' }],
           category: ['BROWSABLE', 'DEFAULT'],
         },
       ],
@@ -88,8 +86,6 @@ module.exports = ({ config }) => {
       apiBaseUrl,
       google: {
         webClientId: (process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '').trim(),
-        androidClientId: (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || '').trim(),
-        iosClientId: (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || '').trim(),
       },
       eas: {
         ...(config.extra?.eas || {}),

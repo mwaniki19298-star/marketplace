@@ -57,9 +57,7 @@ import {
 import { ActivityIndicator, Alert, AppState, FlatList, Image, KeyboardAvoidingView, Linking, Share, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text as RNText, TextInput, Modal, useWindowDimensions, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import * as WebBrowser from "expo-web-browser";
-import { ResponseType } from "expo-auth-session";
 import Constants from "expo-constants";
-import { useAuthRequest as useGoogleAuthRequest } from "expo-auth-session/providers/google";
 import { Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { File, Paths } from "expo-file-system";
@@ -938,7 +936,7 @@ function PriceDisplay({ listing, theme, style, oldStyle, compact = false }: { li
   }
   return (
     <View style={{ flexDirection: "row", alignItems: "baseline", flexWrap: "wrap", gap: 7 }}>
-      <Text style={[style, { color: "#16A34A", fontWeight: "900" }]}>{format(Number(listing.offerPrice))}</Text>
+      <Text style={[style, { color: style?.color || "#16A34A", fontWeight: "900" }]}>{format(Number(listing.offerPrice))}</Text>
       <Text style={[oldStyle || style, { textDecorationLine: "line-through", opacity: 0.65, fontSize: compact ? 10 : undefined }]}>{format(Number(listing.originalPrice))}</Text>
     </View>
   );
@@ -1678,7 +1676,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
   }, [screen, selected]);
 
   return (
-    <View style={[styles.container, { backgroundColor: screen === "product" ? "transparent" : (screen === "profile" && isLoggedIn ? "#4B52E8" : theme.background) }]}>
+    <View style={[styles.container, { backgroundColor: screen === "profile" && isLoggedIn ? "#4B52E8" : theme.background }]}>
       <StatusBar
         style={screen === "product" ? "light" : (screen === "profile" && isLoggedIn ? "light" : (dark ? "light" : "dark"))}
         backgroundColor={screen === "product" ? "transparent" : (screen === "profile" && isLoggedIn ? "#4B52E8" : theme.background)}
@@ -1690,7 +1688,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         {
           paddingTop: screen === "product" ? 0 : (screen === "profile" && isLoggedIn ? 0 : insets.top + 8),
           paddingHorizontal: screen === "product" ? 0 : (screen === "profile" && isLoggedIn ? 0 : 12),
-          backgroundColor: screen === "product" ? "transparent" : (screen === "profile" && isLoggedIn ? "#4B52E8" : theme.background),
+          backgroundColor: screen === "profile" && isLoggedIn ? "#4B52E8" : theme.background,
         }
       ]}> 
         {screen !== "login" && screen !== "messages" && screen !== "search" && !(screen === "profile" && !isLoggedIn) && (
@@ -1942,6 +1940,133 @@ function passwordQuality(password: string) {
   return { checks, score, label, color, eligible: checks.every(c => c.ok) };
 }
 
+function GoogleAuthController({
+  webClientId,
+  redirectUri,
+  promptNonce,
+  onLoadingChange,
+  onError,
+  onAuthenticated,
+}: {
+  webClientId: string;
+  redirectUri: string;
+  promptNonce: number;
+  onLoadingChange: (loading: boolean) => void;
+  onError: (title: string, message: string) => void;
+  onAuthenticated: (payload: AuthPayload) => void;
+}) {
+  const callbacksRef = useRef({ onLoadingChange, onError, onAuthenticated });
+  callbacksRef.current = { onLoadingChange, onError, onAuthenticated };
+
+  useEffect(() => {
+    if (promptNonce === 0) return;
+
+    let cancelled = false;
+
+    const randomValue = () => {
+      try {
+        const cryptoObj = (globalThis as any).crypto;
+        if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
+        if (cryptoObj?.getRandomValues) {
+          const bytes = new Uint8Array(32);
+          cryptoObj.getRandomValues(bytes);
+          return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+        }
+      } catch {}
+      return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    };
+
+    const openGoogle = async () => {
+      callbacksRef.current.onLoadingChange(true);
+      try {
+        if (!webClientId) {
+          throw new Error("Google Web OAuth client ID is not configured.");
+        }
+
+        const state = randomValue();
+        const nonce = randomValue();
+
+        // Google authentication happens in the device's external browser.
+        // Google returns to the HTTPS web bridge, which immediately redirects
+        // to marketplace://oauthredirect so Android can return control to the app.
+        const params = new URLSearchParams({
+          client_id: webClientId,
+          redirect_uri: redirectUri,
+          response_type: "id_token",
+          response_mode: "fragment",
+          scope: "openid profile email",
+          state,
+          nonce,
+          prompt: "select_account",
+        });
+
+        const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+        const result = await WebBrowser.openAuthSessionAsync(authUrl, "marketplace://oauthredirect");
+
+        if (cancelled) return;
+
+        if (result.type !== "success") {
+          callbacksRef.current.onLoadingChange(false);
+          callbacksRef.current.onError(
+            "Google sign-in cancelled",
+            "Google sign-in was cancelled. You can continue with email and password."
+          );
+          return;
+        }
+
+        const returnedUrl = result.url || "";
+        const parsed = new URL(returnedUrl);
+        const returnedState = parsed.searchParams.get("state") || new URLSearchParams(parsed.hash.replace(/^#/, "")).get("state");
+        const fragment = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+        const idToken = fragment.get("id_token") || parsed.searchParams.get("id_token");
+        const error = fragment.get("error") || parsed.searchParams.get("error");
+        const errorDescription =
+          fragment.get("error_description") ||
+          parsed.searchParams.get("error_description");
+
+        if (returnedState !== state) {
+          throw new Error("Google returned an invalid authentication state. Please try again.");
+        }
+
+        if (error) {
+          throw new Error(errorDescription || error || "Google authentication was not completed.");
+        }
+
+        if (!idToken) {
+          throw new Error("Google returned no ID token. Please try again.");
+        }
+
+        const res = await fetch(apiUrl("/api/auth/google/"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id_token: idToken }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.detail || "Google authentication failed.");
+
+        globalThis.__MARKETPLACE_AUTH__ = data;
+        callbacksRef.current.onLoadingChange(false);
+        callbacksRef.current.onAuthenticated(data as AuthPayload);
+      } catch (error) {
+        if (cancelled) return;
+        callbacksRef.current.onLoadingChange(false);
+        callbacksRef.current.onError(
+          "Google sign-in failed",
+          error instanceof Error ? error.message : "We couldn't open Google's sign-in screen."
+        );
+      }
+    };
+
+    void openGoogle();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [promptNonce, webClientId, redirectUri]);
+
+  return null;
+}
+
 function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", autoGoogle = false }: { theme: Theme; onBack: () => boolean; onAuthenticated: (payload: AuthPayload) => void; initialMode?: "login" | "signup"; autoGoogle?: boolean }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
@@ -1958,143 +2083,60 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
   const [googleToast, setGoogleToast] = useState<string | null>(null);
   const [showPasswordRecovery, setShowPasswordRecovery] = useState(false);
   const [loginSubmitting, setLoginSubmitting] = useState(false);
-  // Read Google client IDs from Expo public env first, then from app.config.js
-  // extra. The latter makes the values available in standalone/EAS builds even
-  // when Metro does not inline process.env at runtime.
+  // Google sign-in uses the Web OAuth client and opens Google's hosted
+  // authentication page in the device's external browser. No Android OAuth
+  // client ID is required by the React Native app for this flow.
   const googleExtra = (Constants.expoConfig?.extra?.google || {}) as {
     webClientId?: string;
-    androidClientId?: string;
-    iosClientId?: string;
   };
   const googleClientId = (process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || googleExtra.webClientId || "").trim();
-  const androidClientId = (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || googleExtra.androidClientId || "").trim();
-  const iosClientId = (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || googleExtra.iosClientId || "").trim();
-  const googleConfigured = Platform.OS === "android" ? !!androidClientId : Platform.OS === "ios" ? !!iosClientId : !!googleClientId;
   const googleWebBaseUrl = (process.env.EXPO_PUBLIC_WEB_BASE_URL || "").trim().replace(/\/$/, "");
-  const isExpoGo = Constants.appOwnership === "expo";
   const googleRedirectUri = Platform.OS === "web"
     ? `${googleWebBaseUrl || (typeof window !== "undefined" ? window.location.origin : "")}/oauthredirect`
-    : undefined;
-
-  // SDK 54 no longer supports the old AuthSession proxy flow in Expo Go.
-  // Keep the native client IDs for real Android/iOS builds and the web client
-  // for the browser. In Expo Go we disable the native Google request rather
-  // than producing a misleading redirect_uri_mismatch error.
-  const nativeGoogleEnabled = Platform.OS !== "web" && !isExpoGo;
-  const [googleRequest, googleResponse, promptGoogleAsync] = useGoogleAuthRequest({
-    androidClientId: nativeGoogleEnabled && androidClientId ? androidClientId : undefined,
-    iosClientId: nativeGoogleEnabled && iosClientId ? iosClientId : undefined,
-    webClientId: googleClientId || undefined,
-    responseType: Platform.OS === "web" ? ResponseType.IdToken : ResponseType.Code,
-    shouldAutoExchangeCode: Platform.OS !== "web",
-    scopes: ["openid", "profile", "email"],
-    selectAccount: true,
-    // On native, leave redirectUri undefined so the Google provider uses the
-    // platform applicationId/bundle identifier it knows how to register. On
-    // web, use the explicit production/development callback above.
-    ...(googleRedirectUri ? { redirectUri: googleRedirectUri } : {}),
-  });
-
-  useEffect(() => {
-    const finishGoogleLogin = async () => {
-      if (!googleResponse) return;
-      if (googleResponse.type !== "success") {
-        if (googleResponse.type === "error") {
-          const message = googleResponse.params?.error_description || googleResponse.params?.error || "Google sign-in could not be completed.";
-          setGoogleLoading(false);
-          setGoogleError({ title: "Google sign-in failed", message });
-          setGoogleToast(message);
-        } else if (googleResponse.type === "cancel" || googleResponse.type === "dismiss") {
-          setGoogleLoading(false);
-          setGoogleToast("Google sign-in was cancelled.");
-        }
-        return;
-      }
-      const idToken =
-        googleResponse.params?.id_token ||
-        googleResponse.authentication?.idToken ||
-        (googleResponse.authentication as any)?.id_token ||
-        (googleResponse as any).authentication?.rawResponse?.id_token;
-      if (!idToken) {
-        const authKeys = googleResponse.authentication ? Object.keys(googleResponse.authentication as any).join(", ") : "none";
-        setGoogleLoading(false);
-        setGoogleError({
-          title: "Google sign-in could not finish",
-          message: `Google returned a successful response but no ID token was available. Returned authentication fields: ${authKeys || "none"}.`,
-        });
-        setGoogleToast("Google did not return an ID token.");
-        return;
-      }
-      try {
-        const res = await fetch(apiUrl("/api/auth/google/"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id_token: idToken }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.detail || "Google authentication failed.");
-        // Store tokens for the session; the home/account screens can use these later for API calls.
-        globalThis.__MARKETPLACE_AUTH__ = data;
-        setGoogleLoading(false);
-        setGoogleError(null);
-        setGoogleToast(null);
-        onAuthenticated(data as AuthPayload);
-      } catch (error) {
-        setGoogleLoading(false);
-        const message = error instanceof Error ? error.message : "Google authentication could not be completed.";
-        setGoogleError({ title: "Google sign-in failed", message });
-        setGoogleToast("Google sign-in failed. Please try again.");
-      }
-    };
-    finishGoogleLogin();
-  }, [googleResponse, onAuthenticated]);
+    : (
+        (process.env.EXPO_PUBLIC_GOOGLE_AUTH_REDIRECT_URI || "").trim() ||
+        "https://marketplace-tau-sand.vercel.app/oauthredirect?native=1"
+      );
+  const googleConfigured = !!googleClientId && !!googleRedirectUri;
+  const isExpoGo = Constants.appOwnership === "expo";
+  const [googlePromptNonce, setGooglePromptNonce] = useState(0);
 
   useEffect(() => { setMode(initialMode); }, [initialMode]);
 
   const startGoogleLogin = async () => {
     setGoogleError(null);
     setGoogleToast(null);
-    // Do not block the Google flow with a local configuration gate.
-    // Expo/AuthSession will surface the actual OAuth configuration error,
-    // allowing the real Google sign-in flow to run whenever the platform
-    // configuration is available.
+
     if (isExpoGo && Platform.OS !== "web") {
       setGoogleLoading(false);
       setGoogleError({
         title: "Use the Marketplace development app",
-        message: "Google OAuth cannot be completed reliably inside Expo Go with Expo SDK 54. Open the Web version for Google sign-in, or use the WebRTC-enabled Marketplace development build on Android/iOS.",
+        message: "Google OAuth cannot be completed inside Expo Go with Expo SDK 54. You can still log in below with your email and password, or use the Marketplace development build for Google sign-in.",
       });
       setGoogleToast("Google sign-in requires the Marketplace development build on mobile.");
       return;
     }
-    if (!googleRequest) {
+
+    if (!googleConfigured) {
       setGoogleLoading(false);
+      const platformName = Platform.OS === "android" ? "Android" : Platform.OS === "ios" ? "iOS" : "web";
       setGoogleError({
-        title: "Google sign-in is still loading",
-        message: "Please wait a moment and try again.",
+        title: "Google sign-in is unavailable",
+        message: `Google authentication is not configured for ${platformName} on this build. You can still log in with your email and password.`,
       });
+      setGoogleToast("Google sign-in is unavailable on this build.");
       return;
     }
+
     setGoogleLoading(true);
-    try {
-      const result = await promptGoogleAsync();
-      if (result.type !== "success") {
-        setGoogleLoading(false);
-        setGoogleToast("Google sign-in was cancelled.");
-      }
-    } catch (error) {
-      setGoogleLoading(false);
-      const message = error instanceof Error ? error.message : "We couldn't open Google's sign-in screen.";
-      setGoogleError({ title: "Google sign-in failed", message });
-      setGoogleToast("Could not open Google sign-in. Please try again.");
-    }
+    setGooglePromptNonce((value) => value + 1);
   };
 
   useEffect(() => {
     if (!autoGoogle || mode !== "login") return;
     const timer = setTimeout(() => { void startGoogleLogin(); }, 120);
     return () => clearTimeout(timer);
-  }, [autoGoogle, mode, googleRequest, googleConfigured]);
+  }, [autoGoogle, mode, googleConfigured]);
 
   const submit = async () => {
     if (loginSubmitting) return;
@@ -2167,7 +2209,21 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
 
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.background }}>
+    <>
+      {googleConfigured && !isExpoGo && (
+        <GoogleAuthController
+          webClientId={googleClientId}
+          redirectUri={googleRedirectUri}
+          promptNonce={googlePromptNonce}
+          onLoadingChange={setGoogleLoading}
+          onError={(title, message) => {
+            setGoogleError({ title, message });
+            setGoogleToast(message);
+          }}
+          onAuthenticated={onAuthenticated}
+        />
+      )}
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
     <ScrollView
       showsVerticalScrollIndicator={false}
       contentContainerStyle={[styles.authScroll, { backgroundColor: theme.background }]}
@@ -2375,6 +2431,7 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
       </View>
     )}
     </View>
+    </>
   );
 }
 
@@ -3044,6 +3101,11 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
   const [purchaseError, setPurchaseError] = useState("");
   const [reviews, setReviews] = useState<any[]>([]);
   const [related, setRelated] = useState<Listing[]>([]);
+  const [reviewOrderId, setReviewOrderId] = useState<number | null>(null);
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewText, setReviewText] = useState("");
+  const [reviewPhoto, setReviewPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportType, setReportType] = useState<"listing" | "seller">("listing");
   const [reportReason, setReportReason] = useState("");
@@ -3072,6 +3134,13 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
         const rows = apiResults<any>(data).map(mapApiListing).filter((x: Listing) => String(x.id) !== String(listing.id)).slice(0, 6);
         if (active) setRelated(rows);
       } catch {}
+      if (auth?.access) {
+        try {
+          const orders = apiResults<OrderItem>(await apiRequest("/api/orders/", {}, auth));
+          const completed = orders.find(o => Number(o.listing) === Number(listing.id) && Number(o.buyer) === Number(auth.user?.id) && o.status === "completed");
+          if (active) setReviewOrderId(completed?.id ?? null);
+        } catch {}
+      } else if (active) setReviewOrderId(null);
     })();
     return () => { active = false; };
   }, [listing.id, listing.categoryId]);
@@ -3086,6 +3155,29 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
       Alert.alert("Report submitted", "Thank you. Our team will review the report and take appropriate action.");
     } catch (e) { Alert.alert("Couldn't submit report", e instanceof Error ? e.message : "Please try again."); }
     finally { setReporting(false); }
+  };
+  const pickReviewPhoto = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) { Alert.alert("Permission needed", "Allow photo access to attach a photo to your review."); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsMultipleSelection: false, allowsEditing: false, quality: 0.85 });
+    if (!result.canceled && result.assets?.[0]) setReviewPhoto(result.assets[0]);
+  };
+  const submitReview = async () => {
+    if (!auth?.access) { Alert.alert("Sign in required", "Please sign in to leave a review."); return; }
+    if (!reviewOrderId) { Alert.alert("Review unavailable", "You can leave a review after completing a purchase for this product."); return; }
+    if (reviews.some((r: any) => Number(r.order) === Number(reviewOrderId))) { Alert.alert("Already reviewed", "You have already reviewed this purchase."); return; }
+    if (!reviewRating) { Alert.alert("Choose a rating", "Select 1 to 5 stars before submitting."); return; }
+    setReviewSubmitting(true);
+    try {
+      let photoUrl = "";
+      if (reviewPhoto) photoUrl = (await uploadAssetToCloudinary(reviewPhoto, auth, "review_photo")).secure_url;
+      await apiRequest("/api/reviews/", { method: "POST", body: JSON.stringify({ order: Number(reviewOrderId), rating: reviewRating, text: reviewText.trim(), photo_url: photoUrl || null }) }, auth);
+      const refreshed = await apiRequest(`/api/listings/${listing.id}/reviews/`, {}, auth);
+      setReviews(Array.isArray(refreshed) ? refreshed : []);
+      setReviewRating(0); setReviewText(""); setReviewPhoto(null); setReviewOrderId(null);
+      Alert.alert("Review submitted", "Thank you for sharing your experience.");
+    } catch (e) { Alert.alert("Couldn't submit review", e instanceof Error ? e.message : "Please try again."); }
+    finally { setReviewSubmitting(false); }
   };
   const submitPurchase = async () => {
     if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before requesting a purchase."); return; }
@@ -3128,7 +3220,7 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
             }}
             renderItem={({ item, index }) => (
               <Pressable onPress={() => { setActiveImage(index); setViewerIndex(index); setViewerOpen(true); }} style={{ width: galleryWidth, height: heroHeight }} accessibilityRole="button" accessibilityLabel={`Open product photo ${index + 1}`}>
-                <Image source={{ uri: optimizedImageUrl(item, 1200) }} style={[styles.detailGalleryImage, { width: galleryWidth, height: heroHeight }]} resizeMode="cover" />
+                <Image source={{ uri: optimizedImageUrl(item, 1200) }} style={[styles.detailGalleryImage, { width: galleryWidth, height: heroHeight, backgroundColor: theme.isDark ? "#111827" : "#F3F4F6" }]} resizeMode="cover" />
               </Pressable>
             )}
           />
@@ -3154,26 +3246,51 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
         )}
       </View>
 
-      <View style={[styles.productInfoRow, { backgroundColor: theme.card, borderColor: theme.border, borderWidth: 1, borderRadius: 20, marginHorizontal: 12, marginTop: 12, paddingHorizontal: 14 }]}>
-        <View style={{ flex: 1, paddingRight: 12 }}>
-          <Text style={[styles.productTitle, { color: theme.text }]} numberOfLines={2}>
-            {safeDisplayText(listing.title, "Product")}
-          </Text>
-          <PriceDisplay listing={listing} theme={theme} style={[styles.bigPrice, { color: theme.accent, marginTop: 5 }]} oldStyle={[styles.bigPrice, { color: theme.muted, marginTop: 5 }]} />
-          <View style={styles.productMetaLine}>
-            <Text style={[styles.productMetaSecondary, { color: theme.muted }]}>{safeDisplayText(listing.rating, "0")} ★</Text>
-            <Text style={[styles.productMetaDot, { color: theme.muted }]}>•</Text>
-            <Text style={[styles.productMetaSecondary, { color: theme.muted }]}>{Number(listing.reviews || 0)} reviews</Text>
-            {!!listing.location && <><Text style={[styles.productMetaDot, { color: theme.muted }]}>•</Text><Text style={[styles.productMetaSecondary, { color: theme.muted }]} numberOfLines={1}>{safeDisplayText(listing.location, "")}</Text></>}
+      <View style={[styles.productMetaStrip, { backgroundColor: theme.isDark ? "#C2412D" : "#FF6347" }]}>
+        <View style={styles.productMetaStripMain}>
+          <View style={styles.productMetaStripTitleRow}>
+            <View style={styles.productMetaStripTitleHalf}>
+              <Text style={styles.productMetaStripTitle} numberOfLines={1}>{safeDisplayText(listing.title, "Untitled listing")}</Text>
+            </View>
+            <View style={styles.productMetaStripPriceHalf}>
+              <View style={styles.productMetaStripPriceBadge}>
+                <PriceDisplay
+                  listing={listing}
+                  theme={{ ...theme, text: "#5B1A00", muted: "#7A2E00" }}
+                  style={styles.productMetaStripPrice}
+                  oldStyle={styles.productMetaStripOldPrice}
+                  compact
+                />
+              </View>
+            </View>
           </View>
-        </View>
-        <View style={styles.productTitleActions}>
-          <Pressable onPress={onToggleLike} accessibilityRole="button" accessibilityLabel={liked ? "Unlike product" : "Like product"} style={[styles.productActionIcon, { backgroundColor: liked ? "#FEF2F2" : theme.card, borderColor: liked ? "#FECACA" : theme.border }]} hitSlop={6}>
-            <Heart size={21} color={liked ? "#EF4444" : theme.text} fill={liked ? "#EF4444" : "transparent"} />
-          </Pressable>
-          <Pressable onPress={onAddToCart} accessibilityRole="button" accessibilityLabel={inCart ? "In cart" : "Add to cart"} style={[styles.productActionIcon, { backgroundColor: inCart ? "#EFF6FF" : theme.card, borderColor: inCart ? "#BFDBFE" : theme.border }]} hitSlop={6}>
-            <ShoppingCart size={21} color={inCart ? BUTTON_BLUE : theme.text} fill={inCart ? BUTTON_BLUE : "transparent"} />
-          </Pressable>
+          <View style={styles.productMetaStripBottomRow}>
+            <View style={styles.productMetaStripInfo}>
+              <View style={styles.productMetaStripItem}>
+                <Text style={styles.productMetaStripText}>{safeDisplayText(listing.rating, "0")} ★</Text>
+              </View>
+              <View style={styles.productMetaStripDivider} />
+              <View style={styles.productMetaStripItem}>
+                <Text style={styles.productMetaStripText}>{Number(listing.reviews || 0)} reviews</Text>
+              </View>
+              {!!listing.location && <>
+                <View style={styles.productMetaStripDivider} />
+                <View style={[styles.productMetaStripItem, { flexShrink: 1 }]}>
+                  <MapPin size={12} color="#FFFFFF" />
+                  <Text style={styles.productMetaStripText} numberOfLines={1}>{safeDisplayText(listing.location, "")}</Text>
+                </View>
+              </>}
+            </View>
+            <View style={styles.productMetaStripActions}>
+              <Pressable onPress={onToggleLike} accessibilityRole="button" accessibilityLabel={liked ? "Unlike product" : "Like product"} style={styles.productStripAction} hitSlop={6}>
+                <Heart size={19} color="#FFFFFF" fill={liked ? "#FFFFFF" : "transparent"} />
+                <Text style={styles.productStripActionText}>{Number(listing.likesCount || 0)}</Text>
+              </Pressable>
+              <Pressable onPress={onAddToCart} accessibilityRole="button" accessibilityLabel={inCart ? "In cart" : "Add to cart"} style={styles.productStripAction} hitSlop={6}>
+                <ShoppingCart size={19} color="#FFFFFF" fill={inCart ? "#FFFFFF" : "transparent"} />
+              </Pressable>
+            </View>
+          </View>
         </View>
       </View>
 
@@ -3197,63 +3314,79 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
         <DisplayText style={[styles.detailText, { color: theme.muted, marginTop: 8 }]} value={listing.description} fallback="No description provided by the seller." />
       </View>
 
-      {/* 3. Add to cart */}
-      <Pressable onPress={() => {
-        if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before adding items to your cart."); return; }
-        if ((listing.stock ?? 0) <= 0) { Alert.alert("Out of stock", "This product is currently out of stock."); return; }
-        onAddToCart();
-      }} style={[styles.secondaryButton, { backgroundColor: theme.card, borderColor: inCart ? "#BFDBFE" : theme.border, marginTop: 10, marginHorizontal: 12, minHeight: 50 }]}>
-        <ShoppingCart size={18} color={inCart ? BUTTON_BLUE : theme.text} fill={inCart ? BUTTON_BLUE : "transparent"} />
-        <Text style={[styles.secondaryButtonText, { color: inCart ? BUTTON_BLUE : theme.text }]}>{inCart ? "Added to cart" : "Add to cart"}</Text>
-      </Pressable>
-
-      {/* 4. Reviews */}
-      <View style={[styles.detailSectionCard, { backgroundColor: theme.card, borderColor: theme.border, marginHorizontal: 12 } ]}>
+      {/* 3. Reviews */}
+      <View style={[styles.detailSectionCard, { backgroundColor: theme.card, borderColor: theme.border, marginHorizontal: 12 }]}>
         <View style={styles.rowBetween}>
           <View>
             <Text style={[styles.detailSectionTitle, { color: theme.text }]}>Reviews</Text>
             <Text style={[styles.detailSectionSub, { color: theme.muted }]}>{safeDisplayText(listing.rating, "0")} ★ · {reviews.length || listing.reviews || 0} reviews</Text>
           </View>
-          <View style={styles.reviewScoreBadge}><Text style={styles.reviewScoreText}>★</Text></View>
+          <View style={[styles.reviewScoreBadge, { backgroundColor: theme.isDark ? "#3A2A00" : "#FFF4CC" }]}>
+            <Text style={styles.reviewScoreText}>★</Text>
+          </View>
         </View>
-        {reviews.length === 0 ? <Text style={[styles.detailSectionEmpty, { color: theme.muted }]}>No reviews yet. Completed orders can leave a review here.</Text> : reviews.slice(0, 4).map((r: any) => (
+
+        {auth?.access && reviewOrderId && !reviews.some((r: any) => Number(r.order) === Number(reviewOrderId)) && (
+          <View style={[styles.reviewComposer, { backgroundColor: theme.isDark ? "#111827" : "#FAFAFA", borderColor: theme.border }]}>
+            <Text style={[styles.reviewComposerTitle, { color: theme.text }]}>Leave your review</Text>
+            <Text style={[styles.reviewComposerHint, { color: theme.muted }]}>You completed a purchase of this product.</Text>
+            <View style={styles.reviewStarsRow}>
+              {[1,2,3,4,5].map(star => (
+                <Pressable key={star} onPress={() => setReviewRating(star)} hitSlop={5}>
+                  <Text style={[styles.reviewStarButton, { color: star <= reviewRating ? "#F4B400" : theme.border }]}>★</Text>
+                </Pressable>
+              ))}
+            </View>
+            <TextInput value={reviewText} onChangeText={setReviewText} placeholder="Share your experience..." placeholderTextColor={theme.muted} multiline style={[styles.reviewComposerInput, { color: theme.text, borderColor: theme.border, backgroundColor: theme.card }]} />
+            {reviewPhoto ? (
+              <View style={styles.reviewPhotoPreviewWrap}>
+                <Image source={{ uri: reviewPhoto.uri }} style={styles.reviewPhotoPreview} />
+                <Pressable onPress={() => setReviewPhoto(null)} style={styles.reviewPhotoRemove}><X size={14} color="#fff" /></Pressable>
+              </View>
+            ) : (
+              <Pressable onPress={pickReviewPhoto} style={[styles.reviewPhotoButton, { borderColor: theme.border, backgroundColor: theme.card }]}>
+                <ImageIcon size={17} color={theme.accent} /><Text style={[styles.reviewPhotoButtonText, { color: theme.text }]}>Add photo</Text>
+              </Pressable>
+            )}
+            <Pressable disabled={reviewSubmitting} onPress={submitReview} style={[styles.reviewSubmitButton, { backgroundColor: reviewSubmitting ? theme.border : theme.accent }]}>
+              {reviewSubmitting ? <ActivityIndicator size="small" color="#fff" /> : <><Star size={16} color="#fff" fill="#fff" /><Text style={styles.reviewSubmitButtonText}>Post review</Text></>}
+            </Pressable>
+          </View>
+        )}
+
+        {reviews.length === 0 ? <Text style={[styles.detailSectionEmpty, { color: theme.muted }]}>No reviews yet.</Text> : reviews.slice(0, 6).map((r: any) => (
           <View key={r.id} style={[styles.reviewRow, { borderTopColor: theme.border }]}>
             <View style={styles.rowBetween}>
               <Text style={[styles.reviewName, { color: theme.text }]}>{safeDisplayText(r.reviewer_name, "Marketplace buyer")}</Text>
-              <Text style={{ color: theme.accent, fontWeight: "900" }}>{"★".repeat(Math.max(0, Math.min(5, Number(r.rating || 0))))}</Text>
+              <Text style={styles.reviewStarsText}>{"★".repeat(Math.max(0, Math.min(5, Number(r.rating || 0))))}</Text>
             </View>
             <Text style={[styles.reviewText, { color: theme.muted }]}>{safeDisplayText(r.text, "No written comment.")}</Text>
+            {!!r.photo_url && <Image source={{ uri: r.photo_url }} style={styles.reviewAttachedPhoto} resizeMode="cover" />}
           </View>
         ))}
       </View>
 
-      {/* 5. Store link */}
-      <Pressable onPress={() => globalThis.__MARKETPLACE_NAVIGATE_STORE__?.(listing)} style={[styles.storePill, styles.storeLinkCard, { backgroundColor: theme.card, borderColor: theme.border, marginHorizontal: 12 }]}>
-        <View style={[styles.detailStoreAvatar, { backgroundColor: darken(theme.accent, theme.isDark ? 0.35 : 0.88) }]}>
-          {listing.storeLogo ? <Image source={{ uri: listing.storeLogo }} style={styles.detailStoreAvatarImage} resizeMode="cover" /> : <Text style={[styles.detailStoreAvatarText, { color: theme.accent }]}>{safeDisplayText(listing.store, "Store").slice(0, 1).toUpperCase()}</Text>}
-        </View>
-        <View style={{ flex: 1 }}>
-          <StoreNameWithBadge name={safeDisplayText(listing.store, "Store")} verified={!!listing.storeVerified} style={[styles.storePillText, { color: theme.text }]} />
-          <Text style={{ fontSize: 11, color: theme.muted }}>View store and other items</Text>
-        </View>
-        <ChevronRight size={18} color={theme.muted} />
-      </Pressable>
+      {/* 5-6. Store + reports */}
+      <View style={{ flexDirection: "row", alignItems: "stretch", gap: 10, marginHorizontal: 12, marginTop: 12 }}>
+        <Pressable onPress={() => globalThis.__MARKETPLACE_NAVIGATE_STORE__?.(listing)} style={[styles.storePill, styles.storeLinkCard, { flex: 1, minHeight: 58, backgroundColor: theme.card, borderColor: theme.border, marginHorizontal: 0, marginTop: 0 }]}>
+          <View style={[styles.detailStoreAvatar, { backgroundColor: darken(theme.accent, theme.isDark ? 0.35 : 0.88) }]}>
+            {listing.storeLogo ? <Image source={{ uri: listing.storeLogo }} style={styles.detailStoreAvatarImage} resizeMode="cover" /> : <Text style={[styles.detailStoreAvatarText, { color: theme.accent }]}>{safeDisplayText(listing.store, "Store").slice(0, 1).toUpperCase()}</Text>}
+          </View>
+          <View style={{ flex: 1 }}>
+            <StoreNameWithBadge name={safeDisplayText(listing.store, "Store")} verified={!!listing.storeVerified} style={[styles.storePillText, { color: theme.text }]} />
+            <Text style={{ fontSize: 10, color: theme.muted }}>View store</Text>
+          </View>
+        </Pressable>
 
-      {/* 6. Reports */}
-      <View style={[styles.reportActionsWrap, { marginHorizontal: 12 }]}>
-        <Text style={[styles.reportSectionLabel, { color: theme.muted }]}>Something not right?</Text>
-        <View style={styles.reportActionsRow}>
-          <Pressable onPress={() => openReport("listing")} style={[styles.reportActionCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <View style={styles.reportActionIcon}><Flag size={17} color="#DC2626" /></View>
-            <View style={{ flex: 1 }}><Text style={[styles.reportActionTitle, { color: theme.text }]}>Report listing</Text><Text style={[styles.reportActionSub, { color: theme.muted }]}>Report this item</Text></View>
-            <ChevronRight size={16} color={theme.muted} />
-          </Pressable>
-          <Pressable onPress={() => openReport("seller")} style={[styles.reportActionCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <View style={[styles.reportActionIcon, { backgroundColor: theme.isDark ? "#27151A" : "#FFF7ED" }]}><User size={17} color="#EA580C" /></View>
-            <View style={{ flex: 1 }}><Text style={[styles.reportActionTitle, { color: theme.text }]}>Report seller</Text><Text style={[styles.reportActionSub, { color: theme.muted }]}>Report seller activity</Text></View>
-            <ChevronRight size={16} color={theme.muted} />
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() => openReport("listing")}
+          style={[styles.storePill, styles.storeLinkCard, { flex: 1, minHeight: 58, justifyContent: "center", backgroundColor: theme.card, borderColor: theme.border, marginHorizontal: 0, marginTop: 0 }]}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            <Flag size={17} color="#DC2626" />
+            <Text style={{ color: theme.text, fontSize: 12, fontWeight: "800" }}>Report</Text>
+          </View>
+        </Pressable>
       </View>
 
       {/* 7. Related items */}
@@ -3279,8 +3412,16 @@ function ProductScreen({ theme, listing, inCart, liked, onAddToCart, onToggleLik
       <View style={styles.profileSheetOverlay}>
         <Pressable style={styles.profileSheetBackdrop} onPress={reporting ? undefined : () => setReportOpen(false)} />
         <View style={[styles.reportSheet,{backgroundColor:theme.card}]}>
-          <View style={[styles.reportHero,{backgroundColor:theme.isDark?"#3F172A":"#FEF2F2"}]}><View style={styles.reportHeroIcon}><Flag size={20} color="#DC2626"/></View><View style={{flex:1}}><Text style={[styles.reportTitle,{color:theme.text}]}>Report {reportType === "listing" ? "listing" : "seller"}</Text><Text style={[styles.reportSubtitle,{color:theme.muted}]}>Help us keep Marketplace safe.</Text></View><Pressable onPress={()=>setReportOpen(false)} style={styles.profileSheetClose}><X size={18} color={theme.text}/></Pressable></View>
-          <ScrollView contentContainerStyle={{padding:16,gap:10}} keyboardShouldPersistTaps="handled"><Text style={[styles.reportLabel,{color:theme.text}]}>Why are you reporting this?</Text><View style={styles.reportReasonGrid}>{reportReasons.map(r=><Pressable key={r} onPress={()=>setReportReason(r)} style={[styles.reportReason,{backgroundColor:reportReason===r?BUTTON_BLUE:theme.background,borderColor:reportReason===r?BUTTON_BLUE:theme.border}]}>{reportReason===r&&<CheckCircle2 size={15} color="#fff"/>}<Text style={[styles.reportReasonText,{color:reportReason===r?"#fff":theme.text}]}>{r}</Text></Pressable>)}</View><Text style={[styles.reportLabel,{color:theme.text}]}>Additional details (optional)</Text><TextInput value={reportDetails} onChangeText={setReportDetails} multiline placeholder="Tell us what happened…" placeholderTextColor={theme.muted} style={[styles.reportInput,{color:theme.text,borderColor:theme.border,backgroundColor:theme.background}]}/></ScrollView>
+          <View style={[styles.reportHero,{backgroundColor:theme.isDark?"#3F172A":"#FEF2F2"}]}><View style={styles.reportHeroIcon}><Flag size={20} color="#DC2626"/></View><View style={{flex:1}}><Text style={[styles.reportTitle,{color:theme.text}]}>Report</Text><Text style={[styles.reportSubtitle,{color:theme.muted}]}>Help us keep Marketplace safe.</Text></View><Pressable onPress={()=>setReportOpen(false)} style={styles.profileSheetClose}><X size={18} color={theme.text}/></Pressable></View>
+          <View style={{flexDirection:"row",paddingHorizontal:16,paddingTop:14,gap:8}}>
+            <Pressable onPress={()=>{setReportType("listing");setReportReason("");setReportDetails("");}} style={{flex:1,paddingVertical:11,borderRadius:12,alignItems:"center",backgroundColor:reportType==="listing"?"#DC2626":theme.background,borderWidth:1,borderColor:reportType==="listing"?"#DC2626":theme.border}}>
+              <Text style={{fontSize:12,fontWeight:"900",color:reportType==="listing"?"#fff":theme.text}}>Report listing</Text>
+            </Pressable>
+            <Pressable onPress={()=>{setReportType("seller");setReportReason("");setReportDetails("");}} style={{flex:1,paddingVertical:11,borderRadius:12,alignItems:"center",backgroundColor:reportType==="seller"?"#DC2626":theme.background,borderWidth:1,borderColor:reportType==="seller"?"#DC2626":theme.border}}>
+              <Text style={{fontSize:12,fontWeight:"900",color:reportType==="seller"?"#fff":theme.text}}>Report user</Text>
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={{padding:16,gap:10}} keyboardShouldPersistTaps="handled"><Text style={[styles.reportLabel,{color:theme.text}]}>Why are you reporting this {reportType === "listing" ? "listing" : "user"}?</Text><View style={styles.reportReasonGrid}>{reportReasons.map(r=><Pressable key={r} onPress={()=>setReportReason(r)} style={[styles.reportReason,{backgroundColor:reportReason===r?BUTTON_BLUE:theme.background,borderColor:reportReason===r?BUTTON_BLUE:theme.border}]}>{reportReason===r&&<CheckCircle2 size={15} color="#fff"/>}<Text style={[styles.reportReasonText,{color:reportReason===r?"#fff":theme.text}]}>{r}</Text></Pressable>)}</View><Text style={[styles.reportLabel,{color:theme.text}]}>Additional details (optional)</Text><TextInput value={reportDetails} onChangeText={setReportDetails} multiline placeholder="Tell us what happened…" placeholderTextColor={theme.muted} style={[styles.reportInput,{color:theme.text,borderColor:theme.border,backgroundColor:theme.background}]}/></ScrollView>
           <View style={[styles.profileSheetActions,{borderTopColor:theme.border}]}><Pressable onPress={()=>setReportOpen(false)} disabled={reporting} style={[styles.profileCancelButton,{borderColor:theme.border}]}><Text style={[styles.profileCancelText,{color:theme.text}]}>Cancel</Text></Pressable><Pressable onPress={()=>void submitReport()} disabled={reporting} style={[styles.reportSubmitButton,{backgroundColor:"#DC2626",opacity:reporting?.65:1}]}>{reporting?<ActivityIndicator color="#fff"/>:<><Flag size={15} color="#fff"/><Text style={styles.profileSaveText}>Submit report</Text></>}</Pressable></View>
         </View>
       </View>
@@ -4870,7 +5011,21 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
     const { RTCPeerConnection, mediaDevices } = getCallWebRTC();
     const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
     localStreamRef.current = stream;
-    const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+    // Use STUN for direct paths and TURN as a relay fallback. TURN servers are
+    // fetched from the authenticated Django API so credentials are not baked
+    // into the web/mobile JavaScript bundle.
+    let iceServers: Array<Record<string, any>> = [{ urls: "stun:stun.l.google.com:19302" }];
+    try {
+      const iceConfig = await apiRequest("/api/calls/ice-servers/", {}, auth) as {
+        ice_servers?: Array<Record<string, any>>;
+      };
+      if (Array.isArray(iceConfig?.ice_servers) && iceConfig.ice_servers.length) {
+        iceServers = iceConfig.ice_servers;
+      }
+    } catch {
+      // Keep Google STUN as a direct-connect fallback. Calls still work when
+      // peers can establish a host/server-reflexive ICE path.
+    }
     const pc = new RTCPeerConnection({ iceServers });
     peerRef.current = pc;
     stream.getTracks().forEach((track: any) => pc.addTrack(track, stream));
@@ -7024,7 +7179,7 @@ compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"cente
   card:{width:"100%",borderRadius:18,borderWidth:1,overflow:"hidden",marginTop:6},
   cardHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",padding:12}, storeMeta:{flexDirection:"row",alignItems:"center",flex:1,minWidth:0},storeAvatar:{width:36,height:36,borderRadius:18,alignItems:"center",justifyContent:"center",marginRight:10,overflow:"hidden"},storeAvatarImage:{width:"100%",height:"100%"},storeAvatarText:{fontSize:13,fontWeight:"800"},storeTextWrap:{flex:1,minWidth:0},storeName:{fontSize:14,fontWeight:"800"},location:{fontSize:11,marginTop:2},listingImage:{width:"100%",height:330,backgroundColor:"#EEE"},productGallery:{height:330,position:"relative",overflow:"hidden"},productGalleryPlaceholder:{alignItems:"center",justifyContent:"center"},galleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},galleryDot:{width:5,height:5,borderRadius:3,backgroundColor:"rgba(255,255,255,.55)"},galleryDotActive:{width:7,height:7,borderRadius:4,backgroundColor:"#fff"},galleryCount:{position:"absolute",right:10,bottom:10,paddingHorizontal:8,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(0,0,0,.52)"},galleryCountText:{fontSize:9,fontWeight:"900",color:"#fff"},generalOfferBadge:{position:"absolute",left:10,top:10,paddingHorizontal:8,paddingVertical:5,borderRadius:999,backgroundColor:"#DCFCE7",flexDirection:"row",alignItems:"center",gap:3},generalOfferBadgeText:{fontSize:8,fontWeight:"900",color:"#15803D"},generalBoostBadge:{position:"absolute",right:10,top:10,paddingHorizontal:8,paddingVertical:5,borderRadius:999,backgroundColor:BUTTON_BLUE,flexDirection:"row",alignItems:"center",gap:3},generalBoostBadgeText:{fontSize:8,fontWeight:"900",color:"#fff"},cardBody:{padding:12},actionRow:{flexDirection:"row",alignItems:"center",gap:14},actionButton:{flexDirection:"row",alignItems:"center",gap:4},whatsappActionButton:{width:28,height:28,alignItems:"center",justifyContent:"center"},whatsappIconCircle:{width:25,height:25,borderRadius:13,backgroundColor:"#25D366",alignItems:"center",justifyContent:"center"},whatsappPhoneMark:{position:"absolute",left:8.5,top:8.5},actionCount:{fontSize:10,fontWeight:"600"},saveAlign:{marginLeft:"auto"},metaText:{fontSize:11,marginTop:8},itemText:{fontSize:12,lineHeight:17,marginTop:6},itemStore:{fontWeight:"800"},price:{fontSize:20,fontWeight:"800",marginTop:6},itemMeta:{fontSize:11,marginTop:7},
   bottomNav:{flexDirection:"row",justifyContent:"space-around",alignItems:"center",borderTopWidth:1,paddingHorizontal:8,position:"absolute",bottom:0,left:0,right:0},navItem:{alignItems:"center",justifyContent:"center",flex:1,minHeight:46},navIconCreate:{width:44,height:44,borderRadius:15,alignItems:"center",justifyContent:"center"},navLabel:{fontSize:9,marginTop:3},navLabelActive:{fontWeight:"800"},
-  detailImage:{width:"100%",height:330,borderRadius:20,backgroundColor:"#EEE"},detailGallery:{height:330,borderRadius:24,overflow:"hidden",position:"relative",alignSelf:"center",marginBottom:2},detailGalleryImage:{height:330,backgroundColor:"#EEE"},detailGalleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},productTitle:{fontSize:20,fontWeight:"800",lineHeight:26},bigPrice:{fontSize:28,fontWeight:"900",marginTop:8},storePill:{borderWidth:1,borderRadius:999,paddingHorizontal:9,paddingVertical:6,alignSelf:"flex-start",marginTop:12,flexDirection:"row",alignItems:"center",gap:7,maxWidth:"90%"},detailStoreAvatar:{width:24,height:24,borderRadius:12,alignItems:"center",justifyContent:"center",overflow:"hidden"},detailStoreAvatarImage:{width:"100%",height:"100%"},detailStoreAvatarText:{fontSize:9,fontWeight:"900"},storePillText:{fontSize:12,fontWeight:"800",flexShrink:1},detailText:{fontSize:14,lineHeight:22,marginTop:14},detailButtons:{flexDirection:"row",gap:8,marginTop:18},rowBetween:{flexDirection:"row",alignItems:"flex-start",justifyContent:"space-between",gap:12},
+  detailImage:{width:"100%",height:330,borderRadius:20,backgroundColor:"#EEE"},productMetaStrip:{minHeight:76,marginTop:0,width:"100%",paddingHorizontal:12,paddingVertical:7},productMetaStripMain:{flex:1,minWidth:0},productMetaStripTitleRow:{flexDirection:"row",alignItems:"center",minWidth:0},productMetaStripTitleHalf:{width:"50%",paddingRight:6,minWidth:0},productMetaStripPriceHalf:{width:"50%",paddingLeft:6,alignItems:"flex-end",justifyContent:"flex-end",minWidth:0},productMetaStripTitle:{fontSize:12,fontWeight:"900",color:"#FFFFFF"},productMetaStripPriceBadge:{alignSelf:"flex-end",marginLeft:"auto",maxWidth:"100%",backgroundColor:"#FFE082",borderRadius:8,paddingHorizontal:8,paddingVertical:4,borderWidth:1,borderColor:"rgba(91,26,0,.18)",shadowColor:"#000",shadowOpacity:.08,shadowRadius:3,shadowOffset:{width:0,height:1},elevation:1},productMetaStripPrice:{fontSize:13,fontWeight:"900",color:"#5B1A00",marginTop:0,textAlign:"right"},productMetaStripOldPrice:{fontSize:9,fontWeight:"800",color:"#7A2E00",marginTop:0},productMetaStripBottomRow:{flexDirection:"row",alignItems:"center",marginTop:5,minWidth:0},productMetaStripInfo:{flex:1,flexDirection:"row",alignItems:"center",minWidth:0},productMetaStripItem:{flexDirection:"row",alignItems:"center",gap:4,minWidth:0},productMetaStripText:{fontSize:9,fontWeight:"800",color:"#FFFFFF"},productMetaStripDivider:{width:1,height:14,backgroundColor:"rgba(255,255,255,.45)",marginHorizontal:6},productMetaStripActions:{flexDirection:"row",alignItems:"center",gap:10,marginLeft:8},productStripAction:{flexDirection:"row",alignItems:"center",justifyContent:"center",gap:4,minWidth:30},productStripActionText:{fontSize:10,fontWeight:"900",color:"#FFFFFF"},detailGallery:{height:330,borderRadius:24,overflow:"hidden",position:"relative",alignSelf:"center",marginBottom:2},detailGalleryImage:{height:330,backgroundColor:"#EEE"},detailGalleryDots:{position:"absolute",left:0,right:0,bottom:12,flexDirection:"row",justifyContent:"center",alignItems:"center",gap:5},productTitle:{fontSize:17,fontWeight:"800",lineHeight:22},bigPrice:{fontSize:22,fontWeight:"900",marginTop:6},storePill:{borderWidth:1,borderRadius:999,paddingHorizontal:9,paddingVertical:6,alignSelf:"flex-start",marginTop:12,flexDirection:"row",alignItems:"center",gap:7,maxWidth:"90%"},detailStoreAvatar:{width:24,height:24,borderRadius:12,alignItems:"center",justifyContent:"center",overflow:"hidden"},detailStoreAvatarImage:{width:"100%",height:"100%"},detailStoreAvatarText:{fontSize:9,fontWeight:"900"},storePillText:{fontSize:12,fontWeight:"800",flexShrink:1},detailText:{fontSize:14,lineHeight:22,marginTop:14},detailButtons:{flexDirection:"row",gap:8,marginTop:18},rowBetween:{flexDirection:"row",alignItems:"flex-start",justifyContent:"space-between",gap:12},
   formHint:{fontSize:13,lineHeight:19,marginBottom:8},fieldLabel:{fontSize:12,fontWeight:"800",marginBottom:7},input:{height:46,borderWidth:1,borderRadius:13,paddingHorizontal:12,fontSize:14},uploadBox:{height:120,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",gap:8,marginBottom:14},
   createHeader:{flexDirection:"row",alignItems:"flex-start",gap:12,marginTop:4},createTitle:{fontSize:28,fontWeight:"900",letterSpacing:-0.5},createSub:{fontSize:12,lineHeight:18,marginTop:4,maxWidth:280},createStepBadge:{paddingHorizontal:10,paddingVertical:7,borderRadius:999},createStepText:{fontSize:11,fontWeight:"900"},progressRail:{marginTop:14,marginBottom:2},progressTrack:{height:5,borderRadius:999,overflow:"hidden"},progressFill:{height:5,borderRadius:999},progressLabels:{flexDirection:"row",justifyContent:"space-between",marginTop:7},progressLabel:{fontSize:10,fontWeight:"700"},progressLabelActive:{fontSize:10,fontWeight:"900"},progressStepButton:{paddingHorizontal:6,paddingVertical:4},typeCard:{borderWidth:1,borderRadius:20,padding:14},inlineLabel:{flexDirection:"row",alignItems:"center",gap:8},cardTitle:{fontSize:15,fontWeight:"900"},cardHint:{fontSize:11,lineHeight:17,marginTop:4,marginBottom:12},segmented:{borderWidth:1,borderRadius:16,padding:4,flexDirection:"row",gap:4},segment:{flex:1,height:42,borderRadius:12,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},segmentText:{fontSize:13,fontWeight:"800"},formCard:{borderWidth:1,borderRadius:20,padding:14},photoCover:{height:174,borderWidth:1,borderStyle:"dashed",borderRadius:18,alignItems:"center",justifyContent:"center",padding:14},photoCoverImage:{height:210,borderWidth:1,borderRadius:18,overflow:"hidden",position:"relative"},photoCoverImageFill:{width:"100%",height:"100%"},coverBadge:{position:"absolute",top:10,left:10,backgroundColor:"rgba(37,99,235,.95)",paddingHorizontal:9,paddingVertical:5,borderRadius:999},coverBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",letterSpacing:.7},coverEditHint:{position:"absolute",bottom:10,left:10,right:10,flexDirection:"row",alignItems:"center",gap:5},coverEditText:{color:"#fff",fontSize:10,fontWeight:"800",textShadowColor:"rgba(0,0,0,.7)",textShadowOffset:{width:0,height:1},textShadowRadius:3},coverHelper:{fontSize:10,lineHeight:15,marginTop:6},uploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.52)",alignItems:"center",justifyContent:"center",gap:7},uploadOverlayText:{color:"#fff",fontSize:11,fontWeight:"800"},uploadDoneBadge:{position:"absolute",right:10,bottom:10,width:27,height:27,borderRadius:14,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoThumbRowWide:{flexDirection:"row",gap:8,marginTop:10,flexWrap:"wrap"},photoThumbLarge:{width:62,height:62,borderWidth:1,borderRadius:13,overflow:"hidden",position:"relative"},photoThumbImage:{width:"100%",height:"100%"},photoAddThumb:{alignItems:"center",justifyContent:"center",borderStyle:"dashed"},thumbnailUploadOverlay:{position:"absolute",inset:0,backgroundColor:"rgba(0,0,0,.5)",alignItems:"center",justifyContent:"center"},thumbnailDoneBadge:{position:"absolute",right:4,bottom:4,width:19,height:19,borderRadius:10,backgroundColor:"#16A34A",alignItems:"center",justifyContent:"center"},photoAddedState:{alignItems:"center",justifyContent:"center"},photoUploadIcon:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center"},photoUploadTitle:{fontSize:14,fontWeight:"900",marginTop:10},photoAddedText:{fontSize:14,fontWeight:"900",marginTop:9},photoHint:{fontSize:11,marginTop:4,textAlign:"center"},photoThumbRow:{flexDirection:"row",gap:8,marginTop:9},photoThumb:{height:50,flex:1,borderWidth:1,borderRadius:13,alignItems:"center",justifyContent:"center"},fieldRow:{flexDirection:"row",gap:12,alignItems:"center"},selectField:{minHeight:56,borderWidth:1,borderRadius:14,paddingHorizontal:13,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10,marginBottom:12},selectValue:{fontSize:13,fontWeight:"800"},selectHint:{fontSize:10,marginTop:2},dropdownModalRoot:{flex:1,justifyContent:"flex-end"},dropdownBackdrop:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(0,0,0,.45)"},dropdownSheet:{borderTopLeftRadius:26,borderTopRightRadius:26,borderWidth:1,paddingHorizontal:16,paddingTop:9,paddingBottom:12,maxHeight:"72%"},dropdownSheetHandle:{width:42,height:4,borderRadius:999,backgroundColor:"#CBD5E1",alignSelf:"center",marginBottom:14},dropdownHeader:{flexDirection:"row",alignItems:"center",gap:12,marginBottom:14},dropdownTitle:{fontSize:19,fontWeight:"900"},dropdownSubtitle:{fontSize:11,lineHeight:16,marginTop:3},dropdownClose:{width:36,height:36,borderRadius:18,alignItems:"center",justifyContent:"center"},dropdownOption:{minHeight:54,borderWidth:1,borderRadius:15,paddingHorizontal:11,flexDirection:"row",alignItems:"center",gap:10},dropdownOptionIcon:{width:34,height:34,borderRadius:11,alignItems:"center",justifyContent:"center"},dropdownOptionText:{flex:1,fontSize:13,fontWeight:"800"},switchWrapModern:{width:96,alignItems:"center",justifyContent:"center",marginBottom:10},switchLabel:{fontSize:10,fontWeight:"800",marginBottom:2},categoryPicker:{gap:8,paddingBottom:10},categoryChip:{borderWidth:1,borderRadius:999,paddingHorizontal:11,paddingVertical:8},categoryChipText:{fontSize:11,fontWeight:"800"},optionRow:{flexDirection:"row",gap:8,marginBottom:12},optionPill:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:14,alignItems:"center",justifyContent:"center"},optionPillText:{fontSize:12,fontWeight:"800"},inlineFieldLabel:{flexDirection:"row",alignItems:"center",gap:6,marginBottom:7},fieldLabelNoMargin:{fontSize:12,fontWeight:"800"},descriptionInput:{minHeight:190,borderWidth:1,borderRadius:14,padding:12,fontSize:14,lineHeight:20,textAlignVertical:"top"},characterHint:{fontSize:10,textAlign:"right",marginTop:5},tipCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"flex-start",gap:10},tipTitle:{fontSize:13,fontWeight:"800"},tipText:{fontSize:11,lineHeight:17,marginTop:3},publishSheet:{borderWidth:1,borderRadius:18,padding:10,flexDirection:"row",alignItems:"center",gap:8,marginTop:2}, publishSheetFixed:{position:"absolute",left:0,right:0,bottom:0,borderTopWidth:1,paddingHorizontal:12,paddingTop:10,paddingBottom:14,flexDirection:"row",alignItems:"center",gap:8,zIndex:50,elevation:12},publishSheetTitle:{fontSize:12,fontWeight:"900"},publishSheetSub:{fontSize:10,lineHeight:15,marginTop:2},  photoRemoveButton:{position:"absolute",top:2,right:2,width:22,height:22,borderRadius:11,backgroundColor:"rgba(0,0,0,.65)",alignItems:"center",justifyContent:"center"}, photoRemoveText:{color:"#fff",fontSize:14,fontWeight:"800"}, successScreen:{flex:1,alignItems:"center",justifyContent:"center",paddingHorizontal:20,gap:26}, verifiedAnimationWrap:{width:190,height:190,alignItems:"center",justifyContent:"center",position:"relative"}, successHalo:{position:"absolute",width:178,height:178,borderRadius:89,borderWidth:8}, verifiedBadge:{width:126,height:126,borderRadius:63,alignItems:"center",justifyContent:"center",elevation:10,shadowOpacity:0.2,shadowRadius:18,shadowOffset:{width:0,height:8}}, successSparkle:{position:"absolute",width:10,height:10,borderRadius:5}, sparkleTop:{top:12},sparkleRight:{right:14},sparkleBottom:{bottom:18},sparkleLeft:{left:14}, successCheckOuter:{width:170,height:170,borderRadius:85,alignItems:"center",justifyContent:"center",borderWidth:1}, successCheckCircle:{width:118,height:118,borderRadius:59,alignItems:"center",justifyContent:"center"}, successTitle:{fontSize:30,fontWeight:"900",textAlign:"center",letterSpacing:-0.5}, successSub:{fontSize:14,lineHeight:21,textAlign:"center",marginTop:8,paddingHorizontal:10}, successActions:{flexDirection:"row",gap:10,marginTop:24}, profileAuthCard:{borderWidth:1,borderRadius:28,padding:24,marginTop:12,marginHorizontal:2,alignItems:"center",shadowColor:"#000",shadowOpacity:.08,shadowRadius:18,shadowOffset:{width:0,height:8},elevation:5},profileAuthIcon:{width:72,height:72,borderRadius:24,alignItems:"center",justifyContent:"center",marginBottom:16},profileAuthTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.6,textAlign:"center"},profileAuthText:{fontSize:13,lineHeight:20,textAlign:"center",marginTop:8,maxWidth:340},profileAuthButton:{width:"100%",minHeight:52,borderWidth:1,borderRadius:16,alignItems:"center",justifyContent:"center",marginTop:10,paddingHorizontal:16},profileAuthButtonText:{fontSize:14,fontWeight:"900"},
  settingsSectionTitle:{fontSize:13,fontWeight:"900",letterSpacing:.8,textTransform:"uppercase",marginBottom:8,marginTop:6},preferenceBlock:{borderWidth:1,borderRadius:18,padding:14,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionRow:{minHeight:68,borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9,shadowColor:"#000",shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:2},preferenceActionIcon:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},preferenceTitle:{fontSize:13,fontWeight:"900"},preferenceDescription:{fontSize:10.5,lineHeight:16,marginTop:3},choiceChip:{minHeight:38,borderWidth:1,borderRadius:12,paddingHorizontal:13,alignItems:"center",justifyContent:"center"},faqRow:{minHeight:58,borderBottomWidth:1,flexDirection:"row",alignItems:"center",gap:12,paddingVertical:11,paddingHorizontal:4},faqQuestion:{fontSize:13,fontWeight:"800",lineHeight:19},faqAnswer:{fontSize:11.5,lineHeight:18,marginTop:7},reportInput:{minHeight:120,borderWidth:1,borderRadius:16,padding:13,fontSize:13,textAlignVertical:"top",marginBottom:9},reportInputSingle:{height:48,borderWidth:1,borderRadius:14,paddingHorizontal:13,fontSize:13,marginBottom:9},safetyHero:{borderWidth:1,borderRadius:24,padding:20,alignItems:"flex-start",marginBottom:10},safetyTip:{borderWidth:1,borderRadius:18,padding:14,flexDirection:"row",alignItems:"flex-start",gap:11,marginBottom:9},safetyNumber:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},legalCard:{borderWidth:1,borderRadius:24,padding:20,marginTop:8},legalTitle:{fontSize:25,fontWeight:"900",letterSpacing:-.5},legalHeading:{fontSize:14,fontWeight:"900",marginTop:20,marginBottom:6},legalText:{fontSize:12.5,lineHeight:20}, profileHeader:{flexDirection:"row",alignItems:"center",gap:14,paddingVertical:8},profileAvatar:{width:76,height:76,borderRadius:38,alignItems:"center",justifyContent:"center"},profileAvatarText:{fontSize:18,fontWeight:"900",color:"#fff"},profileHeroCard:{borderWidth:1,borderRadius:26,padding:18,marginBottom:13,shadowColor:"#000",shadowOpacity:.07,shadowRadius:16,shadowOffset:{width:0,height:7},elevation:4},profilePageScroll:{paddingTop:0,paddingBottom:0,gap:0},
@@ -7052,7 +7207,7 @@ compactCard:{borderWidth:1,borderRadius:16,flexDirection:"row",alignItems:"cente
   storeTrendMetricLabel: { fontSize: 12, marginTop: 3, fontWeight: "700" },
   storeTrendCard: { borderWidth: 1, borderRadius: 16, padding: 16 },
   storeTrendTitle: { fontSize: 16, fontWeight: "900" },
-  storePageCard:{borderWidth:1,borderRadius:26,overflow:"hidden",marginBottom:12},storeCover:{height:150,position:"relative",overflow:"hidden"},storeCoverLogoHolder:{position:"absolute",left:16,bottom:-2,width:82,height:82,borderRadius:41,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},storeCoverLogoImage:{width:"100%",height:"100%",borderRadius:41},storeCoverGlow:{position:"absolute",width:230,height:230,borderRadius:115,backgroundColor:"rgba(37,99,235,.28)",right:-70,top:-110},storeCoverShade:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(2,6,23,.18)"},storeCoverTopRow:{position:"absolute",left:12,right:12,top:12,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},storeStatusPill:{height:30,paddingHorizontal:10,borderRadius:999,backgroundColor:"rgba(2,6,23,.48)",flexDirection:"row",alignItems:"center",gap:6},storeStatusDot:{width:7,height:7,borderRadius:4},storeStatusText:{fontSize:10,fontWeight:"900",color:"#fff"},storeCircleButton:{width:34,height:34,borderRadius:17,backgroundColor:"rgba(2,6,23,.48)",alignItems:"center",justifyContent:"center"},storeIdentityBlock:{paddingHorizontal:16,paddingTop:0,paddingBottom:14,flexDirection:"row",gap:12},storeLogoLarge:{width:72,height:72,borderRadius:22,borderWidth:4,alignItems:"center",justifyContent:"center",marginTop:-34,overflow:"hidden"},storeLogoImage:{width:"100%",height:"100%"},storeLogoLetter:{fontSize:24,fontWeight:"900",color:"#fff"},storeIdentityText:{flex:1,paddingTop:8,minWidth:0},storeNameRow:{flexDirection:"row",alignItems:"center",gap:7},storePageTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4,flexShrink:1},storeVerifiedBadge:{width:19,height:19,borderRadius:10,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},storeIdentityLabelRow:{flexDirection:"row",alignItems:"center",gap:7,marginBottom:4},storeIdentityLabel:{fontSize:8,fontWeight:"900",letterSpacing:1.2},storeOwnerLabel:{fontSize:8.5},storePageDescription:{fontSize:11,lineHeight:17,marginTop:4},storeMetaLine:{flexDirection:"row",alignItems:"center",gap:4,marginTop:6},storeMetaText:{fontSize:10,flexShrink:1},storeStatsRow:{marginHorizontal:16,borderTopWidth:1,borderBottomWidth:1,minHeight:62,flexDirection:"row",alignItems:"center",justifyContent:"space-around"},storeStat:{flex:1,alignItems:"center"},storeStatValue:{fontSize:17,fontWeight:"900"},storeStatLabel:{fontSize:9,fontWeight:"700",marginTop:2},storeStatDivider:{width:1,height:28},storeQuickActions:{padding:12,flexDirection:"row",gap:8},storePrimaryAction:{height:44,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storePrimaryActionText:{color:"#fff",fontSize:12,fontWeight:"900"},storeSecondaryAction:{height:44,borderRadius:13,paddingHorizontal:15,borderWidth:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeSecondaryActionText:{fontSize:12,fontWeight:"900"},storeToolsCard:{borderWidth:1,borderRadius:22,padding:14,marginBottom:14},storeToolsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},storeToolsTitle:{fontSize:15,fontWeight:"900"},storeToolsSubtitle:{fontSize:10,lineHeight:15,marginTop:3},storeToolsIcon:{width:36,height:36,borderRadius:12,alignItems:"center",justifyContent:"center"},storeToolGrid:{flexDirection:"row",flexWrap:"wrap",gap:8},storeToolItem:{width:"48.5%",minHeight:100,borderRadius:15,padding:11},storeToolTitle:{fontSize:11,fontWeight:"900",marginTop:8},storeToolText:{fontSize:9,lineHeight:14,marginTop:3},storeListingsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:4,marginBottom:10},storeListingsTitle:{fontSize:17,fontWeight:"900",letterSpacing:-.2},storeListingsSubtitle:{fontSize:10,marginTop:3},storeCountPill:{minWidth:32,height:30,paddingHorizontal:9,borderRadius:999,alignItems:"center",justifyContent:"center"},storeCountText:{fontSize:12,fontWeight:"900"},storeLoadingCard:{minHeight:150,borderWidth:1,borderRadius:20,alignItems:"center",justifyContent:"center",gap:9},storeLoadingText:{fontSize:11,fontWeight:"700"},storeErrorCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:10},storeErrorTitle:{fontSize:12,fontWeight:"900"},storeErrorText:{fontSize:9.5,lineHeight:14,marginTop:3},storeRetryButton:{height:34,paddingHorizontal:12,borderRadius:10,alignItems:"center",justifyContent:"center"},storeRetryText:{fontSize:10,fontWeight:"900",color:"#fff"},storeEmptyCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",justifyContent:"center",minHeight:200},storeEmptyIcon:{width:52,height:52,borderRadius:17,alignItems:"center",justifyContent:"center",marginBottom:12},storeEmptyTitle:{fontSize:14,fontWeight:"900",textAlign:"center"},storeEmptyText:{fontSize:10.5,lineHeight:16,textAlign:"center",marginTop:5,maxWidth:280},storeListingGrid:{flexDirection:"row",flexWrap:"wrap",gap:10},storeListingCard:{width:"48%",borderWidth:1,borderRadius:18,overflow:"hidden"},storeListingImageWrap:{height:145,position:"relative"},storeListingImage:{width:"100%",height:"100%",backgroundColor:"#E5E7EB"},storeListingType:{position:"absolute",left:8,bottom:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(2,6,23,.58)"},storeListingTypeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeOutOfStockBadge:{position:"absolute",left:8,bottom:8,paddingHorizontal:8,paddingVertical:5,borderRadius:8,backgroundColor:"#DC2626",shadowOpacity:.12,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:2},storeOutOfStockBadgeText:{fontSize:7.5,fontWeight:"900",letterSpacing:.35,color:"#fff"},storeListingBody:{padding:10},storeOfferPill:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:"#DCFCE7"},storeOfferPillText:{fontSize:8,fontWeight:"900",color:"#15803D"},storeBoostPill:{position:"absolute",right:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:BUTTON_BLUE},storeBoostPillText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingEditButton:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},storeListingOriginalPrice:{fontSize:9,textDecorationLine:"line-through",marginTop:2},storeListingStockRow:{marginTop:5,minHeight:17,justifyContent:"center"},storeListingStockText:{fontSize:9.5,fontWeight:"800"},listingEditorToggle:{minHeight:62,borderWidth:1,borderRadius:16,paddingHorizontal:12,paddingVertical:10,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},listingToggle:{width:40,height:23,borderRadius:999,justifyContent:"center"},listingToggleKnob:{width:19,height:19,borderRadius:10,backgroundColor:"#fff"},listingEditorSection:{borderWidth:1,borderRadius:18,padding:12,marginBottom:12},listingEditorSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10},listingEditPhoto:{width:118,height:150,borderWidth:2,borderRadius:14,overflow:"hidden",position:"relative"},listingEditPhotoImage:{width:"100%",height:"100%"},listingEditCover:{position:"absolute",left:6,top:6,paddingHorizontal:6,paddingVertical:4,borderRadius:7,backgroundColor:"rgba(37,99,235,.92)"},listingEditPhotoActions:{position:"absolute",left:5,right:5,bottom:5,flexDirection:"row",justifyContent:"center",gap:5},listingPhotoAction:{width:28,height:28,borderRadius:9,alignItems:"center",justifyContent:"center"},listingBoostCard:{borderWidth:1,borderRadius:18,padding:12,flexDirection:"row",alignItems:"center",gap:9,marginBottom:12},listingBoostIcon:{width:36,height:36,borderRadius:11,alignItems:"center",justifyContent:"center"},storeListingTitle:{fontSize:11.5,fontWeight:"900",lineHeight:16,minHeight:32},storeListingPrice:{fontSize:15,fontWeight:"900",marginTop:6},storeListingMeta:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:6},storeListingMetaText:{fontSize:8.5,flex:1,marginRight:4},  messagesIntro:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:14},messagesTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.5},messagesSubtitle:{fontSize:11,marginTop:3},messagesRefresh:{width:38,height:38,borderRadius:12,borderWidth:1,alignItems:"center",justifyContent:"center"},messagesSearch:{height:48,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:9,marginBottom:12},messagesSearchInput:{flex:1,fontSize:13},messageSkeleton:{height:82,borderWidth:1,borderRadius:18,marginBottom:9,opacity:.65},messagesEmptyCard:{borderWidth:1,borderRadius:22,padding:28,alignItems:"center",justifyContent:"center",marginTop:26,minHeight:250},messagesEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},messagesEmptyTitle:{fontSize:16,fontWeight:"900"},messagesEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",maxWidth:300,marginTop:5},messageConversationRow:{minHeight:78,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9},messageAvatar:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center",overflow:"hidden"},messageAvatarImage:{width:"100%",height:"100%"},messageAvatarText:{fontSize:14,fontWeight:"900"},messageRowTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:7},messageConversationName:{fontSize:13,fontWeight:"900",flex:1},messageTime:{fontSize:9},messageStoreName:{fontSize:9.5,fontWeight:"800",marginTop:2},messagePreview:{fontSize:10.5,marginTop:4},messageUnread:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:11,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},messageUnreadText:{fontSize:9,fontWeight:"900",color:"#fff"},chatHeader:{minHeight:64,borderWidth:1,borderRadius:18,marginBottom:8,padding:9,flexDirection:"row",alignItems:"center",gap:9},chatBackButton:{width:38,height:38,borderRadius:12,alignItems:"center",justifyContent:"center"},chatAvatar:{width:42,height:42,borderRadius:14,alignItems:"center",justifyContent:"center",overflow:"hidden"},chatAvatarImage:{width:"100%",height:"100%"},chatAvatarText:{fontSize:12,fontWeight:"900"},chatName:{fontSize:13,fontWeight:"900"},chatStore:{fontSize:9.5,marginTop:2},chatOnlineDot:{width:8,height:8,borderRadius:4,marginRight:3},chatHeaderActions:{flexDirection:"row",alignItems:"center",gap:8},chatEmpty:{alignItems:"center",justifyContent:"center",paddingTop:90,paddingHorizontal:30},chatEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},chatEmptyTitle:{fontSize:16,fontWeight:"900"},chatEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",marginTop:5},chatBubbleRow:{flexDirection:"row",marginBottom:8},chatBubble:{maxWidth:"82%",borderWidth:1,borderRadius:18,paddingHorizontal:12,paddingVertical:9},chatBubbleText:{fontSize:12,lineHeight:18},chatTime:{fontSize:8,alignSelf:"flex-end",marginTop:4},chatTypingRow:{paddingHorizontal:14,paddingBottom:6},chatTypingBubble:{alignSelf:"flex-start",borderWidth:1,borderRadius:14,paddingHorizontal:11,paddingVertical:7},chatTypingText:{fontSize:11,fontWeight:"700",fontStyle:"italic"},chatComposer:{borderTopWidth:1,paddingTop:8,paddingBottom:8,flexDirection:"row",alignItems:"flex-end",gap:7},chatAttach:{width:40,height:40,borderRadius:12,alignItems:"center",justifyContent:"center"},chatInput:{flex:1,minHeight:40,maxHeight:105,borderWidth:1,borderRadius:13,paddingHorizontal:11,paddingVertical:9,fontSize:12},chatSend:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},  sellerProfileHero:{alignItems:"center",paddingVertical:22,paddingHorizontal:18,borderRadius:24},publicStoreStat:{flex:1,minHeight:48,borderRadius:14,alignItems:"center",justifyContent:"center",gap:3},publicStoreStatValue:{fontSize:16,fontWeight:"900"},publicStoreStatLabel:{fontSize:9,fontWeight:"800"},sellerProfileAvatarWrap:{position:"relative"},sellerProfileAvatar:{width:88,height:88,borderRadius:44},sellerOnlineDot:{position:"absolute",right:2,bottom:4,width:16,height:16,borderRadius:8,backgroundColor:"#22C55E",borderWidth:3,borderColor:"#fff"},sellerStatsRow:{width:"100%",flexDirection:"row",alignItems:"center",justifyContent:"space-around",marginTop:20,paddingVertical:14,borderTopWidth:1,borderBottomWidth:1},sellerStat:{alignItems:"center",minWidth:70},sellerStatValue:{fontSize:19,fontWeight:"900"},sellerStatLabel:{fontSize:10,marginTop:3,fontWeight:"700"},sellerStatDivider:{width:1,height:28},notificationBadge:{position:"absolute",top:-4,right:-5,minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:"#DC2626",alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},notificationBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",lineHeight:11},photoViewerRoot:{flex:1,backgroundColor:"#000"},photoViewerTopBar:{position:"absolute",top:0,left:0,right:0,paddingTop:Platform.OS === "android" ? 28 : 48,paddingHorizontal:16,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},photoViewerClose:{width:44,height:44,borderRadius:22,backgroundColor:"rgba(0,0,0,0.55)",alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,0.18)"},photoViewerCounter:{paddingHorizontal:12,paddingVertical:8,borderRadius:999,backgroundColor:"rgba(0,0,0,0.55)",borderWidth:1,borderColor:"rgba(255,255,255,0.18)"},photoViewerCounterText:{color:"#fff",fontSize:12,fontWeight:"800"},photoViewerDots:{position:"absolute",bottom:34,left:0,right:0,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:5},photoViewerDot:{width:6,height:6,borderRadius:3,backgroundColor:"rgba(255,255,255,0.42)"},photoViewerDotActive:{width:18,backgroundColor:"#fff"},productInfoRow:{flexDirection:"row",alignItems:"center",paddingHorizontal:2,paddingVertical:14,borderBottomWidth:StyleSheet.hairlineWidth},productMetaLine:{flexDirection:"row",alignItems:"center",flexWrap:"wrap",gap:5,marginTop:6},productMetaValue:{fontSize:16,fontWeight:"900"},productMetaSecondary:{fontSize:12,fontWeight:"600"},productMetaDot:{fontSize:12,fontWeight:"700"},productTopBar:{height:52,flexDirection:"row",alignItems:"center",paddingHorizontal:2},productTopIcon:{width:40,height:40,borderRadius:13,borderWidth:1,alignItems:"center",justifyContent:"center"},productTopLabel:{fontSize:14,fontWeight:"900"},productTitleActionRow:{minHeight:54,flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10,paddingHorizontal:2,marginBottom:10},productTitleActions:{flexDirection:"row",alignItems:"center",gap:8},productActionIcon:{width:46,height:46,borderRadius:15,borderWidth:1,alignItems:"center",justifyContent:"center"},reviewScoreBadge:{width:34,height:34,borderRadius:12,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center"},reviewScoreText:{fontSize:18,fontWeight:"900",color:BUTTON_BLUE},storeLinkCard:{width:"100%",maxWidth:"100%",alignSelf:"stretch",marginTop:14,paddingHorizontal:12,paddingVertical:10,borderRadius:18},reportActionsWrap:{marginTop:18},reportSectionLabel:{fontSize:10,fontWeight:"800",marginBottom:8,letterSpacing:.2},reportActionsRow:{gap:9},reportActionCard:{minHeight:62,borderWidth:1,borderRadius:18,paddingHorizontal:11,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10},reportActionIcon:{width:38,height:38,borderRadius:13,backgroundColor:"#FEF2F2",alignItems:"center",justifyContent:"center"},reportActionTitle:{fontSize:11.5,fontWeight:"900"},reportActionSub:{fontSize:9.5,marginTop:2},detailSectionCard:{borderWidth:1,borderRadius:18,padding:14,marginTop:14},detailSectionTitle:{fontSize:16,fontWeight:"900"},detailSectionSub:{fontSize:10,marginTop:3},detailSectionEmpty:{fontSize:11,lineHeight:17,marginTop:12},reviewRow:{borderTopWidth:1,paddingTop:10,marginTop:10},reviewName:{fontSize:11,fontWeight:"900"},reviewText:{fontSize:10.5,lineHeight:16,marginTop:4},relatedCard:{width:150,borderWidth:1,borderRadius:16,overflow:"hidden",paddingBottom:9},relatedImage:{width:150,height:130,backgroundColor:"#E5E7EB"},relatedTitle:{fontSize:11,fontWeight:"800",lineHeight:15,paddingHorizontal:9,marginTop:7},relatedPrice:{fontSize:13,fontWeight:"900",paddingHorizontal:9,marginTop:5},reportSheet:{maxHeight:"88%",borderTopLeftRadius:26,borderTopRightRadius:26,overflow:"hidden"},reportHero:{padding:16,flexDirection:"row",alignItems:"center",gap:11},reportHeroIcon:{width:42,height:42,borderRadius:14,backgroundColor:"#FEE2E2",alignItems:"center",justifyContent:"center"},reportTitle:{fontSize:18,fontWeight:"900"},reportSubtitle:{fontSize:10.5,marginTop:3},reportLabel:{fontSize:12,fontWeight:"900",marginTop:3},reportReasonGrid:{gap:8},reportReason:{minHeight:44,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},reportReasonText:{fontSize:11,fontWeight:"800"},reportInput:{minHeight:105,borderWidth:1,borderRadius:14,padding:12,textAlignVertical:"top",fontSize:12},reportSubmitButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},  ordersHero:{borderWidth:1,borderRadius:22,padding:16,marginBottom:16,flexDirection:"row",alignItems:"center",gap:12},ordersHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},ordersCountPill:{minWidth:52,paddingHorizontal:9,paddingVertical:7,borderRadius:14,alignItems:"center",justifyContent:"center"},ordersCountText:{fontSize:16,fontWeight:"900"},ordersCountLabel:{fontSize:8,fontWeight:"800",marginTop:1},professionalOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},professionalOrderTop:{flexDirection:"row",alignItems:"center",gap:10},professionalOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},professionalOrderTitle:{fontSize:14,fontWeight:"900"},professionalOrderMeta:{fontSize:9.5,marginTop:3},professionalOrderInfo:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},professionalOrderLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},professionalOrderValue:{fontSize:11,fontWeight:"800",marginTop:3},orderMessageBox:{borderRadius:12,padding:10,marginTop:11},orderMessageLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},orderMessageText:{fontSize:10.5,lineHeight:16,marginTop:4},sellerOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},sellerOrderTop:{flexDirection:"row",alignItems:"center",gap:10},sellerOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},sellerOrderTitle:{fontSize:14,fontWeight:"900"},sellerOrderMeta:{fontSize:9.5,marginTop:3},sellerOrderStatus:{paddingHorizontal:9,paddingVertical:6,borderRadius:999},sellerOrderStatusText:{fontSize:9,fontWeight:"900"},sellerOrderInfoGrid:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},sellerOrderInfo:{flex:1},sellerOrderInfoLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},sellerOrderInfoValue:{fontSize:10.5,fontWeight:"800",marginTop:3},sellerOrderHint:{fontSize:9.5,lineHeight:15,marginTop:10},storeOrderLoading:{minHeight:120,borderWidth:1,borderRadius:18,alignItems:"center",justifyContent:"center",gap:8},  orderCard:{minHeight:68,borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:10},badge:{paddingHorizontal:10,paddingVertical:6,borderRadius:999},badgeText:{fontSize:11,fontWeight:"800"},notificationCard:{borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:12},notificationIcon:{width:38,height:38,borderRadius:19,alignItems:"center",justifyContent:"center"},messageRow:{borderWidth:1,borderRadius:16,padding:12,flexDirection:"row",alignItems:"center",gap:12},settingsHero:{borderWidth:1,borderRadius:22,padding:17,marginBottom:20,flexDirection:"row",alignItems:"center",gap:13,shadowOpacity:0.04,shadowRadius:12,shadowOffset:{width:0,height:4},elevation:1},
+  storePageCard:{borderWidth:1,borderRadius:26,overflow:"hidden",marginBottom:12},storeCover:{height:150,position:"relative",overflow:"hidden"},storeCoverLogoHolder:{position:"absolute",left:16,bottom:-2,width:82,height:82,borderRadius:41,borderWidth:4,alignItems:"center",justifyContent:"center",overflow:"visible",elevation:4,shadowOpacity:.18,shadowRadius:7,shadowOffset:{width:0,height:3}},storeCoverLogoImage:{width:"100%",height:"100%",borderRadius:41},storeCoverGlow:{position:"absolute",width:230,height:230,borderRadius:115,backgroundColor:"rgba(37,99,235,.28)",right:-70,top:-110},storeCoverShade:{...StyleSheet.absoluteFillObject,backgroundColor:"rgba(2,6,23,.18)"},storeCoverTopRow:{position:"absolute",left:12,right:12,top:12,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},storeStatusPill:{height:30,paddingHorizontal:10,borderRadius:999,backgroundColor:"rgba(2,6,23,.48)",flexDirection:"row",alignItems:"center",gap:6},storeStatusDot:{width:7,height:7,borderRadius:4},storeStatusText:{fontSize:10,fontWeight:"900",color:"#fff"},storeCircleButton:{width:34,height:34,borderRadius:17,backgroundColor:"rgba(2,6,23,.48)",alignItems:"center",justifyContent:"center"},storeIdentityBlock:{paddingHorizontal:16,paddingTop:0,paddingBottom:14,flexDirection:"row",gap:12},storeLogoLarge:{width:72,height:72,borderRadius:22,borderWidth:4,alignItems:"center",justifyContent:"center",marginTop:-34,overflow:"hidden"},storeLogoImage:{width:"100%",height:"100%"},storeLogoLetter:{fontSize:24,fontWeight:"900",color:"#fff"},storeIdentityText:{flex:1,paddingTop:8,minWidth:0},storeNameRow:{flexDirection:"row",alignItems:"center",gap:7},storePageTitle:{fontSize:20,fontWeight:"900",letterSpacing:-.4,flexShrink:1},storeVerifiedBadge:{width:19,height:19,borderRadius:10,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},storeIdentityLabelRow:{flexDirection:"row",alignItems:"center",gap:7,marginBottom:4},storeIdentityLabel:{fontSize:8,fontWeight:"900",letterSpacing:1.2},storeOwnerLabel:{fontSize:8.5},storePageDescription:{fontSize:11,lineHeight:17,marginTop:4},storeMetaLine:{flexDirection:"row",alignItems:"center",gap:4,marginTop:6},storeMetaText:{fontSize:10,flexShrink:1},storeStatsRow:{marginHorizontal:16,borderTopWidth:1,borderBottomWidth:1,minHeight:62,flexDirection:"row",alignItems:"center",justifyContent:"space-around"},storeStat:{flex:1,alignItems:"center"},storeStatValue:{fontSize:17,fontWeight:"900"},storeStatLabel:{fontSize:9,fontWeight:"700",marginTop:2},storeStatDivider:{width:1,height:28},storeQuickActions:{padding:12,flexDirection:"row",gap:8},storePrimaryAction:{height:44,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storePrimaryActionText:{color:"#fff",fontSize:12,fontWeight:"900"},storeSecondaryAction:{height:44,borderRadius:13,paddingHorizontal:15,borderWidth:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},storeSecondaryActionText:{fontSize:12,fontWeight:"900"},storeToolsCard:{borderWidth:1,borderRadius:22,padding:14,marginBottom:14},storeToolsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},storeToolsTitle:{fontSize:15,fontWeight:"900"},storeToolsSubtitle:{fontSize:10,lineHeight:15,marginTop:3},storeToolsIcon:{width:36,height:36,borderRadius:12,alignItems:"center",justifyContent:"center"},storeToolGrid:{flexDirection:"row",flexWrap:"wrap",gap:8},storeToolItem:{width:"48.5%",minHeight:100,borderRadius:15,padding:11},storeToolTitle:{fontSize:11,fontWeight:"900",marginTop:8},storeToolText:{fontSize:9,lineHeight:14,marginTop:3},storeListingsHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:4,marginBottom:10},storeListingsTitle:{fontSize:17,fontWeight:"900",letterSpacing:-.2},storeListingsSubtitle:{fontSize:10,marginTop:3},storeCountPill:{minWidth:32,height:30,paddingHorizontal:9,borderRadius:999,alignItems:"center",justifyContent:"center"},storeCountText:{fontSize:12,fontWeight:"900"},storeLoadingCard:{minHeight:150,borderWidth:1,borderRadius:20,alignItems:"center",justifyContent:"center",gap:9},storeLoadingText:{fontSize:11,fontWeight:"700"},storeErrorCard:{borderWidth:1,borderRadius:18,padding:13,flexDirection:"row",alignItems:"center",gap:10},storeErrorTitle:{fontSize:12,fontWeight:"900"},storeErrorText:{fontSize:9.5,lineHeight:14,marginTop:3},storeRetryButton:{height:34,paddingHorizontal:12,borderRadius:10,alignItems:"center",justifyContent:"center"},storeRetryText:{fontSize:10,fontWeight:"900",color:"#fff"},storeEmptyCard:{borderWidth:1,borderRadius:20,padding:22,alignItems:"center",justifyContent:"center",minHeight:200},storeEmptyIcon:{width:52,height:52,borderRadius:17,alignItems:"center",justifyContent:"center",marginBottom:12},storeEmptyTitle:{fontSize:14,fontWeight:"900",textAlign:"center"},storeEmptyText:{fontSize:10.5,lineHeight:16,textAlign:"center",marginTop:5,maxWidth:280},storeListingGrid:{flexDirection:"row",flexWrap:"wrap",gap:10},storeListingCard:{width:"48%",borderWidth:1,borderRadius:18,overflow:"hidden"},storeListingImageWrap:{height:145,position:"relative"},storeListingImage:{width:"100%",height:"100%",backgroundColor:"#E5E7EB"},storeListingType:{position:"absolute",left:8,bottom:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,backgroundColor:"rgba(2,6,23,.58)"},storeListingTypeText:{fontSize:8,fontWeight:"900",color:"#fff"},storeOutOfStockBadge:{position:"absolute",left:8,bottom:8,paddingHorizontal:8,paddingVertical:5,borderRadius:8,backgroundColor:"#DC2626",shadowOpacity:.12,shadowRadius:5,shadowOffset:{width:0,height:2},elevation:2},storeOutOfStockBadgeText:{fontSize:7.5,fontWeight:"900",letterSpacing:.35,color:"#fff"},storeListingBody:{padding:10},storeOfferPill:{position:"absolute",left:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:"#DCFCE7"},storeOfferPillText:{fontSize:8,fontWeight:"900",color:"#15803D"},storeBoostPill:{position:"absolute",right:8,top:8,paddingHorizontal:7,paddingVertical:4,borderRadius:999,flexDirection:"row",alignItems:"center",gap:3,backgroundColor:BUTTON_BLUE},storeBoostPillText:{fontSize:8,fontWeight:"900",color:"#fff"},storeListingEditButton:{width:30,height:30,borderRadius:10,alignItems:"center",justifyContent:"center"},storeListingOriginalPrice:{fontSize:9,textDecorationLine:"line-through",marginTop:2},storeListingStockRow:{marginTop:5,minHeight:17,justifyContent:"center"},storeListingStockText:{fontSize:9.5,fontWeight:"800"},listingEditorToggle:{minHeight:62,borderWidth:1,borderRadius:16,paddingHorizontal:12,paddingVertical:10,flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:12},listingToggle:{width:40,height:23,borderRadius:999,justifyContent:"center"},listingToggleKnob:{width:19,height:19,borderRadius:10,backgroundColor:"#fff"},listingEditorSection:{borderWidth:1,borderRadius:18,padding:12,marginBottom:12},listingEditorSectionHeader:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10},listingEditPhoto:{width:118,height:150,borderWidth:2,borderRadius:14,overflow:"hidden",position:"relative"},listingEditPhotoImage:{width:"100%",height:"100%"},listingEditCover:{position:"absolute",left:6,top:6,paddingHorizontal:6,paddingVertical:4,borderRadius:7,backgroundColor:"rgba(37,99,235,.92)"},listingEditPhotoActions:{position:"absolute",left:5,right:5,bottom:5,flexDirection:"row",justifyContent:"center",gap:5},listingPhotoAction:{width:28,height:28,borderRadius:9,alignItems:"center",justifyContent:"center"},listingBoostCard:{borderWidth:1,borderRadius:18,padding:12,flexDirection:"row",alignItems:"center",gap:9,marginBottom:12},listingBoostIcon:{width:36,height:36,borderRadius:11,alignItems:"center",justifyContent:"center"},storeListingTitle:{fontSize:11.5,fontWeight:"900",lineHeight:16,minHeight:32},storeListingPrice:{fontSize:15,fontWeight:"900",marginTop:6},storeListingMeta:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginTop:6},storeListingMetaText:{fontSize:8.5,flex:1,marginRight:4},  messagesIntro:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",marginBottom:14},messagesTitle:{fontSize:26,fontWeight:"900",letterSpacing:-.5},messagesSubtitle:{fontSize:11,marginTop:3},messagesRefresh:{width:38,height:38,borderRadius:12,borderWidth:1,alignItems:"center",justifyContent:"center"},messagesSearch:{height:48,borderWidth:1,borderRadius:15,flexDirection:"row",alignItems:"center",paddingHorizontal:13,gap:9,marginBottom:12},messagesSearchInput:{flex:1,fontSize:13},messageSkeleton:{height:82,borderWidth:1,borderRadius:18,marginBottom:9,opacity:.65},messagesEmptyCard:{borderWidth:1,borderRadius:22,padding:28,alignItems:"center",justifyContent:"center",marginTop:26,minHeight:250},messagesEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},messagesEmptyTitle:{fontSize:16,fontWeight:"900"},messagesEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",maxWidth:300,marginTop:5},messageConversationRow:{minHeight:78,borderWidth:1,borderRadius:18,padding:11,flexDirection:"row",alignItems:"center",gap:11,marginBottom:9},messageAvatar:{width:48,height:48,borderRadius:16,alignItems:"center",justifyContent:"center",overflow:"hidden"},messageAvatarImage:{width:"100%",height:"100%"},messageAvatarText:{fontSize:14,fontWeight:"900"},messageRowTop:{flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:7},messageConversationName:{fontSize:13,fontWeight:"900",flex:1},messageTime:{fontSize:9},messageStoreName:{fontSize:9.5,fontWeight:"800",marginTop:2},messagePreview:{fontSize:10.5,marginTop:4},messageUnread:{minWidth:22,height:22,paddingHorizontal:6,borderRadius:11,backgroundColor:BUTTON_BLUE,alignItems:"center",justifyContent:"center"},messageUnreadText:{fontSize:9,fontWeight:"900",color:"#fff"},chatHeader:{minHeight:64,borderWidth:1,borderRadius:18,marginBottom:8,padding:9,flexDirection:"row",alignItems:"center",gap:9},chatBackButton:{width:38,height:38,borderRadius:12,alignItems:"center",justifyContent:"center"},chatAvatar:{width:42,height:42,borderRadius:14,alignItems:"center",justifyContent:"center",overflow:"hidden"},chatAvatarImage:{width:"100%",height:"100%"},chatAvatarText:{fontSize:12,fontWeight:"900"},chatName:{fontSize:13,fontWeight:"900"},chatStore:{fontSize:9.5,marginTop:2},chatOnlineDot:{width:8,height:8,borderRadius:4,marginRight:3},chatHeaderActions:{flexDirection:"row",alignItems:"center",gap:8},chatEmpty:{alignItems:"center",justifyContent:"center",paddingTop:90,paddingHorizontal:30},chatEmptyIcon:{width:58,height:58,borderRadius:19,alignItems:"center",justifyContent:"center",marginBottom:13},chatEmptyTitle:{fontSize:16,fontWeight:"900"},chatEmptyText:{fontSize:11,lineHeight:17,textAlign:"center",marginTop:5},chatBubbleRow:{flexDirection:"row",marginBottom:8},chatBubble:{maxWidth:"82%",borderWidth:1,borderRadius:18,paddingHorizontal:12,paddingVertical:9},chatBubbleText:{fontSize:12,lineHeight:18},chatTime:{fontSize:8,alignSelf:"flex-end",marginTop:4},chatTypingRow:{paddingHorizontal:14,paddingBottom:6},chatTypingBubble:{alignSelf:"flex-start",borderWidth:1,borderRadius:14,paddingHorizontal:11,paddingVertical:7},chatTypingText:{fontSize:11,fontWeight:"700",fontStyle:"italic"},chatComposer:{borderTopWidth:1,paddingTop:8,paddingBottom:8,flexDirection:"row",alignItems:"flex-end",gap:7},chatAttach:{width:40,height:40,borderRadius:12,alignItems:"center",justifyContent:"center"},chatInput:{flex:1,minHeight:40,maxHeight:105,borderWidth:1,borderRadius:13,paddingHorizontal:11,paddingVertical:9,fontSize:12},chatSend:{width:40,height:40,borderRadius:13,alignItems:"center",justifyContent:"center"},  sellerProfileHero:{alignItems:"center",paddingVertical:22,paddingHorizontal:18,borderRadius:24},publicStoreStat:{flex:1,minHeight:48,borderRadius:14,alignItems:"center",justifyContent:"center",gap:3},publicStoreStatValue:{fontSize:16,fontWeight:"900"},publicStoreStatLabel:{fontSize:9,fontWeight:"800"},sellerProfileAvatarWrap:{position:"relative"},sellerProfileAvatar:{width:88,height:88,borderRadius:44},sellerOnlineDot:{position:"absolute",right:2,bottom:4,width:16,height:16,borderRadius:8,backgroundColor:"#22C55E",borderWidth:3,borderColor:"#fff"},sellerStatsRow:{width:"100%",flexDirection:"row",alignItems:"center",justifyContent:"space-around",marginTop:20,paddingVertical:14,borderTopWidth:1,borderBottomWidth:1},sellerStat:{alignItems:"center",minWidth:70},sellerStatValue:{fontSize:19,fontWeight:"900"},sellerStatLabel:{fontSize:10,marginTop:3,fontWeight:"700"},sellerStatDivider:{width:1,height:28},notificationBadge:{position:"absolute",top:-4,right:-5,minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:"#DC2626",alignItems:"center",justifyContent:"center",borderWidth:2,borderColor:"#fff"},notificationBadgeText:{color:"#fff",fontSize:9,fontWeight:"900",lineHeight:11},photoViewerRoot:{flex:1,backgroundColor:"#000"},photoViewerTopBar:{position:"absolute",top:0,left:0,right:0,paddingTop:Platform.OS === "android" ? 28 : 48,paddingHorizontal:16,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},photoViewerClose:{width:44,height:44,borderRadius:22,backgroundColor:"rgba(0,0,0,0.55)",alignItems:"center",justifyContent:"center",borderWidth:1,borderColor:"rgba(255,255,255,0.18)"},photoViewerCounter:{paddingHorizontal:12,paddingVertical:8,borderRadius:999,backgroundColor:"rgba(0,0,0,0.55)",borderWidth:1,borderColor:"rgba(255,255,255,0.18)"},photoViewerCounterText:{color:"#fff",fontSize:12,fontWeight:"800"},photoViewerDots:{position:"absolute",bottom:34,left:0,right:0,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:5},photoViewerDot:{width:6,height:6,borderRadius:3,backgroundColor:"rgba(255,255,255,0.42)"},photoViewerDotActive:{width:18,backgroundColor:"#fff"},productInfoRow:{flexDirection:"row",alignItems:"center",paddingHorizontal:2,paddingVertical:14,borderBottomWidth:StyleSheet.hairlineWidth},productMetaLine:{flexDirection:"row",alignItems:"center",flexWrap:"wrap",gap:5,marginTop:6},productMetaValue:{fontSize:16,fontWeight:"900"},productMetaSecondary:{fontSize:12,fontWeight:"600"},productMetaDot:{fontSize:12,fontWeight:"700"},productTopBar:{height:52,flexDirection:"row",alignItems:"center",paddingHorizontal:2},productTopIcon:{width:40,height:40,borderRadius:13,borderWidth:1,alignItems:"center",justifyContent:"center"},productTopLabel:{fontSize:14,fontWeight:"900"},productTitleActionRow:{minHeight:54,flexDirection:"row",alignItems:"center",justifyContent:"space-between",gap:10,paddingHorizontal:2,marginBottom:10},productTitleActions:{flexDirection:"row",alignItems:"center",gap:8},productActionIcon:{width:46,height:46,borderRadius:15,borderWidth:1,alignItems:"center",justifyContent:"center"},reviewScoreBadge:{width:34,height:34,borderRadius:12,backgroundColor:"#EFF6FF",alignItems:"center",justifyContent:"center"},reviewScoreText:{fontSize:18,fontWeight:"900",color:"#F4B400"},storeLinkCard:{width:"100%",maxWidth:"100%",alignSelf:"stretch",marginTop:14,paddingHorizontal:12,paddingVertical:10,borderRadius:18},reportActionsWrap:{marginTop:18},reportSectionLabel:{fontSize:10,fontWeight:"800",marginBottom:8,letterSpacing:.2},reportActionsRow:{gap:9},reportActionCard:{minHeight:62,borderWidth:1,borderRadius:18,paddingHorizontal:11,paddingVertical:9,flexDirection:"row",alignItems:"center",gap:10},reportActionIcon:{width:38,height:38,borderRadius:13,backgroundColor:"#FEF2F2",alignItems:"center",justifyContent:"center"},reportActionTitle:{fontSize:11.5,fontWeight:"900"},reportActionSub:{fontSize:9.5,marginTop:2},detailSectionCard:{borderWidth:1,borderRadius:18,padding:14,marginTop:14},detailSectionTitle:{fontSize:16,fontWeight:"900"},detailSectionSub:{fontSize:10,marginTop:3},detailSectionEmpty:{fontSize:11,lineHeight:17,marginTop:12},reviewRow:{borderTopWidth:1,paddingTop:10,marginTop:10},reviewName:{fontSize:11,fontWeight:"900"},reviewText:{fontSize:10.5,lineHeight:16,marginTop:4},reviewStarsText:{fontSize:12,fontWeight:"900",color:"#F4B400"},reviewComposer:{borderWidth:1,borderRadius:16,padding:12,marginTop:12},reviewComposerTitle:{fontSize:13,fontWeight:"900"},reviewComposerHint:{fontSize:9.5,marginTop:3},reviewStarsRow:{flexDirection:"row",alignItems:"center",gap:7,marginTop:10},reviewStarButton:{fontSize:27,lineHeight:30},reviewComposerInput:{minHeight:80,borderWidth:1,borderRadius:12,padding:10,marginTop:10,fontSize:11,textAlignVertical:"top"},reviewPhotoButton:{height:42,borderWidth:1,borderRadius:12,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:7,marginTop:9},reviewPhotoButtonText:{fontSize:11,fontWeight:"800"},reviewPhotoPreviewWrap:{height:130,borderRadius:12,overflow:"hidden",marginTop:9,position:"relative"},reviewPhotoPreview:{width:"100%",height:"100%"},reviewPhotoRemove:{position:"absolute",top:7,right:7,width:30,height:30,borderRadius:15,backgroundColor:"rgba(0,0,0,.65)",alignItems:"center",justifyContent:"center"},reviewSubmitButton:{height:44,borderRadius:12,marginTop:10,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},reviewSubmitButtonText:{color:"#fff",fontSize:11,fontWeight:"900"},reviewAttachedPhoto:{width:150,height:110,borderRadius:10,marginTop:8},relatedCard:{width:150,borderWidth:1,borderRadius:16,overflow:"hidden",paddingBottom:9},relatedImage:{width:150,height:130,backgroundColor:"#E5E7EB"},relatedTitle:{fontSize:11,fontWeight:"800",lineHeight:15,paddingHorizontal:9,marginTop:7},relatedPrice:{fontSize:13,fontWeight:"900",paddingHorizontal:9,marginTop:5},reportSheet:{maxHeight:"88%",borderTopLeftRadius:26,borderTopRightRadius:26,overflow:"hidden"},reportHero:{padding:16,flexDirection:"row",alignItems:"center",gap:11},reportHeroIcon:{width:42,height:42,borderRadius:14,backgroundColor:"#FEE2E2",alignItems:"center",justifyContent:"center"},reportTitle:{fontSize:18,fontWeight:"900"},reportSubtitle:{fontSize:10.5,marginTop:3},reportLabel:{fontSize:12,fontWeight:"900",marginTop:3},reportReasonGrid:{gap:8},reportReason:{minHeight:44,borderWidth:1,borderRadius:13,paddingHorizontal:12,flexDirection:"row",alignItems:"center",gap:7},reportReasonText:{fontSize:11,fontWeight:"800"},reportInput:{minHeight:105,borderWidth:1,borderRadius:14,padding:12,textAlignVertical:"top",fontSize:12},reportSubmitButton:{height:46,borderRadius:13,flex:1,alignItems:"center",justifyContent:"center",flexDirection:"row",gap:7},  ordersHero:{borderWidth:1,borderRadius:22,padding:16,marginBottom:16,flexDirection:"row",alignItems:"center",gap:12},ordersHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},ordersCountPill:{minWidth:52,paddingHorizontal:9,paddingVertical:7,borderRadius:14,alignItems:"center",justifyContent:"center"},ordersCountText:{fontSize:16,fontWeight:"900"},ordersCountLabel:{fontSize:8,fontWeight:"800",marginTop:1},professionalOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},professionalOrderTop:{flexDirection:"row",alignItems:"center",gap:10},professionalOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},professionalOrderTitle:{fontSize:14,fontWeight:"900"},professionalOrderMeta:{fontSize:9.5,marginTop:3},professionalOrderInfo:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},professionalOrderLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},professionalOrderValue:{fontSize:11,fontWeight:"800",marginTop:3},orderMessageBox:{borderRadius:12,padding:10,marginTop:11},orderMessageLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},orderMessageText:{fontSize:10.5,lineHeight:16,marginTop:4},sellerOrderCard:{borderWidth:1,borderRadius:20,padding:14,shadowOpacity:.04,shadowRadius:10,shadowOffset:{width:0,height:4},elevation:1},sellerOrderTop:{flexDirection:"row",alignItems:"center",gap:10},sellerOrderIcon:{width:42,height:42,borderRadius:13,alignItems:"center",justifyContent:"center"},sellerOrderTitle:{fontSize:14,fontWeight:"900"},sellerOrderMeta:{fontSize:9.5,marginTop:3},sellerOrderStatus:{paddingHorizontal:9,paddingVertical:6,borderRadius:999},sellerOrderStatusText:{fontSize:9,fontWeight:"900"},sellerOrderInfoGrid:{flexDirection:"row",justifyContent:"space-between",marginTop:13,paddingVertical:11,borderTopWidth:1,borderBottomWidth:1},sellerOrderInfo:{flex:1},sellerOrderInfoLabel:{fontSize:8,fontWeight:"900",letterSpacing:.5},sellerOrderInfoValue:{fontSize:10.5,fontWeight:"800",marginTop:3},sellerOrderHint:{fontSize:9.5,lineHeight:15,marginTop:10},storeOrderLoading:{minHeight:120,borderWidth:1,borderRadius:18,alignItems:"center",justifyContent:"center",gap:8},  orderCard:{minHeight:68,borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:10},badge:{paddingHorizontal:10,paddingVertical:6,borderRadius:999},badgeText:{fontSize:11,fontWeight:"800"},notificationCard:{borderWidth:1,borderRadius:16,padding:13,flexDirection:"row",alignItems:"center",gap:12},notificationIcon:{width:38,height:38,borderRadius:19,alignItems:"center",justifyContent:"center"},messageRow:{borderWidth:1,borderRadius:16,padding:12,flexDirection:"row",alignItems:"center",gap:12},settingsHero:{borderWidth:1,borderRadius:22,padding:17,marginBottom:20,flexDirection:"row",alignItems:"center",gap:13,shadowOpacity:0.04,shadowRadius:12,shadowOffset:{width:0,height:4},elevation:1},
   settingsHeroIcon:{width:48,height:48,borderRadius:15,alignItems:"center",justifyContent:"center"},
   settingsHeroTitle:{fontSize:21,fontWeight:"900",letterSpacing:-0.3},
   settingsHeroSubtitle:{fontSize:12,lineHeight:18,marginTop:3},

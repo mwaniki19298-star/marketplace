@@ -1,8 +1,8 @@
 {
   "rewrites": [
     {
-      "source": "/(.*)",
-      "destination": "/index.html"
+      "source": "/oauthredirect",
+      "destination": "/oauthredirect.html"
     }
   ]
 }

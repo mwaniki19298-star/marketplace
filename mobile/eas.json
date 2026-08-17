@@ -19,8 +19,8 @@
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "marketplace_uploads",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
         "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u786kvbd188aln1b5bhqmefg.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "",
-        "MARKETPLACE_WEB_DOMAIN": "marketplace-tau-sand.vercel.app"
+        "MARKETPLACE_WEB_DOMAIN": "marketplace-tau-sand.vercel.app",
+        "EXPO_PUBLIC_GOOGLE_AUTH_REDIRECT_URI": "https://marketplace-tau-sand.vercel.app/oauthredirect?native=1"
       }
     },
     "production": {
@@ -38,8 +38,8 @@
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "marketplace_uploads",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
         "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u786kvbd188aln1b5bhqmefg.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "",
-        "MARKETPLACE_WEB_DOMAIN": "marketplace-tau-sand.vercel.app"
+        "MARKETPLACE_WEB_DOMAIN": "marketplace-tau-sand.vercel.app",
+        "EXPO_PUBLIC_GOOGLE_AUTH_REDIRECT_URI": "https://marketplace-tau-sand.vercel.app/oauthredirect?native=1"
       }
     },
     "development": {
@@ -59,7 +59,7 @@
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "marketplace_uploads",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
         "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u786kvbd188aln1b5bhqmefg.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": ""
+        "EXPO_PUBLIC_GOOGLE_AUTH_REDIRECT_URI": "https://marketplace-tau-sand.vercel.app/oauthredirect?native=1"
       }
     },
     "development-device": {
@@ -79,7 +79,7 @@
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "marketplace_uploads",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
         "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u786kvbd188aln1b5bhqmefg.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": ""
+        "EXPO_PUBLIC_GOOGLE_AUTH_REDIRECT_URI": "https://marketplace-tau-sand.vercel.app/oauthredirect?native=1"
       }
     }
   }

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Returning to Marketplace…</title>
+</head>
+<body>
+  <p style="font-family:system-ui;text-align:center;margin-top:20vh">Returning to Marketplace…</p>
+  <script>
+    (function () {
+      var hash = window.location.hash || "";
+      var query = window.location.search || "";
+      var target = "marketplace://oauthredirect" + query + hash;
+      window.location.replace(target);
+    })();
+  </script>
+</body>
+</html>

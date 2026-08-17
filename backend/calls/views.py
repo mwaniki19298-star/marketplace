@@ -7,6 +7,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from django.conf import settings
 
 from messaging.models import Conversation
 from .models import Call
@@ -85,6 +86,13 @@ class CallViewSet(viewsets.GenericViewSet):
                 status=Call.Status.RINGING,
             )
         return Response(self._serialize(call, request), status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["get"], url_path="ice-servers")
+    def ice_servers(self, request):
+        """Return ICE servers for authenticated WebRTC clients."""
+        servers = [{"urls": "stun:stun.l.google.com:19302"}]
+        servers.extend(getattr(settings, "WEBRTC_TURN_SERVERS", []) or [])
+        return Response({"ice_servers": servers})
 
     @action(detail=False, methods=["get"])
     def incoming(self, request):
