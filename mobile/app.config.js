@@ -4,13 +4,7 @@ module.exports = ({ config }) => {
   const packageName = process.env.EXPO_PUBLIC_ANDROID_PACKAGE || 'com.marketplace.mobile';
   const bundleIdentifier = process.env.EXPO_PUBLIC_IOS_BUNDLE_ID || 'com.marketplace.mobile';
   const googleIosClientId = (process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || '').trim();
-  const googleIosUrlScheme = googleIosClientId
-    ? `com.googleusercontent.apps.${googleIosClientId.replace(/\.apps\.googleusercontent\.com$/, '')}`
-    : '';
   const googleAndroidClientId = (process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || '').trim();
-  const googleAndroidUrlScheme = googleAndroidClientId
-    ? `com.googleusercontent.apps.${googleAndroidClientId.replace(/\.apps\.googleusercontent\.com$/, '')}`
-    : '';
 
   return {
     ...config,
@@ -20,6 +14,9 @@ module.exports = ({ config }) => {
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'light',
+    // App scheme used for general deep links. Google AuthSession's native
+    // provider uses the Android applicationId / iOS bundle identifier when
+    // running in a standalone/development build.
     scheme: 'marketplace',
     ios: {
       ...(config.ios || {}),
@@ -31,17 +28,18 @@ module.exports = ({ config }) => {
           ...(((config.ios || {}).infoPlist || {}).LSApplicationQueriesSchemes || []),
           'whatsapp',
         ])),
-        ...(googleIosUrlScheme ? {
-          CFBundleURLTypes: [
-            ...(((config.ios || {}).infoPlist || {}).CFBundleURLTypes || []),
-            { CFBundleURLSchemes: [googleIosUrlScheme] },
-          ],
-        } : {}),
+        CFBundleURLTypes: [
+          ...(((config.ios || {}).infoPlist || {}).CFBundleURLTypes || []),
+          { CFBundleURLSchemes: [bundleIdentifier] },
+        ],
       },
       ...(domain ? { associatedDomains: [`applinks:${domain}`] } : {}),
     },
     android: {
       ...(config.android || {}),
+      // Keep the legacy architecture for the WebRTC native module on Expo SDK 54.
+      // The WebRTC module is native and must be compiled into the development client.
+      newArchEnabled: false,
       package: packageName,
       adaptiveIcon: {
         backgroundColor: '#E6F4FE',
@@ -50,6 +48,12 @@ module.exports = ({ config }) => {
         monochromeImage: './assets/android-icon-monochrome.png',
       },
       predictiveBackGestureEnabled: false,
+      usesCleartextTraffic: true,
+      permissions: Array.from(new Set([
+        ...(((config.android || {}).permissions || [])),
+        'android.permission.RECORD_AUDIO',
+        'android.permission.MODIFY_AUDIO_SETTINGS',
+      ])),
       intentFilters: [
         ...(domain ? [{
           action: 'VIEW',
@@ -57,11 +61,11 @@ module.exports = ({ config }) => {
           data: [{ scheme: 'https', host: domain, pathPrefix: '/listing' }],
           category: ['BROWSABLE', 'DEFAULT'],
         }] : []),
-        ...(googleAndroidUrlScheme ? [{
+        {
           action: 'VIEW',
-          data: [{ scheme: googleAndroidUrlScheme, pathPrefix: '/oauthredirect' }],
+          data: [{ scheme: packageName, pathPrefix: '/oauthredirect' }],
           category: ['BROWSABLE', 'DEFAULT'],
-        }] : []),
+        },
       ],
     },
     web: {

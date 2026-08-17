@@ -30,3 +30,26 @@ Use the `development-device` EAS profile after replacing `YOUR_LAN_IP` in `mobil
 Add `http://localhost:5173` as an authorized JavaScript origin and `http://localhost:5173/oauthredirect` as an authorized redirect URI to the Google Web OAuth client. Native Android continues using the Android client ID and its deep-link redirect.
 
 Production values are preserved in `mobile/.env.production` and `backend/.env.production`.
+
+
+## Expo Go / native local API
+
+Do not use `localhost` as the native device API address. The app now detects the computer IP from Expo's Metro `hostUri` during `__DEV__` and automatically uses `http://<computer-ip>:8000`.
+
+Start Django so it listens on the LAN interface:
+
+```bash
+cd backend
+python manage.py runserver 0.0.0.0:8000
+```
+
+Start Expo in LAN mode:
+
+```bash
+cd mobile
+npx expo start --lan
+```
+
+Keep the phone and computer on the same Wi-Fi/LAN. On Windows, allow Python through the firewall for private networks if the phone still cannot connect.
+
+The app logs the selected API URL in development as `[API] ...`, so check the terminal/Metro console if needed.

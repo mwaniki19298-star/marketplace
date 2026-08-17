@@ -1,43 +1,76 @@
-# Marketplace Google Sign-In setup
+# Marketplace Google Authentication
 
-Marketplace uses `expo-auth-session/providers/google` and sends the Google ID token to Django at `/api/auth/google/`. The native app must be rebuilt after changing OAuth configuration.
+Marketplace uses `expo-auth-session/providers/google` for browser-based Google OAuth and sends the resulting Google ID token to Django at `/api/auth/google/`.
 
-## 1. Google Cloud OAuth clients
+## Supported environments
 
-Create three OAuth 2.0 client IDs in the same Google Cloud project:
+- **Web:** Google login is supported using the Web OAuth client.
+- **Android/iOS development build:** Google login is supported using the platform OAuth client and the app's native AuthSession redirect.
+- **Expo Go:** Google OAuth is intentionally disabled in the mobile UI for SDK 54. Expo's current authentication guidance says Expo Go cannot be used for local OAuth/OIDC testing because the app scheme cannot be customized. Use the Marketplace development build instead. This avoids misleading `redirect_uri_mismatch` errors.
 
-- **Web application** — add `https://marketplace-tau-sand.vercel.app` as an Authorized JavaScript origin and `https://marketplace-tau-sand.vercel.app/oauthredirect` as an Authorized redirect URI if the web build uses that callback path.
-- **Android** — package/application id: `com.marketplace.mobile`; add the SHA-1 certificate fingerprints used by your EAS/Play builds.
-- **iOS** — bundle identifier: `com.marketplace.mobile`.
+## Google Cloud clients
+
+Create/configure:
+
+1. **Web application client** — used by the web build. Add the production web origin and callback used by the web app.
+2. **Android client** — package name `com.marketplace.mobile`; add the SHA-1 fingerprints for the EAS/Play certificates used to sign the builds you test.
+3. **iOS client** — bundle identifier `com.marketplace.mobile`.
 
 Do not put a Google client secret in the mobile app.
 
-## 2. Mobile environment
+## Environment variables
 
-Create `mobile/.env` from `.env.example` and set:
+Set:
 
 - `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`
 - `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`
 - `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`
 
-The backend must receive the same client IDs in `GOOGLE_CLIENT_IDS`, comma-separated.
+The backend should accept the same client IDs through `GOOGLE_CLIENT_IDS`, comma-separated.
 
-## 3. EAS builds
+## Native redirect behavior
 
-For preview/production EAS builds, add the three `EXPO_PUBLIC_GOOGLE_*` values to the EAS environment used by the build. They are client IDs, not secrets.
+The app now lets `expo-auth-session/providers/google` determine the native redirect for Android/iOS instead of forcing a custom redirect in JavaScript. This is important because the provider uses the native application identifier for standalone/development builds, while Expo Go has a different runtime environment.
 
-After changing these values, rebuild the native application. Changing `.env` alone does not change an already-installed APK/IPA.
+For general app deep links, the project continues to use the `marketplace://` scheme.
 
-## 4. Backend
+## Testing
 
-Set in `backend/.env`:
+### Web
+
+```bash
+npx expo start --web
+```
+
+### Android development build
+
+```bash
+npm install
+npm run build:android:development-device
+```
+
+Install the resulting development APK, then run:
+
+```bash
+npx expo start --dev-client --clear
+```
+
+Open the Marketplace development client, not Expo Go.
+
+### If Google fails in the native build
+
+The most important Android checks are:
+
+- package name is exactly `com.marketplace.mobile`;
+- the Android OAuth client belongs to the same Google Cloud project as the Web client;
+- the SHA-1 fingerprint for the certificate that signed the APK is registered on that Android OAuth client;
+- the Android client ID in `.env` is the same client configured in Google Cloud;
+- rebuild the native app after changing `app.config.js` or native OAuth configuration.
+
+## Backend
+
+Set:
 
 `GOOGLE_CLIENT_IDS=<WEB_CLIENT_ID>,<ANDROID_CLIENT_ID>,<IOS_CLIENT_ID>`
 
-The backend verifies the Google ID token signature, issuer, expiry and audience before creating/linking the Marketplace account and issuing Marketplace JWTs.
-
-## 5. Important native redirect note
-
-The Expo app has the `marketplace` deep-link scheme and also adds the Google iOS reversed-client-ID scheme when the iOS client ID is present. Rebuild after changing the iOS client ID so the native URL scheme is regenerated.
-
-Google sign-in cannot be fully validated in an already-built APK until the real Google OAuth client IDs and signing fingerprints are configured in Google Cloud.
+The Django endpoint verifies the Google ID token's signature, issuer, expiry, and audience before creating/linking the Marketplace account and issuing Marketplace JWTs.

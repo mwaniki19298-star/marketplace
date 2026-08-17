@@ -1,9 +1,9 @@
 {
   "name": "mobile",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "index.ts",
   "dependencies": {
-    "@config-plugins/react-native-webrtc": "^13.0.0",
+    "@config-plugins/react-native-webrtc": "13.0.0",
     "@react-native-async-storage/async-storage": "^2.1.2",
     "expo": "~54.0.0",
     "expo-auth-session": "~7.0.8",
@@ -23,7 +23,7 @@
     "react-native-safe-area-context": "~5.6.0",
     "react-native-svg": "15.12.1",
     "react-native-web": "^0.21.0",
-    "react-native-webrtc": "^124.0.6"
+    "react-native-webrtc": "124.0.6"
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
@@ -46,7 +46,12 @@
     "check:api": "node scripts/check-production-api.mjs",
     "clean:install": "npm dedupe && npx expo-doctor",
     "build:apk": "npx eas-cli build --platform android --profile preview",
-    "build:android:development": "npx eas-cli build --platform android --profile development"
+    "build:android:development": "npx eas-cli build --platform android --profile development",
+    "build:android:development-device": "npx eas-cli build --platform android --profile development-device --clear-cache",
+    "prebuild:webrtc": "npx expo prebuild --platform android --clean",
+    "android:webrtc": "npx expo run:android",
+    "verify:webrtc": "node scripts/verify-webrtc-build.mjs",
+    "start:dev-client": "expo start --dev-client"
   },
   "private": true,
   "overrides": {
