@@ -6,7 +6,7 @@ Marketplace uses `expo-auth-session/providers/google` and sends the Google ID to
 
 Create three OAuth 2.0 client IDs in the same Google Cloud project:
 
-- **Web application** — add `https://marketplace.co.ke` as an Authorized JavaScript origin and `https://marketplace.co.ke/oauthredirect` as an Authorized redirect URI if the web build uses that callback path.
+- **Web application** — add `https://marketplace-tau-sand.vercel.app` as an Authorized JavaScript origin and `https://marketplace-tau-sand.vercel.app/oauthredirect` as an Authorized redirect URI if the web build uses that callback path.
 - **Android** — package/application id: `com.marketplace.mobile`; add the SHA-1 certificate fingerprints used by your EAS/Play builds.
 - **iOS** — bundle identifier: `com.marketplace.mobile`.
 

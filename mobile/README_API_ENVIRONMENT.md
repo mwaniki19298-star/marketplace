@@ -8,7 +8,7 @@ Production builds use the HTTPS Django API:
 
 The production web application is:
 
-`https://marketplace.co.ke`
+`https://marketplace-tau-sand.vercel.app`
 
 EAS profiles include the required public Expo variables. Do not place Django secrets, Cloudinary API secrets, SMTP passwords, or other private credentials in `EXPO_PUBLIC_*` variables.
 

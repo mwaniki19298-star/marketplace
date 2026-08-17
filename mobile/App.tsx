@@ -66,6 +66,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-cont
 import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Animated, Easing } from "react-native";
 import { BackHandler } from "react-native";
+import { Vibration } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiUrl, API_BASE_URL } from "./src/apiConfig";
 
@@ -967,7 +968,7 @@ declare global { var __MARKETPLACE_AUTH__: AuthPayload | null | undefined; var _
 
 type Screen = "home" | "browse" | "search" | "create" | "publishSuccess" | "cart" | "profile" | "product" | "orders" | "notifications" | "messages" | "settings" | "settingsPreferences" | "securityPrivacy" | "notificationPreferences" | "helpSupport" | "faq" | "reportProblem" | "safetyTips" | "terms" | "privacyPolicy" | "store" | "publicStore" | "sellerProfile" | "login";
 type RouteEntry = { screen: Screen; selectedId: string | null };
-type PendingChat = { conversation: ConversationItem; listing: Listing };
+type PendingChat = { conversation: ConversationItem; listing?: Listing | null };
 
 function applyBrowseFilter(items: Listing[], mode: string) {
   const normalized = String(mode || "All").toLowerCase();
@@ -1410,6 +1411,19 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
     return () => subscription.remove();
   }, [dataLoading]);
 
+  const openConversationById = async (conversationId: number) => {
+    if (!auth?.access) { go("login"); return; }
+    try {
+      const conversation = await apiRequest(`/api/conversations/${conversationId}/`, {}, auth) as ConversationItem;
+      setPendingChat({ conversation, listing: null });
+      go("messages");
+    } catch (error) {
+      Alert.alert("Couldn't open conversation", error instanceof Error ? error.message : "Please try again.");
+    }
+  };
+  const openConversationByIdRef = useRef(openConversationById);
+  openConversationByIdRef.current = openConversationById;
+
   const openConversationForListing = async (listing: Listing) => {
     if (!auth?.access) { go("login"); return; }
     if (!listing.sellerId) { Alert.alert("Seller unavailable", "This listing is not currently connected to a seller account."); return; }
@@ -1819,8 +1833,8 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         {screen === "profile" && <ProfileScreen theme={theme} currentUser={currentUser} isLoggedIn={isLoggedIn} onUserUpdated={setCurrentUser} onOrders={() => go("orders")} onSettings={() => go("settingsPreferences")} onSecurity={() => go("securityPrivacy")} onNotificationPreferences={() => go("notificationPreferences")} onNotifications={() => go("notifications")} onHelp={() => go("helpSupport")} onSignIn={() => { setLoginMode("login"); setAutoGoogleLogin(false); go("login"); }} onSignUp={() => { setLoginMode("signup"); setAutoGoogleLogin(false); go("login"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} onAuthenticated={async (payload) => { setAutoGoogleLogin(false); setAuth(payload); setCurrentUser(payload.user); setIsLoggedIn(true); globalThis.__MARKETPLACE_AUTH__ = payload; await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload)); await refreshMarketplaceData(payload); }} onBack={goBack} onStore={() => go("store")} onMessages={() => go("messages")} onCart={() => go("cart")} cartCount={cartItems.length} />}
         {screen === "product" && selected && <ProductScreen theme={theme} listing={selected} inCart={cartIds.includes(selected.id)} liked={likedIds.includes(selected.id)} onAddToCart={() => addToCart(selected.id)} onToggleLike={() => toggleLike(selected.id)} onContactSeller={() => openConversationForListing(selected)} onOpenProduct={(item) => { setSelected(item); go("product"); }} onBack={goBack} auth={auth} />}
         {screen === "orders" && <OrdersScreen theme={theme} auth={auth} currentUser={currentUser} onRestock={() => go("store")} />}
-        {screen === "notifications" && <NotificationsScreen theme={theme} auth={auth} />}
-        {screen === "messages" && <MessagesScreen theme={theme} auth={auth} currentUser={currentUser} initialChat={pendingChat} onInitialChatConsumed={() => setPendingChat(null)} onStartCall={(conversation) => callManagerRef.current?.startCall(conversation)} />}
+        {screen === "notifications" && <NotificationsScreen theme={theme} auth={auth} onOpenConversation={(conversationId) => void openConversationByIdRef.current(conversationId)} />}
+        {screen === "messages" && <MessagesScreen theme={theme} auth={auth} currentUser={currentUser} initialChat={pendingChat} onInitialChatConsumed={() => setPendingChat(null)} onStartCall={(conversation) => callManagerRef.current?.startCall(conversation)} onBack={goBack} />}
         {screen === "settings" && <SettingsScreen theme={theme} dark={dark} setDark={setDark} />}
         {screen === "settingsPreferences" && <SettingsPreferencesScreen theme={theme} dark={dark} setDark={setDark} auth={auth} />}
         {screen === "securityPrivacy" && <SecurityPrivacyScreen theme={theme} auth={auth} onSignOut={async () => { await AsyncStorage.removeItem(AUTH_STORAGE_KEY); globalThis.__MARKETPLACE_AUTH__ = null; setAuth(null); setCurrentUser(null); setIsLoggedIn(false); setCartItems([]); setLikedIds([]); go("profile"); }} onGoogle={() => { setLoginMode("login"); setAutoGoogleLogin(true); go("login"); }} />}
@@ -1836,6 +1850,7 @@ const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
         {screen === "sellerProfile" && selected && <SellerProfileScreen theme={theme} auth={auth} listing={selected} onOpenStore={() => go("publicStore")} />}
 
         <InAppCallManager ref={callManagerRef} theme={theme} auth={auth} currentUser={currentUser} />
+        <ActivityToastManager theme={theme} auth={auth} currentUser={currentUser} onOpenConversation={(conversationId) => void openConversationByIdRef.current(conversationId)} onOpenNotifications={() => go("notifications")} />
 
         {screen !== "create" && screen !== "publishSuccess" && screen !== "login" && screen !== "messages" && screen !== "search" && !(screen === "profile" && !isLoggedIn) && <View style={[styles.bottomNav, { paddingBottom: insets.bottom + 4, backgroundColor: theme.nav, borderColor: theme.border }]}>
           {[
@@ -1955,11 +1970,15 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
   const googleNativeScheme = Platform.OS === "android"
     ? (androidClientId ? `com.googleusercontent.apps.${androidClientId.replace(/\.apps\.googleusercontent\.com$/, "")}` : "")
     : (iosClientId ? `com.googleusercontent.apps.${iosClientId.replace(/\.apps\.googleusercontent\.com$/, "")}` : "");
+  // Native Google OAuth must use the reversed client-ID scheme with a single
+  // slash before the callback path, e.g.
+  // com.googleusercontent.apps.<CLIENT_ID>:/oauthredirect
+  // Do not build this as ://oauthredirect; Google treats that as a different
+  // redirect URI and can return HTTP 400 / malformed-request.
   const googleRedirectUri = Platform.OS === "web"
     ? `${googleWebBaseUrl || (typeof window !== "undefined" ? window.location.origin : "")}/oauthredirect`
     : makeRedirectUri({
-        scheme: googleNativeScheme || "marketplace",
-        path: "oauthredirect",
+        native: `${googleNativeScheme || "marketplace"}:/oauthredirect`,
       });
   const [googleRequest, googleResponse, promptGoogleAsync] = useGoogleAuthRequest({
     androidClientId: androidClientId || undefined,
@@ -4533,7 +4552,7 @@ function OrdersScreen({ theme, auth, currentUser, onRestock }: { theme: Theme; a
   </ScreenScroll>;
 }
 
-function NotificationsScreen({ theme, auth }: { theme: Theme; auth: AuthPayload | null }) {
+function NotificationsScreen({ theme, auth, onOpenConversation }: { theme: Theme; auth: AuthPayload | null; onOpenConversation?: (conversationId: number) => void }) {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const load = async () => {
@@ -4550,7 +4569,7 @@ function NotificationsScreen({ theme, auth }: { theme: Theme; auth: AuthPayload 
   return <ScreenScroll theme={theme}>
     <View style={styles.pageIntro}><View style={styles.rowBetween}><View><Text style={[styles.pageTitle,{color:theme.text}]}>Notifications</Text><Text style={[styles.subtle,{color:theme.muted}]}>Your latest marketplace activity.</Text></View>{items.some(x=>!x.is_read) && <Pressable onPress={() => void markAll()}><Text style={{color:BUTTON_BLUE,fontWeight:"700"}}>Mark all read</Text></Pressable>}</View></View>
     {loading ? <View style={{padding:40,alignItems:"center"}}><ActivityIndicator color={BUTTON_BLUE}/></View> : items.length === 0 ? <EmptyState theme={theme} title="You are all caught up" text="New orders, messages and important Marketplace updates will appear here." icon="notifications" /> :
-      <View style={{gap:8}}>{items.map(n => <Pressable key={n.id} onPress={() => !n.is_read && void markRead(n.id)} style={[styles.notificationCard,{backgroundColor:theme.card,borderColor:theme.border,opacity:n.is_read?0.72:1}]}>
+      <View style={{gap:8}}>{items.map(n => <Pressable key={n.id} onPress={() => { if (!n.is_read) void markRead(n.id); const conversationId = n.kind === "message" ? Number(n.data?.conversation_id) : NaN; if (Number.isFinite(conversationId)) onOpenConversation?.(conversationId); }} style={[styles.notificationCard,{backgroundColor:theme.card,borderColor:theme.border,opacity:n.is_read?0.72:1}]}>
         <View style={[styles.notificationDot,{backgroundColor:n.is_read?theme.border:BUTTON_BLUE}]} /><View style={{flex:1}}><Text style={[styles.cardTitle,{color:theme.text}]}>{n.title}</Text><Text style={[styles.subtle,{color:theme.muted,marginTop:3}]}>{n.body}</Text><Text style={[styles.subtle,{color:theme.muted,marginTop:6}]}>{formatMessageTime(n.created_at)}</Text></View>
       </Pressable>)}</View>}
   </ScreenScroll>;
@@ -4650,6 +4669,7 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
   useEffect(() => { callRef.current = call; }, [call]);
 
   const clearCallUi = useCallback(() => {
+    if (Platform.OS !== "web") Vibration.cancel();
     callRef.current = null;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     try { peerRef.current?.close?.(); } catch {}
@@ -4762,6 +4782,7 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
   const acceptCall = useCallback(async () => {
     const incoming = callRef.current;
     if (!incoming || !auth?.access || !currentUser) return;
+    if (Platform.OS !== "web") Vibration.cancel();
     setBusy(true); setError("");
     try {
       const { RTCSessionDescription } = getCallWebRTC();
@@ -4834,6 +4855,7 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
         const incoming = apiResults<CallRecord>(data);
         if (incoming[0] && active) {
           callRef.current = incoming[0]; setCall(incoming[0]); setState("ringing");
+          if (Platform.OS !== "web") Vibration.vibrate([0, 400, 200, 400, 200, 400], true);
         }
       } catch {}
     };
@@ -4898,7 +4920,99 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
   );
 });
 
-function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatConsumed, onStartCall }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null; initialChat?: PendingChat | null; onInitialChatConsumed?: () => void; onStartCall?: (conversation: ConversationItem) => void }) {
+// Pops a banner for new messages/notifications on whatever screen the user is
+// currently on, similar to a push notification. Tapping a message banner opens
+// that exact conversation; tapping any other kind opens the Notifications screen.
+// Polling (not a push service) is used for the same reason chat itself polls --
+// this deployment target has no ASGI/WebSocket server in front of it.
+const ACTIVITY_TOAST_POLL_MS = 6000;
+function ActivityToastManager({ theme, auth, currentUser, onOpenConversation, onOpenNotifications }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null; onOpenConversation: (conversationId: number) => void; onOpenNotifications: () => void }) {
+  const [queue, setQueue] = useState<NotificationItem[]>([]);
+  const seenIdsRef = useRef<Set<number>>(new Set());
+  const baselineReadyRef = useRef(false);
+  const pollBusyRef = useRef(false);
+  const insets = useSafeAreaInsets();
+  const translateY = useRef(new Animated.Value(-160)).current;
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const current = queue[0] || null;
+
+  // Reset baseline whenever the signed-in user changes so a fresh login
+  // doesn't immediately toast every pre-existing unread notification.
+  useEffect(() => {
+    baselineReadyRef.current = false;
+    seenIdsRef.current.clear();
+    setQueue([]);
+  }, [auth?.access, currentUser?.id]);
+
+  useEffect(() => {
+    if (!auth?.access || !currentUser) return;
+    let active = true;
+    const poll = async () => {
+      if (!active || pollBusyRef.current) return;
+      pollBusyRef.current = true;
+      try {
+        const data = await apiRequest("/api/notifications/", {}, auth);
+        const items = apiResults<NotificationItem>(data);
+        if (!baselineReadyRef.current) {
+          items.forEach((item) => seenIdsRef.current.add(item.id));
+          baselineReadyRef.current = true;
+        } else {
+          const fresh = items.filter((item) => !item.is_read && !seenIdsRef.current.has(item.id));
+          if (fresh.length) {
+            fresh.forEach((item) => seenIdsRef.current.add(item.id));
+            setQueue((q) => [...q, ...fresh]);
+          }
+        }
+      } catch {} finally { pollBusyRef.current = false; }
+    };
+    void poll();
+    const timer = setInterval(poll, ACTIVITY_TOAST_POLL_MS);
+    return () => { active = false; clearInterval(timer); };
+  }, [auth?.access, currentUser?.id]);
+
+  const advanceQueue = useCallback((animateOut: boolean) => {
+    if (dismissTimerRef.current) { clearTimeout(dismissTimerRef.current); dismissTimerRef.current = null; }
+    if (!animateOut) { setQueue((q) => q.slice(1)); return; }
+    Animated.timing(translateY, { toValue: -160, duration: 220, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(() => {
+      setQueue((q) => q.slice(1));
+    });
+  }, [translateY]);
+
+  useEffect(() => {
+    if (!current) return;
+    translateY.setValue(-160);
+    Animated.timing(translateY, { toValue: 0, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+    if (Platform.OS !== "web") Vibration.vibrate(60);
+    dismissTimerRef.current = setTimeout(() => advanceQueue(true), 4500);
+    return () => { if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current); };
+  }, [current?.id]);
+
+  if (!current) return null;
+
+  const handlePress = () => {
+    const conversationId = current.kind === "message" ? Number(current.data?.conversation_id) : NaN;
+    advanceQueue(false);
+    if (current.kind === "message" && Number.isFinite(conversationId)) onOpenConversation(conversationId);
+    else onOpenNotifications();
+  };
+
+  const Icon = current.kind === "message" ? MessageCircle : Bell;
+
+  return (
+    <Animated.View pointerEvents="box-none" style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 999, paddingTop: insets.top + 8, paddingHorizontal: 12, transform: [{ translateY }] }}>
+      <Pressable onPress={handlePress} style={{ flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: theme.isDark ? "#1F2937" : "#111827", borderRadius: 16, padding: 14, shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 12, shadowOffset: { width: 0, height: 6 }, elevation: 8 }}>
+        <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: "rgba(255,255,255,0.16)", alignItems: "center", justifyContent: "center" }}><Icon size={20} color="#fff" /></View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ color: "#fff", fontWeight: "800", fontSize: 13.5 }} numberOfLines={1}>{current.title}</Text>
+          <Text style={{ color: "rgba(255,255,255,.78)", fontSize: 12.5, marginTop: 2 }} numberOfLines={2}>{current.body}</Text>
+        </View>
+        <Pressable onPress={() => advanceQueue(true)} hitSlop={8} style={{ padding: 4 }}><X size={16} color="rgba(255,255,255,.7)" /></Pressable>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatConsumed, onStartCall, onBack }: { theme: Theme; auth: AuthPayload | null; currentUser: ApiUser | null; initialChat?: PendingChat | null; onInitialChatConsumed?: () => void; onStartCall?: (conversation: ConversationItem) => void; onBack?: () => void }) {
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -5019,7 +5133,7 @@ function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatCo
   useEffect(() => {
     if (!initialChat?.conversation?.id) return;
     setSelectedConversation(initialChat.conversation);
-    setComposeListing(initialChat.listing);
+    setComposeListing(initialChat.listing || null);
     setMessageText("");
     void loadMessages(initialChat.conversation);
     onInitialChatConsumed?.();
@@ -5088,10 +5202,19 @@ function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatCo
       });
     };
 
+    const startInAppCall = () => {
+      if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before starting an in-app call."); return; }
+      onStartCall?.(selectedConversation);
+    };
+
     const openCallOptions = () => {
+      // react-native-web has no native multi-button alert dialog, so a 3-button
+      // Alert.alert silently fails to render in the browser. Web has no use for
+      // a phone dialer anyway, so start the in-app call directly there.
+      if (Platform.OS === "web") { startInAppCall(); return; }
       Alert.alert(`Call ${otherName}`, undefined, [
         { text: "Phone call", onPress: callViaDialer },
-        { text: "In-app call", onPress: () => { if (!auth?.access) { Alert.alert("Sign in required", "Please sign in before starting an in-app call."); return; } onStartCall?.(selectedConversation); } },
+        { text: "In-app call", onPress: startInAppCall },
         { text: "Cancel", style: "cancel" },
       ]);
     };
@@ -5176,7 +5299,10 @@ function MessagesScreen({ theme, auth, currentUser, initialChat, onInitialChatCo
 
   return <ScreenScroll theme={theme} contentStyle={{ paddingBottom: 120 }}>
     <View style={styles.messagesIntro}>
-      <View><Text style={[styles.messagesTitle, { color: theme.text }]}>Messages</Text><Text style={[styles.messagesSubtitle, { color: theme.muted }]}>Chat safely with buyers and sellers.</Text></View>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+        {!!onBack && <Pressable onPress={onBack} hitSlop={8} accessibilityRole="button" accessibilityLabel="Go back" style={[styles.chatBackButton, { backgroundColor: theme.isDark ? "#24212B" : "#F3F4F6" }]}><ArrowLeft size={19} color={theme.text} /></Pressable>}
+        <View style={{ flex: 1, minWidth: 0 }}><Text style={[styles.messagesTitle, { color: theme.text }]}>Messages</Text><Text style={[styles.messagesSubtitle, { color: theme.muted }]}>Chat safely with buyers and sellers.</Text></View>
+      </View>
       <Pressable onPress={() => loadConversations(false)} style={[styles.messagesRefresh, { borderColor: theme.border, backgroundColor: theme.card }]}>{refreshing ? <ActivityIndicator size="small" color={theme.accent} /> : <RotateCcw size={16} color={theme.accent} />}</Pressable>
     </View>
     <View style={[styles.messagesSearch, { backgroundColor: theme.card, borderColor: theme.border }]}><Search size={17} color={theme.muted} /><TextInput value={search} onChangeText={setSearch} placeholder="Search conversations" placeholderTextColor={theme.muted} style={[styles.messagesSearchInput, { color: theme.text }]} /></View>

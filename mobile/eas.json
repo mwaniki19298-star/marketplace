@@ -18,7 +18,7 @@
         "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "znbilq3o",
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "marketplace_uploads",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u78-6vbd188aln1b5bhqmefg.apps.googleusercontent.com"
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u786kvbd188aln1b5bhqmefg.apps.googleusercontent.com"
       }
     },
     "production": {
@@ -35,7 +35,7 @@
         "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "znbilq3o",
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "marketplace_uploads",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u78-6vbd188aln1b5bhqmefg.apps.googleusercontent.com"
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u786kvbd188aln1b5bhqmefg.apps.googleusercontent.com"
       }
     },
     "development": {
@@ -53,7 +53,7 @@
         "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "znbilq3o",
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "marketplace_uploads",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "126323121709-2o26001nft4fkp19fl4l9k8jvmma6t4a.apps.googleusercontent.com",
-        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u78-6vbd188aln1b5bhqmefg.apps.googleusercontent.com"
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "126323121709-0kno4eo9u786kvbd188aln1b5bhqmefg.apps.googleusercontent.com"
       }
     }
   }
