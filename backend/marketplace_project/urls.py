@@ -60,7 +60,7 @@ urlpatterns = [
     # patterns change. These are intentionally declared before the generic
     # router include.
     path("api/cart/", CartViewSet.as_view({"get": "list", "post": "create"}), name="cart-list"),
-    path("api/cart/<int:pk>/", CartViewSet.as_view({"get": "retrieve", "patch": "partial_update", "delete": "destroy", "head": "retrieve", "options": "metadata"}), name="cart-detail"),
+    path("api/cart/<int:pk>/", CartViewSet.as_view({"get": "retrieve", "patch": "partial_update", "delete": "destroy", "head": "retrieve"}), name="cart-detail"),
     path("api/", include((router.urls, "api"))),
 
     path("api/marketplace/feed/", marketplace_feed, name="marketplace-feed"),
