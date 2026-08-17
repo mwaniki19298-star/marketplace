@@ -58,11 +58,3 @@ The new `calls` app adds the `Call` model and authenticated signaling endpoints 
 ## Network reliability
 
 The implementation includes a public STUN server for basic NAT discovery. Some mobile carriers, corporate networks, and symmetric-NAT configurations require TURN for reliable connectivity. If calls connect on the same/local networks but fail across different carriers or restrictive networks, add a TURN service and issue short-lived TURN credentials from the backend. Do not ship a permanent TURN password in `EXPO_PUBLIC_*` variables.
-
-
-## Cross-network connectivity
-
-The app now supports backend-provided STUN/TURN ICE servers through
-`GET /api/calls/ice-servers/`. Configure `WEBRTC_TURN_SERVERS_JSON` on the
-Django server for reliable calls between different networks. See
-`WEBRTC_TURN_SETUP.md`.

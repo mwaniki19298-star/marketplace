@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 import os
 from datetime import timedelta
@@ -157,36 +156,6 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv("REFRESH_TOKEN_DAYS", "30"))),
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
-
-# WebRTC ICE/TURN configuration.
-# Keep TURN credentials on the backend. WEBRTC_TURN_SERVERS_JSON should be a
-# JSON array, for example:
-# [{"urls":["turn:turn.example.com:3478?transport=udp","turn:turn.example.com:3478?transport=tcp"],"username":"...","credential":"..."}]
-# Never put long-lived TURN credentials in EXPO_PUBLIC_* variables.
-WEBRTC_TURN_SERVERS_JSON = os.getenv("WEBRTC_TURN_SERVERS_JSON", "").strip()
-# A public Open Relay fallback keeps the calling feature usable while a
-# production TURN service is being configured. Set WEBRTC_TURN_SERVERS_JSON in
-# production to replace this with your own Metered/coturn credentials.
-WEBRTC_TURN_SERVERS = []
-if WEBRTC_TURN_SERVERS_JSON:
-    try:
-        parsed_turn_servers = json.loads(WEBRTC_TURN_SERVERS_JSON)
-        if isinstance(parsed_turn_servers, list):
-            WEBRTC_TURN_SERVERS = [item for item in parsed_turn_servers if isinstance(item, dict) and item.get("urls")]
-    except (TypeError, ValueError, json.JSONDecodeError):
-        WEBRTC_TURN_SERVERS = []
-
-if not WEBRTC_TURN_SERVERS:
-    WEBRTC_TURN_SERVERS = [{
-        "urls": [
-            "turn:openrelay.metered.ca:80?transport=udp",
-            "turn:openrelay.metered.ca:80?transport=tcp",
-            "turn:openrelay.metered.ca:443?transport=tcp",
-            "turns:openrelay.metered.ca:443?transport=tcp",
-        ],
-        "username": "openrelayproject",
-        "credential": "openrelayproject",
-    }]
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 # Comma-separated Google OAuth client IDs accepted by the backend.

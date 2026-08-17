@@ -1957,27 +1957,98 @@ function GoogleAuthController({
 }) {
   const callbacksRef = useRef({ onLoadingChange, onError, onAuthenticated });
   callbacksRef.current = { onLoadingChange, onError, onAuthenticated };
+  const authRequestRef = useRef<{ state: string; nonce: string } | null>(null);
+  const handledUrlRef = useRef<string | null>(null);
+
+  const randomValue = () => {
+    try {
+      const cryptoObj = (globalThis as any).crypto;
+      if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
+      if (cryptoObj?.getRandomValues) {
+        const bytes = new Uint8Array(32);
+        cryptoObj.getRandomValues(bytes);
+        return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+      }
+    } catch {}
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  };
+
+  const handleCallback = useCallback(async (returnedUrl: string) => {
+    if (!returnedUrl || handledUrlRef.current === returnedUrl) return;
+    handledUrlRef.current = returnedUrl;
+
+    const request = authRequestRef.current;
+    if (!request) return;
+
+    try {
+      const parsed = new URL(returnedUrl);
+      const fragment = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+      const query = parsed.searchParams;
+
+      const returnedState = fragment.get("state") || query.get("state");
+      const idToken = fragment.get("id_token") || query.get("id_token");
+      const error = fragment.get("error") || query.get("error");
+      const errorDescription =
+        fragment.get("error_description") ||
+        query.get("error_description");
+
+      if (returnedState !== request.state) {
+        throw new Error("Google returned an invalid authentication state. Please try again.");
+      }
+
+      if (error) {
+        throw new Error(errorDescription || error || "Google authentication was not completed.");
+      }
+
+      if (!idToken) {
+        throw new Error("Google returned no ID token. Please try again.");
+      }
+
+      const res = await fetch(apiUrl("/api/auth/google/"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id_token: idToken }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || "Google authentication failed.");
+
+      globalThis.__MARKETPLACE_AUTH__ = data;
+      authRequestRef.current = null;
+      callbacksRef.current.onLoadingChange(false);
+      callbacksRef.current.onAuthenticated(data as AuthPayload);
+    } catch (error) {
+      authRequestRef.current = null;
+      callbacksRef.current.onLoadingChange(false);
+      callbacksRef.current.onError(
+        "Google sign-in failed",
+        error instanceof Error ? error.message : "Google authentication could not be completed."
+      );
+    }
+  }, []);
+
+  // Native: listen for the marketplace://oauthredirect deep link. This is
+  // deliberately NOT expo-web-browser.openAuthSessionAsync: that API uses an
+  // in-app browser/custom tab. We want the user's normal external browser.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      void handleCallback(url);
+    });
+
+    void Linking.getInitialURL().then((url) => {
+      if (url) void handleCallback(url);
+    });
+
+    return () => subscription.remove();
+  }, [handleCallback]);
 
   useEffect(() => {
     if (promptNonce === 0) return;
 
-    let cancelled = false;
-
-    const randomValue = () => {
-      try {
-        const cryptoObj = (globalThis as any).crypto;
-        if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
-        if (cryptoObj?.getRandomValues) {
-          const bytes = new Uint8Array(32);
-          cryptoObj.getRandomValues(bytes);
-          return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
-        }
-      } catch {}
-      return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-    };
-
     const openGoogle = async () => {
       callbacksRef.current.onLoadingChange(true);
+
       try {
         if (!webClientId) {
           throw new Error("Google Web OAuth client ID is not configured.");
@@ -1985,10 +2056,9 @@ function GoogleAuthController({
 
         const state = randomValue();
         const nonce = randomValue();
+        authRequestRef.current = { state, nonce };
+        handledUrlRef.current = null;
 
-        // Google authentication happens in the device's external browser.
-        // Google returns to the HTTPS web bridge, which immediately redirects
-        // to marketplace://oauthredirect so Android can return control to the app.
         const params = new URLSearchParams({
           client_id: webClientId,
           redirect_uri: redirectUri,
@@ -2001,54 +2071,28 @@ function GoogleAuthController({
         });
 
         const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-        const result = await WebBrowser.openAuthSessionAsync(authUrl, "marketplace://oauthredirect");
 
-        if (cancelled) return;
-
-        if (result.type !== "success") {
-          callbacksRef.current.onLoadingChange(false);
-          callbacksRef.current.onError(
-            "Google sign-in cancelled",
-            "Google sign-in was cancelled. You can continue with email and password."
-          );
-          return;
+        if (Platform.OS === "web") {
+          // Web keeps the existing browser OAuth behavior.
+          const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+          if (result.type === "success" && result.url) {
+            await handleCallback(result.url);
+          } else {
+            authRequestRef.current = null;
+            callbacksRef.current.onLoadingChange(false);
+            callbacksRef.current.onError(
+              "Google sign-in cancelled",
+              "Google sign-in was cancelled. You can continue with email and password."
+            );
+          }
+        } else {
+          // IMPORTANT: Linking.openURL hands the URL to the device's normal
+          // browser (Chrome/Samsung Internet/etc.), rather than opening an
+          // Expo in-app browser/custom tab.
+          await Linking.openURL(authUrl);
         }
-
-        const returnedUrl = result.url || "";
-        const parsed = new URL(returnedUrl);
-        const returnedState = parsed.searchParams.get("state") || new URLSearchParams(parsed.hash.replace(/^#/, "")).get("state");
-        const fragment = new URLSearchParams(parsed.hash.replace(/^#/, ""));
-        const idToken = fragment.get("id_token") || parsed.searchParams.get("id_token");
-        const error = fragment.get("error") || parsed.searchParams.get("error");
-        const errorDescription =
-          fragment.get("error_description") ||
-          parsed.searchParams.get("error_description");
-
-        if (returnedState !== state) {
-          throw new Error("Google returned an invalid authentication state. Please try again.");
-        }
-
-        if (error) {
-          throw new Error(errorDescription || error || "Google authentication was not completed.");
-        }
-
-        if (!idToken) {
-          throw new Error("Google returned no ID token. Please try again.");
-        }
-
-        const res = await fetch(apiUrl("/api/auth/google/"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id_token: idToken }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.detail || "Google authentication failed.");
-
-        globalThis.__MARKETPLACE_AUTH__ = data;
-        callbacksRef.current.onLoadingChange(false);
-        callbacksRef.current.onAuthenticated(data as AuthPayload);
       } catch (error) {
-        if (cancelled) return;
+        authRequestRef.current = null;
         callbacksRef.current.onLoadingChange(false);
         callbacksRef.current.onError(
           "Google sign-in failed",
@@ -2058,11 +2102,7 @@ function GoogleAuthController({
     };
 
     void openGoogle();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [promptNonce, webClientId, redirectUri]);
+  }, [promptNonce, webClientId, redirectUri, handleCallback]);
 
   return null;
 }
@@ -2095,7 +2135,7 @@ function LoginScreen({ theme, onBack, onAuthenticated, initialMode = "login", au
     ? `${googleWebBaseUrl || (typeof window !== "undefined" ? window.location.origin : "")}/oauthredirect`
     : (
         (process.env.EXPO_PUBLIC_GOOGLE_AUTH_REDIRECT_URI || "").trim() ||
-        "https://marketplace-tau-sand.vercel.app/oauthredirect?native=1"
+        "https://marketplace-tau-sand.vercel.app/oauthredirect?native=1&flowName=GeneralOAuthFlow"
       );
   const googleConfigured = !!googleClientId && !!googleRedirectUri;
   const isExpoGo = Constants.appOwnership === "expo";
@@ -5011,40 +5051,8 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
     const { RTCPeerConnection, mediaDevices } = getCallWebRTC();
     const stream = await mediaDevices.getUserMedia({ audio: true, video: false });
     localStreamRef.current = stream;
-    // Use STUN for direct paths and TURN as a relay fallback. TURN servers are
-    // fetched from the authenticated Django API so credentials are not baked
-    // into the web/mobile JavaScript bundle.
-    // Global calling requires TURN, not only STUN. The backend returns the
-    // production ICE list (including TURN) and also has a public fallback for
-    // deployments where TURN credentials have not yet been configured.
-    let iceServers: Array<Record<string, any>> = [
-      { urls: "stun:stun.l.google.com:19302" },
-      {
-        urls: [
-          "turn:openrelay.metered.ca:80?transport=udp",
-          "turn:openrelay.metered.ca:80?transport=tcp",
-          "turn:openrelay.metered.ca:443?transport=tcp",
-          "turns:openrelay.metered.ca:443?transport=tcp",
-        ],
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-    ];
-    try {
-      const iceConfig = await apiRequest("/api/calls/ice-servers/", {}, auth) as {
-        ice_servers?: Array<Record<string, any>>;
-      };
-      if (Array.isArray(iceConfig?.ice_servers) && iceConfig.ice_servers.length) {
-        iceServers = iceConfig.ice_servers;
-      }
-    } catch {
-      // Keep the global TURN fallback above if the ICE configuration endpoint
-      // is temporarily unavailable.
-    }
-    const pc = new RTCPeerConnection({
-      iceServers,
-      iceTransportPolicy: "all",
-    });
+    const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+    const pc = new RTCPeerConnection({ iceServers });
     peerRef.current = pc;
     stream.getTracks().forEach((track: any) => pc.addTrack(track, stream));
     pc.onicecandidate = async (event: any) => {
@@ -5074,33 +5082,11 @@ const InAppCallManager = forwardRef<InAppCallHandle, { theme: Theme; auth: AuthP
         } catch {}
       }
     };
-    let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
     pc.onconnectionstatechange = () => {
       const connectionState = pc.connectionState;
       if (!mountedRef.current) return;
-      if (connectionState === "connected") {
-        if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
-        setState("connected");
-        return;
-      }
-      // ICE can briefly report disconnected while it switches from a direct
-      // path to TURN. Do not terminate the call immediately. Give ICE 12s to
-      // recover before ending the call.
-      if (connectionState === "disconnected") {
-        if (!disconnectTimer) {
-          disconnectTimer = setTimeout(() => {
-            const activeCall = callRef.current;
-            if (peerRef.current !== pc || pc.connectionState === "connected") return;
-            if (activeCall?.id && auth?.access) {
-              apiRequest(`/api/calls/${activeCall.id}/end/`, { method: "POST" }, auth).catch(() => {});
-            }
-            finishLocal();
-          }, 12000);
-        }
-        return;
-      }
-      if (["failed", "closed"].includes(connectionState)) {
-        if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
+      if (connectionState === "connected") setState("connected");
+      if (["failed", "disconnected", "closed"].includes(connectionState)) {
         const activeCall = callRef.current;
         if (activeCall?.id && auth?.access) {
           apiRequest(`/api/calls/${activeCall.id}/end/`, { method: "POST" }, auth).catch(() => {});
